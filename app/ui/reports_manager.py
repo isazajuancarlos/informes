@@ -1,6 +1,7 @@
 from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import Informe, Usuario, MetaVariable, ConfiguracionInformeVariable, Stakeholder, ConjuntoDatos, UnidadOrganizacional
+from app.ui.ui_helpers import estado_vacio, ayuda
 from datetime import datetime
 
 def page_reports_manager():
@@ -311,10 +312,26 @@ def page_reports_manager():
                     elif modo == 'ESPECIFICO': txt = "Meses Esp."
                     else: txt = "Diario" if int(rec.get('intervalo', 0))==1 else f"Cada {rec.get('intervalo')} días"
                     rows.append({'id': i.id, 'nombre': i.nombre, 'frec': txt, 'novedad': i.tipo_novedad, 'activo': i.activo, 'color': 'green' if i.activo else 'red'})
-                tabla = ui.table(columns=cols, rows=rows).classes('w-full shadow-sm border rounded')
-                tabla.add_slot('body-cell-novedad', '<q-td :props="props"><q-badge :color="props.row.color">{{ props.row.novedad }}</q-badge></q-td>')
-                tabla.add_slot('body-cell-acciones', '''<q-td :props="props"><q-btn icon="visibility" flat dense color="teal" @click="$parent.$emit('detail', props.row.id)" /><q-btn icon="edit" flat dense color="primary" @click="$parent.$emit('edit', props.row.id)" /><q-btn :icon="props.row.activo ? 'block' : 'check_circle'" flat dense :color="props.row.activo ? 'warning' : 'positive'" @click="$parent.$emit('tog', props.row)" /></q-td>''')
-                tabla.on('edit', lambda e: ir_a_editar(e.args)); tabla.on('tog', lambda e: manejar_toggle(e.args)); tabla.on('detail', lambda e: ver_detalle(e.args))
+                if not rows:
+                    # Estado vacío: distingue "no hay ninguno" de "sin resultados de búsqueda".
+                    if estado['filtro']:
+                        estado_vacio('search_off', 'Sin resultados',
+                                     f'Ningún informe coincide con "{estado["filtro"]}". '
+                                     'Prueba con otro término.')
+                    else:
+                        estado_vacio(
+                            'description',
+                            'Aún no tienes informes',
+                            'Un informe es la obligación que el sistema programa en el tiempo y '
+                            'audita: cada cuánto vence, quién responde y si se cumplió. '
+                            'Aquí defines su cronograma y sus responsables.',
+                            'Crear primer informe',
+                            ir_a_formulario_nuevo)
+                else:
+                    tabla = ui.table(columns=cols, rows=rows).classes('w-full shadow-sm border rounded')
+                    tabla.add_slot('body-cell-novedad', '<q-td :props="props"><q-badge :color="props.row.color">{{ props.row.novedad }}</q-badge></q-td>')
+                    tabla.add_slot('body-cell-acciones', '''<q-td :props="props"><q-btn icon="visibility" flat dense color="teal" @click="$parent.$emit('detail', props.row.id)" /><q-btn icon="edit" flat dense color="primary" @click="$parent.$emit('edit', props.row.id)" /><q-btn :icon="props.row.activo ? 'block' : 'check_circle'" flat dense :color="props.row.activo ? 'warning' : 'positive'" @click="$parent.$emit('tog', props.row)" /></q-td>''')
+                    tabla.on('edit', lambda e: ir_a_editar(e.args)); tabla.on('tog', lambda e: manejar_toggle(e.args)); tabla.on('detail', lambda e: ver_detalle(e.args))
 
     # --- RENDER FORMULARIO (ACTUALIZADO) ---
     def render_formulario():
@@ -356,6 +373,15 @@ def page_reports_manager():
 
                 # COL 2 (Tiempo)
                 with ui.card().classes('w-1/2 p-0 overflow-hidden border-t-4 border-purple-600'):
+                    with ui.row().classes('items-center gap-0 no-wrap px-4 pt-3'):
+                        ui.label('Cronograma').classes('font-bold text-purple-800 text-sm')
+                        ayuda('Define cuándo vence este informe. '
+                              'Cíclico: cada cierto intervalo (ej. cada 30 días). '
+                              'Específico: en meses y día de corte concretos (ej. día 7 de marzo y septiembre). '
+                              'Semanal: en días de la semana. '
+                              'Por Horas: varias veces al día. '
+                              'A Demanda: sin cronograma fijo, se genera cuando se solicita. '
+                              'Las casillas de "día hábil" mueven la fecha si cae en fin de semana o festivo.')
                     with ui.tabs().classes('bg-slate-100 text-slate-600 w-full') as tabs:
                         t_cic = ui.tab('Cíclico'); t_esp = ui.tab('Específico'); t_sem = ui.tab('Semanal'); t_hor = ui.tab('Por Horas'); t_inm = ui.tab('A Demanda')
                     

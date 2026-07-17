@@ -1,6 +1,7 @@
 from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import MetaVariable, Informe, MetaRegla
+from app.ui.ui_helpers import estado_vacio, ayuda
 
 def page_variables():
     # Estado para controlar si estamos editando o creando
@@ -21,6 +22,9 @@ def page_variables():
                     "obligatorio_txt": "Sí" if v.es_obligatorio else "No"
                 })
             tabla.rows = filas
+            # Estado vacío: si no hay variables, guía en vez de tabla vacía.
+            tabla.visible = bool(filas)
+            vacio.visible = not filas
 
     def limpiar_form():
         nombre.value = ''
@@ -141,14 +145,38 @@ def page_variables():
 
     tabla.on('borrar', lambda e: confirmar_borrado(e.args))
 
+    # Panel de estado vacío (se muestra solo cuando no hay variables).
+    vacio = estado_vacio(
+        'category',
+        'Aún no tienes variables',
+        'Las variables son los datos que capturan tus informes: fechas, montos, '
+        'responsables. Son la materia prima de todo lo demás. Crea la primera para empezar.',
+        'Crear primera variable',
+        lambda: [limpiar_form(), dialogo.open()],
+    )
+
     cargar()
 
     # --- MODAL FORMULARIO ---
     with ui.dialog() as dialogo, ui.card().classes('min-w-[400px]'):
         label_titulo = ui.label('Nueva Variable').classes('text-lg font-bold mb-4')
         
-        nombre = ui.input('ID Interno (ej: presupuesto)').classes('w-full')
+        with ui.row().classes('w-full items-center gap-0 no-wrap'):
+            ui.label('ID Interno').classes('text-xs text-slate-500')
+            ayuda('Nombre técnico sin espacios ni acentos (ej: fecha_corte). '
+                  'Es el identificador interno; no lo verá el usuario final.')
+        nombre = ui.input('ID Interno (ej: fecha_corte)').classes('w-full')
+        with ui.row().classes('w-full items-center gap-0 no-wrap'):
+            ui.label('Pregunta Visual').classes('text-xs text-slate-500')
+            ayuda('El texto que verá el operador al capturar el dato '
+                  '(ej: "Fecha de corte del período").')
         etiqueta = ui.input('Pregunta Visual').classes('w-full')
+        with ui.row().classes('w-full items-center gap-0 no-wrap'):
+            ui.label('Tipo de dato').classes('text-xs text-slate-500')
+            ayuda('Define cómo se captura y valida el dato. HORA_MILITAR: hora en '
+                  'formato 24h (14:30). MONEDA: valor monetario con formato. '
+                  'TEXTO_ALFANUM: texto y números sin caracteres especiales. '
+                  'LISTA: opciones predefinidas.')
         tipo = ui.select(['TEXTO', 'NUMERO', 'FECHA', 'BOOLEANO', 'LISTA', 'HORA_MILITAR', 'MONEDA', 'TEXTO_ALFANUM'], value='TEXTO', label='Tipo').classes('w-full')
         obligatorio = ui.switch('Obligatorio', value=True)
         

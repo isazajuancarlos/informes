@@ -1,6 +1,7 @@
 from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import MetaVariable, MetaRegla
+from app.ui.ui_helpers import estado_vacio, ayuda
 
 def page_rules():
     # --- 1. CARGA DE DATOS ---
@@ -69,6 +70,8 @@ def page_rules():
                     'mensaje': r.payload_json.get('mensaje_alerta', '')
                 })
             tabla.rows = filas
+            tabla.visible = bool(filas)
+            vacio.visible = not filas
 
     def guardar():
         if not regla['nombre'] or not regla['trigger']:
@@ -122,7 +125,18 @@ def page_rules():
         </q-td>
     ''')
     tabla.on('borrar', lambda e: borrar_regla(e.args))
-    
+
+    # Estado vacío: explica qué es una regla antes de que exista la primera.
+    vacio = estado_vacio(
+        'rule',
+        'Aún no tienes reglas de negocio',
+        'Una regla dice: "SI un dato cumple una condición, ENTONCES ocurre algo" '
+        '— pedir un archivo, notificar a alguien, bloquear el proceso o ajustar la '
+        'fecha límite. Son el cerebro que automatiza tus controles.',
+        'Crear primera regla',
+        lambda: dialogo.open(),
+    )
+
     cargar_tabla()
 
     # Botón Flotante
@@ -136,7 +150,11 @@ def page_rules():
         ui.input('Nombre de la Regla (Ej: Corte día 7)').bind_value(regla, 'nombre').classes('w-full mb-4')
         
         # Bloque SI (Condición)
-        ui.label('SI (Condición)').classes('text-xs font-bold text-gray-500 uppercase')
+        with ui.row().classes('items-center gap-0 no-wrap'):
+            ui.label('SI (Condición)').classes('text-xs font-bold text-gray-500 uppercase')
+            ayuda('La condición que se evalúa sobre un dato capturado. Ejemplo: '
+                  'SI [monto] es MAYOR QUE 1000. Elige la variable, el operador de '
+                  'comparación y el valor con el que se compara.')
         with ui.row().classes('w-full gap-2 items-center bg-slate-50 p-3 rounded border mb-4'):
             ui.icon('quiz').classes('text-blue-500 text-2xl')
             ui.select(opciones_vars, label='Variable').bind_value(regla, 'trigger').classes('flex-grow')
@@ -144,7 +162,13 @@ def page_rules():
             ui.input('Valor').bind_value(regla, 'val').classes('w-32')
 
         # Bloque ENTONCES (Consecuencia)
-        ui.label('ENTONCES (Efecto)').classes('text-xs font-bold text-gray-500 uppercase')
+        with ui.row().classes('items-center gap-0 no-wrap'):
+            ui.label('ENTONCES (Efecto)').classes('text-xs font-bold text-gray-500 uppercase')
+            ayuda('Qué ocurre si la condición se cumple. '
+                  'Exigir Archivo: pide un documento en los formatos que elijas. '
+                  'Notificar Rol: avisa a un rol del sistema. '
+                  'Bloquear: impide que el proceso continúe. '
+                  'Cambiar Fecha: ajusta la fecha límite en +/- días.')
         with ui.row().classes('w-full gap-2 items-center bg-orange-50 p-3 rounded border mb-4'):
             ui.icon('bolt').classes('text-orange-500 text-2xl')
             efecto_sel = ui.select(
