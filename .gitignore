@@ -1,0 +1,42 @@
+# Environment variables
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# NiceGUI
+.nicegui/
+
+# Database
+*.db
+*.sqlite3
+
+# Backups
+storage/backups/*.sql
+
+# Uploads
+storage/uploads/*
+!storage/uploads/.gitkeep
+
+# Sensitive data (archived)
+archivado_datos_sensibles/
+*.xlsx
+!plantillas/*.xlsx
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

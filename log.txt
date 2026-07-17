@@ -1,0 +1,1 @@
+sqlalchemy.exc.AmbiguousForeignKeysError: Can't determine join between 'usuarios' and 'entregas_esperadas'; tables have more than one foreign key constraint relationship between them. Please specify the 'onclause' of this join explicitly.

@@ -1,0 +1,129 @@
+{
+  "common": {
+    "save": "Save",
+    "cancel": "Cancel",
+    "delete": "Delete",
+    "edit": "Edit",
+    "create": "Create",
+    "loading": "Loading...",
+    "no_data": "No data",
+    "actions": "Actions",
+    "yes": "Yes",
+    "no": "No",
+    "active": "Active",
+    "inactive": "Inactive",
+    "search": "Search",
+    "export_excel": "Export Excel",
+    "export_csv": "Export CSV"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "reports": "Reports",
+    "users": "Users",
+    "tasks": "My Tasks",
+    "calendar": "Calendar",
+    "delegations": "Delegations",
+    "org_units": "Org. Units",
+    "settings": "Settings",
+    "audit": "Audit",
+    "analytics": "Analytics / BI",
+    "simulator": "Simulator",
+    "logout": "Logout",
+    "variables": "Variables",
+    "rules": "Rules"
+  },
+  "notifications": {
+    "bell_title": "Notifications",
+    "mark_all_read": "Mark all as read",
+    "see_all": "See all",
+    "empty": "No new notifications",
+    "new_task": "New task: {name}",
+    "task_due": "Due soon: {name}",
+    "task_overdue": "OVERDUE: {name}",
+    "request_approved": "Request approved",
+    "request_rejected": "Request rejected",
+    "delegated_task": "Delegated task: {name}"
+  },
+  "tasks": {
+    "title": "My Tasks",
+    "no_tasks": "You have no pending tasks",
+    "upload": "Upload file",
+    "deliver": "Deliver",
+    "pending": "PENDING",
+    "overdue": "OVERDUE",
+    "fulfilled": "FULFILLED",
+    "late": "LATE",
+    "delegated_by": "Delegated by {name}",
+    "re_upload": "Re-upload file"
+  },
+  "calendar": {
+    "title": "Delivery Calendar",
+    "prev": "Previous",
+    "next": "Next",
+    "today": "Today",
+    "no_deliveries": "No deliveries",
+    "click_day": "Click a day to see details"
+  },
+  "org_units": {
+    "title": "Organizational Units",
+    "new": "New Unit",
+    "parent": "Parent Unit",
+    "level": "Level",
+    "code": "Code",
+    "no_parent": "Root (no parent)",
+    "users_count": "Users",
+    "delete_has_users": "Cannot delete: has assigned users"
+  },
+  "delegation": {
+    "title": "Delegations",
+    "new": "New Delegation",
+    "delegante": "Delegator (who delegates)",
+    "delegado": "Delegate (who receives)",
+    "from": "From",
+    "until": "Until",
+    "reason": "Reason",
+    "active_only": "Active only",
+    "cancel": "Cancel delegation",
+    "badge": "Delegated by {name}"
+  },
+  "settings": {
+    "title": "System Settings",
+    "tab_general": "General",
+    "tab_scheduler": "Scheduler",
+    "tab_email": "Email",
+    "tab_security": "Security",
+    "country": "Country (ISO code)",
+    "timezone": "Timezone",
+    "language": "Default language",
+    "test_email": "Send test email",
+    "save_ok": "Settings saved",
+    "email_sent": "Test email sent"
+  },
+  "analytics": {
+    "title": "Analytics / BI",
+    "from": "From",
+    "to": "To",
+    "filter": "Filter",
+    "chart_type": "Chart type",
+    "export": "Export",
+    "no_data": "No data for the selected period"
+  },
+  "audit": {
+    "title": "Audit",
+    "tab_deliveries": "Deliveries",
+    "tab_security": "Security",
+    "export": "Export"
+  },
+  "simulator": {
+    "title": "Rules Simulator",
+    "select_report": "Select a report",
+    "run": "Run simulation",
+    "results": "Results",
+    "alerts": "Generated alerts",
+    "files_required": "Required files",
+    "roles": "Roles to notify",
+    "date_adjustment": "Date adjustment: {days} days",
+    "blocked": "PROCESS BLOCKED",
+    "no_rules": "This report has no configured rules"
+  }
+}
