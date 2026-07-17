@@ -1,10 +1,15 @@
 from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import EntregaEsperada, Usuario
+from app.ui.onboarding import panel_primeros_pasos
 from sqlalchemy import func
 from datetime import datetime
 
 def page_dashboard():
+    # Guía de primeros pasos: se muestra mientras la configuración esté
+    # incompleta, para no recibir al admin nuevo con un tablero vacío.
+    panel_primeros_pasos()
+
     def obtener_metricas():
         with get_db_session() as db:
             total = db.query(EntregaEsperada).count()
