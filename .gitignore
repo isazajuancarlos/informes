@@ -1,5 +1,11 @@
 # Environment variables
 .env
+.env.respaldo
+
+# Kit de instalación offline (lo genera `python instalar.py --kit`; pesa GB)
+paquetes/
+*.tar
+.venv/
 
 # Python
 __pycache__/
@@ -40,3 +46,6 @@ archivado_datos_sensibles/
 # OS
 .DS_Store
 Thumbs.db
+
+# Transcripciones de sesión (no son parte del producto)
+conversaciones/
