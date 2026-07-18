@@ -4,6 +4,7 @@ Permite al administrador crear entregas sin esperar al scheduler automático
 """
 
 from nicegui import ui, app
+from app.ui.ui_helpers import estado_vacio
 from app.core.database import get_db_session
 from app.models.meta_tables import Informe, Usuario, EntregaEsperada
 from datetime import datetime, timedelta
@@ -139,6 +140,8 @@ def page_entregas_manuales():
                 })
 
             tabla.rows = rows
+            tabla.visible = bool(rows)
+            vacio.visible = not rows
 
     # UI Principal
     ui.label('Crear Entrega Manual').classes('text-3xl font-bold text-slate-800 mb-2')
@@ -201,6 +204,12 @@ def page_entregas_manuales():
     ]
 
     tabla = ui.table(columns=cols, rows=[], pagination=20).classes('w-full shadow-sm')
+    vacio = estado_vacio(
+        'assignment_add',
+        'Aún no has creado entregas manuales',
+        'Una entrega manual asigna una tarea puntual fuera del cronograma '
+        'automático —un requerimiento extraordinario, una corrección—. Créala con '
+        'el formulario de arriba cuando lo necesites.')
 
     # Slot para estado
     tabla.add_slot('body-cell-estado', '''

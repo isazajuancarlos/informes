@@ -2,6 +2,7 @@
 Organizational Units — CRUD for UnidadOrganizacional hierarchy.
 """
 from nicegui import ui
+from app.ui.ui_helpers import estado_vacio
 from app.core.database import get_db_session
 from app.models.meta_tables import UnidadOrganizacional, Usuario
 
@@ -48,6 +49,16 @@ def page_org_units():
                 {'name': 'acciones', 'label': 'Acciones', 'field': 'acciones', 'align': 'center'},
             ]
             tabla = ui.table(columns=cols, rows=rows, pagination=20).classes('w-full shadow-sm')
+            if not rows:
+                tabla.visible = False
+                estado_vacio(
+                    'account_tree',
+                    'Aún no tienes unidades organizacionales',
+                    'Las unidades reflejan la estructura de tu entidad (áreas, '
+                    'direcciones, dependencias). Sirven para agrupar usuarios y '
+                    'delegar responsabilidades. Crea la primera cuando la necesites.',
+                    'Crear primera unidad',
+                    lambda: abrir_dialog())
             tabla.add_slot('body-cell-activo', '''
                 <q-td :props="props">
                     <q-badge :color="props.row.color">{{ props.row.activo ? "Activo" : "Inactivo" }}</q-badge>

@@ -4,6 +4,7 @@ Módulo para administrar catálogo de conjuntos de datos (RIPS, RUAF, Vacunació
 """
 
 from nicegui import ui
+from app.ui.ui_helpers import estado_vacio
 from app.core.database import get_db_session
 from app.models.meta_tables import ConjuntoDatos, Usuario, Informe
 
@@ -49,6 +50,8 @@ def page_conjuntos_datos():
                 })
 
             tabla.rows = rows
+            tabla.visible = bool(rows)
+            vacio.visible = not rows
 
     def abrir_edicion(row):
         limpiar()
@@ -175,6 +178,14 @@ def page_conjuntos_datos():
     tabla.on('delete', lambda e: eliminar(e.args))
 
     # Botón nuevo
+    vacio = estado_vacio(
+        'dataset',
+        'Aún no tienes conjuntos de datos',
+        'Un conjunto de datos agrupa registros relacionados para reutilizarlos en '
+        'tus informes, en vez de recapturarlos cada vez. Crea el primero cuando lo necesites.',
+        'Crear primer conjunto',
+        lambda: [limpiar(), dialogo.open()],
+    )
     ui.button('Nuevo Conjunto de Datos', icon='add', on_click=lambda: [limpiar(), dialogo.open()]) \
         .classes('mt-4 bg-slate-900 text-white')
 

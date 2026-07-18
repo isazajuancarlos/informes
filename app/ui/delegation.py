@@ -2,6 +2,7 @@
 Delegaciones — permite delegar tareas entre usuarios con rango de fechas.
 """
 from nicegui import ui, app
+from app.ui.ui_helpers import estado_vacio
 from datetime import datetime, date
 from app.core.database import get_db_session
 from app.models.meta_tables import Delegacion, Usuario
@@ -50,6 +51,16 @@ def page_delegation():
                 {'name': 'acciones', 'label': 'Acciones', 'field': 'acciones', 'align': 'center'},
             ]
             tabla = ui.table(columns=cols, rows=rows, pagination=20).classes('w-full shadow-sm')
+            if not rows:
+                tabla.visible = False
+                estado_vacio(
+                    'swap_horiz',
+                    'Aún no hay delegaciones',
+                    'Una delegación traspasa temporalmente las tareas de un usuario a '
+                    'otro —por vacaciones o ausencia—, con fecha de inicio y fin. '
+                    'Créala cuando alguien deba cubrir a un compañero.',
+                    'Crear primera delegación',
+                    lambda: abrir_dialog())
             tabla.add_slot('body-cell-activo', '''
                 <q-td :props="props">
                     <q-badge :color="props.row.color">{{ props.row.activo ? "Activa" : "Cancelada" }}</q-badge>

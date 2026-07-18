@@ -1,4 +1,5 @@
 from nicegui import ui
+from app.ui.ui_helpers import estado_vacio
 from app.core.database import get_db_session
 from app.models.meta_tables import Stakeholder, Usuario
 from app.services.auth import AuthService
@@ -125,6 +126,8 @@ def page_stakeholders():
                     'acceso': "Sí" if s.usuario_id else "No"
                 })
             tabla.rows = rows
+            tabla.visible = bool(rows)
+            vacio.visible = not rows
 
     ui.label('Directorio de Terceros (Stakeholders)').classes('text-2xl font-bold text-slate-800 mb-4')
 
@@ -167,4 +170,12 @@ def page_stakeholders():
             ''')
             tabla.on('editar', lambda e: editar(e.args))
             tabla.on('borrar', lambda e: confirmar_eliminar(e.args))
+            # El formulario de alta está siempre visible a la izquierda, así que
+            # el estado vacío solo explica qué es un tercero (sin botón).
+            vacio = estado_vacio(
+                'contacts',
+                'Aún no hay terceros registrados',
+                'Los terceros son las entidades con las que interactúas: entes de '
+                'control que solicitan informes, o destinatarios a quienes los envías. '
+                'Regístralos con el formulario de la izquierda.')
             cargar_tabla()

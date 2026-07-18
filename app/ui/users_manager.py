@@ -1,4 +1,5 @@
 from nicegui import ui
+from app.ui.ui_helpers import estado_vacio
 from app.core.database import get_db_session
 from app.models.meta_tables import Usuario, Stakeholder, UnidadOrganizacional
 from app.services.auth import AuthService
@@ -37,6 +38,8 @@ def page_users_manager():
                     'unidad_id': u.unidad_id,
                 })
             tabla.rows = rows
+            tabla.visible = bool(rows)
+            vacio.visible = not rows
 
     def abrir_edicion(row):
         limpiar()
@@ -89,6 +92,16 @@ def page_users_manager():
     tabla.add_slot('body-cell-act', '<q-td :props="props"><q-btn icon="edit" flat dense size="sm" color="primary" @click="$parent.$emit(\'edit\', props.row)" /></q-td>')
     tabla.on('edit', lambda e: abrir_edicion(e.args))
     
+    vacio = estado_vacio(
+        'group',
+        'Aún no hay más usuarios',
+        'Los operadores registran las entregas del día a día; los supervisores '
+        'consultan los tableros. Invita a tu equipo para repartir el trabajo en '
+        'vez de cargarlo todo en el administrador.',
+        'Crear primer usuario',
+        lambda: [limpiar(), dialogo.open()],
+    )
+
     ui.button('Nuevo Usuario', icon='person_add', on_click=lambda: [limpiar(), dialogo.open()]).classes('mt-4 bg-slate-900 text-white')
 
     with ui.dialog() as dialogo, ui.card().classes('min-w-[450px] p-6'):
