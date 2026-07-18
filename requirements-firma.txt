@@ -1,0 +1,8 @@
+# Dependencia OPCIONAL para la firma post-cuántica de entregas (Quipu).
+# No es parte del núcleo de informes; instálala solo si activas esa función:
+#   pip install -r requirements-firma.txt
+#
+# Licencia: quipu-crypto es AGPL-3.0. Se usa aquí como producto propio (Xiliux es
+# titular de Quipu, con doble licencia AGPL + comercial). Un tercero necesitaría
+# la licencia comercial para incorporarlo a un producto propietario.
+quipu-crypto>=0.7.0
