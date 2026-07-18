@@ -184,4 +184,6 @@ def health_check():
 
 if __name__ in {"__main__", "__mp_main__"}:
     from app.core.config import STORAGE_SECRET
-    ui.run(title="Sistema Gestión", language="es", favicon="📊", port=8003, storage_secret=STORAGE_SECRET, reload=True, show=False)
+    # reload por defecto en dev; se apaga en contenedores (RELOAD=false).
+    _reload = os.getenv("RELOAD", "true").strip().lower() == "true"
+    ui.run(title="Sistema Gestión", language="es", favicon="📊", host="0.0.0.0", port=8003, storage_secret=STORAGE_SECRET, reload=_reload, show=False)

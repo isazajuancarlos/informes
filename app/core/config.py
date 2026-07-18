@@ -18,11 +18,35 @@ STORAGE_DIR = BASE_DIR / "storage"
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 BACKUPS_DIR = STORAGE_DIR / "backups"
 
+# --- Perfil de despliegue -----------------------------------------------------
+# cloud     : SaaS que hospedamos nosotros (PostgreSQL, con internet).
+# onprem    : el cliente lo corre en su propio servidor/LAN (su PostgreSQL, sin
+#             internet). Aísla sus datos en su máquina por diseño.
+# standalone: una sola máquina, sin administrar base de datos (SQLite), offline.
+# El mismo código sirve a los tres; solo cambia la configuración.
+DEPLOYMENT_PROFILE = os.getenv("DEPLOYMENT_PROFILE", "cloud").strip().lower()
+if DEPLOYMENT_PROFILE not in ("cloud", "onprem", "standalone"):
+    print(f"⚠️ DEPLOYMENT_PROFILE '{DEPLOYMENT_PROFILE}' no válido; usando 'cloud'.")
+    DEPLOYMENT_PROFILE = "cloud"
+
 # Database Configuration
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:admin@localhost/informes"
+# DATABASE_URL explícito siempre gana; si no, el default depende del perfil:
+# standalone -> SQLite en storage/informes.db; los demás -> PostgreSQL.
+_DEFAULT_DB = (
+    f"sqlite:///{STORAGE_DIR / 'informes.db'}"
+    if DEPLOYMENT_PROFILE == "standalone"
+    else "postgresql://postgres:admin@localhost/informes"
 )
+DATABASE_URL = os.getenv("DATABASE_URL", _DEFAULT_DB)
+IS_SQLITE = DATABASE_URL.startswith("sqlite")
+
+# Modo offline: no asumir acceso a internet (afecta a servicios externos como el
+# futuro asistente IA; el email ya se gobierna aparte por EMAIL_ENABLED). onprem
+# y standalone son offline por defecto; cloud, online. Override con OFFLINE=.
+_OFFLINE_DEFAULT = DEPLOYMENT_PROFILE in ("onprem", "standalone")
+OFFLINE_MODE = os.getenv(
+    "OFFLINE", str(_OFFLINE_DEFAULT)
+).strip().lower() in ("true", "1", "yes", "on")
 
 # Email Configuration
 SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -89,15 +113,19 @@ def get_db_credentials():
 # Validation warnings
 def validate_config():
     """Print warnings for missing critical configuration"""
-    warnings = []
+    motor = "SQLite" if IS_SQLITE else "PostgreSQL"
+    warnings = [f"🚀 Perfil de despliegue: {DEPLOYMENT_PROFILE} "
+                f"({motor}, {'offline' if OFFLINE_MODE else 'online'})"]
 
-    if not EMAIL_ENABLED:
+    if not EMAIL_ENABLED and not OFFLINE_MODE:
+        # En offline el email no se espera; no es una carencia.
         warnings.append("⚠️ Email not configured. Set SENDER_EMAIL and SENDER_PASSWORD in .env")
 
     if STORAGE_SECRET == "SECRET_KEY_FINAL_V6":
         warnings.append("⚠️ Using default STORAGE_SECRET. Change it in production!")
 
-    if "admin" in DATABASE_URL:
+    # La alerta de contraseña por defecto solo aplica a PostgreSQL.
+    if not IS_SQLITE and "admin" in DATABASE_URL:
         warnings.append("⚠️ Using default database password. Change it in production!")
 
     return warnings
