@@ -72,11 +72,29 @@ class AlertService:
         return True
 
     @staticmethod
+    def _destinatarios(tarea):
+        """A quién le llega el aviso de esta entrega.
+
+        Al responsable asignado; y si no hay ninguno, a los supervisores del
+        informe. Antes la consulta hacía JOIN contra Usuario, así que una
+        entrega sin responsable no alertaba a NADIE: fallaba en silencio, que
+        es la peor forma de fallar en un sistema cuyo único trabajo es avisar.
+        """
+        if tarea.usuario:
+            return [tarea.usuario]
+        return [u for u in tarea.informe.supervisores if u]
+
+    @staticmethod
     async def procesar_alertas_pendientes():
         """
         Procesa todas las alertas pendientes:
         1. Alerta 24h antes del vencimiento
         2. Alerta de tareas vencidas
+
+        Cada aviso se emite UNA vez por entrega: al emitirlo se sella la fecha
+        en la propia entrega. El job corre cada 6 h, y sin ese sello reenviaba
+        el mismo correo de incumplimiento cuatro veces al día para siempre,
+        porque "vencida y pendiente" no deja de ser cierto nunca.
         """
         from app.services.notification_service import NotificationService
 
@@ -87,66 +105,73 @@ class AlertService:
         notifs_pendientes = []  # (uid, tipo, titulo, msg, url, ent_tipo, ent_id)
 
         with get_db_session() as db:
-            # 1. ALERTAS DE PROXIMIDAD (24h antes)
-            tareas_proximas = db.query(EntregaEsperada).join(Usuario, EntregaEsperada.usuario_id == Usuario.id).join(Informe).filter(
+            # 1. ALERTAS DE PROXIMIDAD (24h antes), solo las no avisadas.
+            tareas_proximas = db.query(EntregaEsperada).join(Informe).filter(
                 and_(
                     EntregaEsperada.estado == 'PENDIENTE',
                     EntregaEsperada.fecha_limite_teorica <= umbral_24h,
-                    EntregaEsperada.fecha_limite_teorica > ahora
+                    EntregaEsperada.fecha_limite_teorica > ahora,
+                    EntregaEsperada.alerta_proximidad_en.is_(None),
                 )
             ).all()
 
             for tarea in tareas_proximas:
-                usuario = tarea.usuario
                 horas_restantes = int((tarea.fecha_limite_teorica - ahora).total_seconds() / 3600)
-                if usuario and usuario.email:
-                    try:
-                        await AlertService.enviar_alerta_vencimiento(
-                            usuario.email,
-                            usuario.nombre,
-                            tarea.informe.nombre,
-                            tarea.fecha_limite_teorica,
-                            horas_restantes
-                        )
-                        alertas_enviadas += 1
-                    except Exception as e:
-                        print(f"❌ Error enviando alerta a {usuario.email}: {e}")
-                if usuario:
+                for usuario in AlertService._destinatarios(tarea):
+                    if usuario.email:
+                        try:
+                            await AlertService.enviar_alerta_vencimiento(
+                                usuario.email,
+                                usuario.nombre,
+                                tarea.informe.nombre,
+                                tarea.fecha_limite_teorica,
+                                horas_restantes
+                            )
+                            alertas_enviadas += 1
+                        except Exception as e:
+                            print(f"❌ Error enviando alerta a {usuario.email}: {e}")
                     notifs_pendientes.append((
                         usuario.id, 'ALERTA',
                         f"Vence pronto: {tarea.informe.nombre}",
                         f"{horas_restantes}h restantes",
                         '/mis-pendientes', 'entrega', tarea.id
                     ))
+                # Se sella aunque no hubiera a quién avisar: reintentarlo cada
+                # 6 h no va a hacer aparecer un destinatario. La ausencia se
+                # ve en la auditoría, no a fuerza de reintentos.
+                tarea.alerta_proximidad_en = ahora
 
-            # 2. ALERTAS DE INCUMPLIMIENTO (ya vencidas)
-            tareas_vencidas = db.query(EntregaEsperada).join(Usuario, EntregaEsperada.usuario_id == Usuario.id).join(Informe).filter(
+            # 2. ALERTAS DE INCUMPLIMIENTO (ya vencidas), solo las no avisadas.
+            tareas_vencidas = db.query(EntregaEsperada).join(Informe).filter(
                 and_(
                     EntregaEsperada.estado == 'PENDIENTE',
-                    EntregaEsperada.fecha_limite_teorica < ahora
+                    EntregaEsperada.fecha_limite_teorica < ahora,
+                    EntregaEsperada.alerta_incumplimiento_en.is_(None),
                 )
             ).all()
 
             for tarea in tareas_vencidas:
-                usuario = tarea.usuario
-                if usuario and usuario.email:
-                    try:
-                        await AlertService.enviar_alerta_incumplimiento(
-                            usuario.email,
-                            usuario.nombre,
-                            tarea.informe.nombre,
-                            tarea.fecha_limite_teorica
-                        )
-                        alertas_enviadas += 1
-                    except Exception as e:
-                        print(f"❌ Error enviando alerta a {usuario.email}: {e}")
-                if usuario:
+                for usuario in AlertService._destinatarios(tarea):
+                    if usuario.email:
+                        try:
+                            await AlertService.enviar_alerta_incumplimiento(
+                                usuario.email,
+                                usuario.nombre,
+                                tarea.informe.nombre,
+                                tarea.fecha_limite_teorica
+                            )
+                            alertas_enviadas += 1
+                        except Exception as e:
+                            print(f"❌ Error enviando alerta a {usuario.email}: {e}")
                     notifs_pendientes.append((
                         usuario.id, 'URGENTE',
                         f"INCUMPLIDA: {tarea.informe.nombre}",
                         "Superó la fecha límite",
                         '/mis-pendientes', 'entrega', tarea.id
                     ))
+                tarea.alerta_incumplimiento_en = ahora
+
+            db.commit()
 
         # Create in-app notifications AFTER the DB session closes
         for uid, tipo, titulo, msg, url, ent_tipo, ent_id in notifs_pendientes:

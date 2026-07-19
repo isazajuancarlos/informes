@@ -360,6 +360,23 @@ class Informe(Base):
         return [p.stakeholder for p in self.partes(ROL_DESTINO, externas=True)]
 
     @property
+    def supervisores(self):
+        """Quienes responden por el cumplimiento. Son el destinatario de
+        último recurso de cualquier aviso: si nadie tiene asignada una
+        entrega, el aviso tiene que llegarle a alguien."""
+        return [p.usuario for p in self.partes(ROL_SUPERVISA) if not p.es_externa]
+
+    @property
+    def tiene_quien_la_reciba(self) -> bool:
+        """Un informe necesita a alguien que lo reciba O que lo consulte.
+
+        No son lo mismo: un tablero preparado para que un auditor lo consulte
+        no se le ENVÍA a nadie, y aun así la obligación existe. Exigir DESTINO
+        marcaba ese caso legítimo como defectuoso.
+        """
+        return bool(self.partes(ROL_DESTINO) or self.partes(ROL_USUARIO))
+
+    @property
     def tipo_flujo(self) -> str:
         """Derivado, nunca almacenado: lo dicen las partes.
 
@@ -410,6 +427,14 @@ class EntregaEsperada(Base):
 
     notas_admin = Column(Text, nullable=True)
     # Notas adicionales del admin al crear entrega manual
+
+    # Cuándo se avisó de cada cosa. Sin esto el servicio de alertas reenviaba
+    # el mismo aviso en CADA corrida —cada 6 h, indefinidamente— porque su
+    # única condición era "vencida y pendiente", que no deja de cumplirse.
+    # Avisar de más entrena a la gente a ignorar el sistema, que es peor que
+    # no avisar.
+    alerta_proximidad_en = Column(DateTime, nullable=True)
+    alerta_incumplimiento_en = Column(DateTime, nullable=True)
 
     informe = relationship("Informe")
     usuario = relationship("Usuario", back_populates="entregas", foreign_keys=[usuario_id])

@@ -44,6 +44,27 @@ def _tablas_existentes():
     return set(inspect(engine).get_table_names())
 
 
+def _agregar_columnas_de_alerta(solo_verificar: bool):
+    """Sella de aviso enviado, para que las alertas no se repitan.
+
+    Sin estas dos columnas el servicio reenviaba el mismo correo de
+    incumplimiento en cada corrida —cada 6 h, indefinidamente—, porque su
+    condición era "vencida y pendiente", que no deja de cumplirse nunca.
+    """
+    columnas = {c["name"] for c in inspect(engine).get_columns("entregas_esperadas")}
+    faltantes = [c for c in ("alerta_proximidad_en", "alerta_incumplimiento_en")
+                 if c not in columnas]
+    if not faltantes:
+        return
+    if solo_verificar:
+        print(f"ℹ️  Se agregarían columnas a entregas_esperadas: {', '.join(faltantes)}")
+        return
+    with engine.begin() as conn:
+        for col in faltantes:
+            conn.execute(text(f"ALTER TABLE entregas_esperadas ADD COLUMN {col} TIMESTAMP"))
+    print(f"✅ Columnas agregadas a entregas_esperadas: {', '.join(faltantes)}")
+
+
 def migrar(solo_verificar: bool = False) -> int:
     tablas = _tablas_existentes()
 
@@ -51,6 +72,8 @@ def migrar(solo_verificar: bool = False) -> int:
         print("✋ Falta la tabla participacion_informe. Corre primero la creación "
               "de esquema (reset_total.py o el arranque de la app).")
         return 1
+
+    _agregar_columnas_de_alerta(solo_verificar)
 
     insertadas = 0
     omitidas = 0

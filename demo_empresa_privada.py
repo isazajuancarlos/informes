@@ -530,8 +530,12 @@ def auditar(db, informes):
             hallazgo(f"«{inf.nombre[:40]}» no tiene quién la ejecute.")
         if not inf.partes(ROL_SUPERVISA):
             hallazgo(f"«{inf.nombre[:40]}» no tiene supervisor.")
-        if not inf.partes(ROL_DESTINO):
-            hallazgo(f"«{inf.nombre[:40]}» no tiene destino: nadie la recibe.")
+        # Recibir y consultar no son lo mismo: un tablero preparado para que un
+        # auditor lo consulte no se le ENVÍA a nadie, y la obligación existe
+        # igual. Exigir DESTINO marcaba ese caso legítimo como defectuoso.
+        if not inf.tiene_quien_la_reciba:
+            hallazgo(f"«{inf.nombre[:40]}» no tiene ni destino ni usuario: "
+                     f"nadie la recibe ni la consulta.")
 
     # Entregas sin responsable: se vuelven invisibles para las alertas, que
     # hacen JOIN contra usuario.

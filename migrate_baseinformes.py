@@ -1,4 +1,11 @@
-"""
+"""OBSOLETO — migración de la era Excel (esquema v2 -> v3).
+
+NO CORRER sobre una base ya migrada al flujo unificado: asigna
+`informe.tipo_flujo`, que desde el refactor es una propiedad DERIVADA de solo
+lectura, y fallará. Se conserva por valor histórico y para bases que se hayan
+quedado atrás; para esas, el orden correcto es este guion primero y
+`migrar_flujo_unificado.py` después.
+
 Script de Migración: BaseInformes v2.0 → v3.0
 Agrega nuevas funcionalidades identificadas en análisis de baseInformes.xlsx
 
