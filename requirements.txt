@@ -4,6 +4,11 @@ sqlalchemy
 psycopg2-binary
 nicegui
 pydantic
+# Identidad: la cadena de esquemas de contraseña (Argon2id, con bcrypt heredado).
+# tumbaga todavía NO está en PyPI: se instala desde la copia local con
+#   pip install -e ../tumbaga
+# Cuando se publique, esta línea pasa a ser `tumbaga>=0.2`.
+argon2-cffi
 bcrypt
 python-dotenv
 APScheduler
