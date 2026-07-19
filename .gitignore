@@ -49,3 +49,7 @@ Thumbs.db
 
 # Transcripciones de sesión (no son parte del producto)
 conversaciones/
+
+# Entorno y artefactos de la demo local
+.venv/
+storage/demo_andina/

@@ -30,7 +30,7 @@ from datetime import datetime
 from app.core.database import get_db_session
 from app.models.meta_tables import (
     Informe, Usuario, Stakeholder, ConjuntoDatos,
-    ConfiguracionInformeVariable, MetaVariable
+    ConfiguracionInformeVariable, MetaVariable, Participacion, ROL_ORIGEN
 )
 
 # Mapas de conversión
@@ -218,8 +218,9 @@ class ImportadorDatosDemo:
             # Parsear periodicidad
             recurrencia_json = self.parsear_periodicidad(informe_data.get('periodicidad'))
 
-            # Mapear tipo de flujo
-            tipo_flujo = MAPA_TIPO_FLUJO.get(
+            # El tipo de flujo ya no se asigna: se deduce de las partes.
+            # Se conserva el mapeo para decidir QUÉ partes crear.
+            flujo_declarado = MAPA_TIPO_FLUJO.get(
                 str(informe_data.get('tipo_movimiento', '')).strip(),
                 'ENVIO_INTERNO'
             )
@@ -237,7 +238,6 @@ class ImportadorDatosDemo:
                 activo=True,
 
                 # Nuevos campos v3.0
-                tipo_flujo=tipo_flujo,
                 subsistema=str(informe_data.get('subsistema', ''))[:100] if informe_data.get('subsistema') else None,
                 conjunto_datos_id=conjunto_datos.id if conjunto_datos else None,
                 tiene_acuerdo_confidencialidad=informe_data.get('tiene_acuerdo', False),
@@ -262,8 +262,9 @@ class ImportadorDatosDemo:
             db.add(informe)
             db.flush()
 
-            # Asignar responsable (admin por defecto)
-            informe.responsables.append(admin_user)
+            # Asignar responsable (admin por defecto) como ORIGEN del flujo.
+            db.add(Participacion(informe_id=informe.id, usuario_id=admin_user.id,
+                                 rol=ROL_ORIGEN, orden=0))
 
             self.stats['importados'] += 1
             return True

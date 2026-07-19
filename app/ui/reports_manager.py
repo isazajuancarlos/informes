@@ -1,6 +1,10 @@
 from nicegui import ui
 from app.core.database import get_db_session
-from app.models.meta_tables import Informe, Usuario, MetaVariable, ConfiguracionInformeVariable, Stakeholder, ConjuntoDatos, UnidadOrganizacional
+from app.models.meta_tables import (
+    Informe, Usuario, MetaVariable, ConfiguracionInformeVariable, Stakeholder,
+    ConjuntoDatos, UnidadOrganizacional, Participacion,
+    ROL_ORIGEN, ROL_DESTINO, ROL_USUARIO,
+)
 from app.ui.ui_helpers import estado_vacio, ayuda
 from datetime import datetime
 
@@ -18,7 +22,6 @@ def page_reports_manager():
         'responsables': [], 'extensiones': [],
         'solicitantes': [], 'destinatarios': [],
         # NUEVOS CAMPOS v3.0
-        'tipo_flujo': 'ENVIO_INTERNO',
         'subsistema': '',
         'conjunto_datos_id': None,
         'unidad_id': None,
@@ -61,7 +64,6 @@ def page_reports_manager():
         nuevo_informe.update({
             'nombre': '', 'descripcion': '', 'responsables': [], 'extensiones': [],
             'solicitantes': [], 'destinatarios': [],
-            'tipo_flujo': 'ENVIO_INTERNO',
             'subsistema': '',
             'conjunto_datos_id': None,
             'unidad_id': None,
@@ -94,8 +96,7 @@ def page_reports_manager():
             nuevo_informe['solicitantes'] = [str(s.id) for s in inf.solicitantes]
             nuevo_informe['destinatarios'] = [str(s.id) for s in inf.destinatarios]
 
-            # Cargar nuevos campos v3.0 + v4.0
-            nuevo_informe['tipo_flujo'] = inf.tipo_flujo or 'ENVIO_INTERNO'
+            # Cargar nuevos campos v3.0 + v4.0 (tipo_flujo es derivado)
             nuevo_informe['subsistema'] = inf.subsistema or ''
             nuevo_informe['conjunto_datos_id'] = str(inf.conjunto_datos_id) if inf.conjunto_datos_id else None
             nuevo_informe['unidad_id'] = inf.unidad_id
@@ -153,7 +154,7 @@ def page_reports_manager():
                 inf.nombre = nuevo_informe['nombre']; inf.descripcion = nuevo_informe['descripcion']
                 inf.recurrencia_json = rec_final; inf.datos_generales = datos_gen
                 # Actualizar nuevos campos v3.0 + v4.0
-                inf.tipo_flujo = nuevo_informe['tipo_flujo']
+                # tipo_flujo no se asigna: lo determinan las partes del flujo.
                 inf.subsistema = nuevo_informe['subsistema'] if nuevo_informe['subsistema'] else None
                 inf.conjunto_datos_id = int(nuevo_informe['conjunto_datos_id']) if nuevo_informe['conjunto_datos_id'] else None
                 inf.tiene_acuerdo_confidencialidad = nuevo_informe['tiene_acuerdo_confidencialidad']
@@ -164,9 +165,9 @@ def page_reports_manager():
                 inf.aplicativo_origen = nuevo_informe['aplicativo_origen'] if nuevo_informe['aplicativo_origen'] else None
                 inf.unidad_id = nuevo_informe.get('unidad_id')
                 inf.tipo_novedad = "Actualización"; inf.fecha_actualizacion = datetime.now()
-                inf.responsables.clear()
-                inf.solicitantes.clear()
-                inf.destinatarios.clear()
+                # Las partes se reescriben enteras: una sola tabla que limpiar.
+                for p in list(inf.participaciones): db.delete(p)
+                inf.participaciones.clear()
                 for cfg in inf.configuracion_variables: db.delete(cfg)
                 msg = "Actualizado"
             else:
@@ -176,8 +177,7 @@ def page_reports_manager():
                     creador_id=1,
                     recurrencia_json=rec_final,
                     datos_generales=datos_gen,
-                    # Nuevos campos v3.0 + v4.0
-                    tipo_flujo=nuevo_informe['tipo_flujo'],
+                    # Nuevos campos v3.0 + v4.0 (tipo_flujo es derivado, no se pasa)
                     subsistema=nuevo_informe['subsistema'] if nuevo_informe['subsistema'] else None,
                     conjunto_datos_id=int(nuevo_informe['conjunto_datos_id']) if nuevo_informe['conjunto_datos_id'] else None,
                     tiene_acuerdo_confidencialidad=nuevo_informe['tiene_acuerdo_confidencialidad'],
@@ -194,18 +194,22 @@ def page_reports_manager():
                 db.add(inf); msg = "Creado"
             
             db.flush()
-            for uid in nuevo_informe['responsables']:
-                u = db.query(Usuario).get(int(uid)); 
-                if u: inf.responsables.append(u)
-            
-            # Guardar Stakeholders
-            for sid in nuevo_informe['solicitantes']:
-                s = db.query(Stakeholder).get(int(sid)); 
-                if s: inf.solicitantes.append(s)
-            
-            for did in nuevo_informe['destinatarios']:
-                d = db.query(Stakeholder).get(int(did)); 
-                if d: inf.destinatarios.append(d)
+            # Las tres listas de la pantalla son el MISMO hecho con distinto rol:
+            # quién produce (interno), quién consume y quién recibe (externos).
+            for orden, uid in enumerate(nuevo_informe['responsables']):
+                if db.query(Usuario).get(int(uid)):
+                    db.add(Participacion(informe_id=inf.id, usuario_id=int(uid),
+                                         rol=ROL_ORIGEN, orden=orden))
+
+            for orden, sid in enumerate(nuevo_informe['solicitantes']):
+                if db.query(Stakeholder).get(int(sid)):
+                    db.add(Participacion(informe_id=inf.id, stakeholder_id=int(sid),
+                                         rol=ROL_USUARIO, orden=orden))
+
+            for orden, did in enumerate(nuevo_informe['destinatarios']):
+                if db.query(Stakeholder).get(int(did)):
+                    db.add(Participacion(informe_id=inf.id, stakeholder_id=int(did),
+                                         rol=ROL_DESTINO, orden=orden))
 
             for var_id, val in nuevo_informe['variables_config'].items():
                 if val: db.add(ConfiguracionInformeVariable(informe_id=inf.id, variable_id=int(var_id), valor_parametro=str(val)))
@@ -457,18 +461,36 @@ def page_reports_manager():
                 with ui.card().classes('w-1/2 p-4 border-l-4 border-teal-500'):
                     ui.label('Clasificación y Origen').classes('text-lg font-bold text-teal-800')
 
-                    # Tipo de Flujo
-                    opciones_flujo = {
+                    # Tipo de Flujo: se MUESTRA, no se elige. Lo determinan las
+                    # partes (abajo: responsables, solicitantes, destinatarios).
+                    # Dejarlo elegible permitía marcar "Recepción Externa" un
+                    # informe cuyas partes eran todas internas.
+                    ETIQUETAS_FLUJO = {
                         'ENVIO_INTERNO': 'Envío Interno',
                         'ENVIO_EXTERNO': 'Envío Externo',
                         'RECEPCION_EXTERNA': 'Recepción Externa',
-                        'BIDIRECCIONAL': 'Bidireccional'
+                        'BIDIRECCIONAL': 'Bidireccional',
                     }
-                    ui.select(
-                        label='Tipo de Flujo',
-                        options=opciones_flujo,
-                        value=nuevo_informe['tipo_flujo']
-                    ).bind_value(nuevo_informe, 'tipo_flujo').classes('w-full').props('outlined')
+
+                    def _flujo_derivado() -> str:
+                        sale = bool(nuevo_informe['destinatarios'])
+                        entra = nuevo_informe.get('origen_externo') or False
+                        if sale and entra:
+                            return 'BIDIRECCIONAL'
+                        if sale:
+                            return 'ENVIO_EXTERNO'
+                        if entra:
+                            return 'RECEPCION_EXTERNA'
+                        return 'ENVIO_INTERNO'
+
+                    with ui.row().classes('w-full items-center gap-2'):
+                        ui.label('Tipo de Flujo:').classes('text-sm text-gray-600')
+                        lbl_flujo = ui.label().classes('text-sm font-bold text-teal-700')
+                        ayuda('Se deduce de las partes: si hay destinatarios externos '
+                              'el informe sale; si el origen es un tercero, entra.')
+                    lbl_flujo.bind_text_from(
+                        nuevo_informe, 'destinatarios',
+                        backward=lambda _: ETIQUETAS_FLUJO[_flujo_derivado()])
 
                     # Subsistema
                     ui.input('Subsistema').bind_value(nuevo_informe, 'subsistema').classes('w-full').props('outlined')

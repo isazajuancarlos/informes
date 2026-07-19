@@ -1,7 +1,27 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, JSON, DateTime, Table, UniqueConstraint, Text
+from sqlalchemy import (
+    Column, Integer, String, Boolean, ForeignKey, JSON, DateTime, Table,
+    UniqueConstraint, CheckConstraint, Index, Text, text,
+)
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
+
+# =====================================================
+# VOCABULARIO DEL FLUJO
+# =====================================================
+# El flujo es lo único invariante del producto: quién produce la información,
+# quién la recibe y quién la consume. Todo lo demás — campos, reglas, variables,
+# taxonomías — es configuración de cada cliente y NO se modela con columnas.
+#
+# Estos cinco roles son deliberadamente genéricos: sirven igual a un reporte
+# regulatorio, a un entregable contractual o a un informe interno de gerencia.
+ROL_ORIGEN = "ORIGEN"        # produce y envía la información
+ROL_DESTINO = "DESTINO"      # la recibe
+ROL_USUARIO = "USUARIO"      # la consume (puede no ser quien la recibe)
+ROL_SUPERVISA = "SUPERVISA"  # responde por el cumplimiento
+ROL_EJECUTA = "EJECUTA"      # hace el trabajo material
+
+ROLES_FLUJO = (ROL_ORIGEN, ROL_DESTINO, ROL_USUARIO, ROL_SUPERVISA, ROL_EJECUTA)
 
 # =====================================================
 # 0. ESTRUCTURA ORGANIZACIONAL (v4.0)
@@ -48,6 +68,13 @@ class Usuario(Base):
 
     entregas = relationship("EntregaEsperada", back_populates="usuario", foreign_keys="[EntregaEsperada.usuario_id]")
     stakeholder_perfil = relationship("Stakeholder", back_populates="usuario_acceso", uselist=False)
+    participaciones = relationship(
+        "Participacion", back_populates="usuario", cascade="all, delete-orphan"
+    )
+
+    @property
+    def informes_asignados(self):
+        return [p.informe for p in self.participaciones]
 
     # Relación con sus reportes personalizados
     reportes_analiticos = relationship("ReporteAnalitico", back_populates="creador")
@@ -108,18 +135,17 @@ class Stakeholder(Base):
     tipo = Column(String(50)) 
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
     usuario_acceso = relationship("Usuario", back_populates="stakeholder_perfil")
-    informes_solicitados = relationship("Informe", secondary="rel_informe_solicitantes", back_populates="solicitantes")
-    informes_recibidos = relationship("Informe", secondary="rel_informe_destinatarios", back_populates="destinatarios")
+    participaciones = relationship(
+        "Participacion", back_populates="stakeholder", cascade="all, delete-orphan"
+    )
 
-solicitantes_informe = Table('rel_informe_solicitantes', Base.metadata,
-    Column('informe_id', Integer, ForeignKey('cat_informes.id')),
-    Column('stakeholder_id', Integer, ForeignKey('stakeholders.id'))
-)
+    @property
+    def informes_solicitados(self):
+        return [p.informe for p in self.participaciones if p.rol == ROL_USUARIO]
 
-destinatarios_informe = Table('rel_informe_destinatarios', Base.metadata,
-    Column('informe_id', Integer, ForeignKey('cat_informes.id')),
-    Column('stakeholder_id', Integer, ForeignKey('stakeholders.id'))
-)
+    @property
+    def informes_recibidos(self):
+        return [p.informe for p in self.participaciones if p.rol == ROL_DESTINO]
 
 class SolicitudNuevoInforme(Base):
     __tablename__ = "solicitudes_terceros"
@@ -178,15 +204,74 @@ class ConjuntoDatos(Base):
     responsable = relationship("Usuario")
     informes = relationship("Informe", back_populates="conjunto_datos")
 
-# ACTUALIZADO: Tabla de asignaciones con roles diferenciados
-asignaciones_usuarios = Table('asignaciones_informe_usuario', Base.metadata,
-    Column('informe_id', Integer, ForeignKey('cat_informes.id')),
-    Column('usuario_id', Integer, ForeignKey('usuarios.id')),
-    # NUEVOS CAMPOS: Tipo de responsabilidad y si es principal
-    Column('tipo_responsabilidad', String(20), default='EJECUTA'),  # EJECUTA, ENVIA, RECIBE, SUPERVISA
-    Column('es_principal', Boolean, default=True),  # Principal vs Backup
-    Column('orden', Integer, default=0)  # Para ordenar responsables
-)
+class Participacion(Base):
+    """Quién participa en el flujo de un informe, y con qué rol.
+
+    ÚNICA fuente de verdad del flujo. Antes esto vivía en cuatro sitios:
+    `asignaciones_informe_usuario` (partes internas, con el rol en una columna),
+    `rel_informe_solicitantes` y `rel_informe_destinatarios` (partes externas,
+    cuyo rol estaba implícito en CUÁL tabla puente las contenía), y `tipo_flujo`,
+    un resumen almacenado que podía contradecir a las otras tres.
+
+    Una parte es una parte: puede ser interna (`Usuario`, que entra al sistema)
+    o externa (`Stakeholder`, que no), y eso es ortogonal a su papel en el
+    flujo. Así un informe puede recibirse de un tercero y consumirse
+    internamente sin que el modelo tenga que decidir de qué "tipo" es.
+    """
+
+    __tablename__ = "participacion_informe"
+
+    id = Column(Integer, primary_key=True, index=True)
+    informe_id = Column(Integer, ForeignKey("cat_informes.id"), nullable=False, index=True)
+
+    # Exactamente una de las dos: interna o externa (lo garantiza el CHECK).
+    usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
+    stakeholder_id = Column(Integer, ForeignKey("stakeholders.id"), nullable=True)
+
+    rol = Column(String(20), nullable=False, index=True)
+    es_principal = Column(Boolean, default=True)   # principal vs. suplente
+    orden = Column(Integer, default=0)
+
+    informe = relationship("Informe", back_populates="participaciones")
+    usuario = relationship("Usuario", back_populates="participaciones")
+    stakeholder = relationship("Stakeholder", back_populates="participaciones")
+
+    # OJO: un UniqueConstraint sobre (informe_id, usuario_id, stakeholder_id, rol)
+    # NO restringe nada, porque una de las dos columnas de parte siempre es NULL
+    # y en SQL NULL != NULL: dos filas idénticas se consideran distintas. Hacen
+    # falta dos índices ÚNICOS PARCIALES, uno por naturaleza de parte.
+    __table_args__ = (
+        CheckConstraint(
+            "(usuario_id IS NOT NULL AND stakeholder_id IS NULL) OR "
+            "(usuario_id IS NULL AND stakeholder_id IS NOT NULL)",
+            name="ck_participacion_una_sola_parte",
+        ),
+        Index(
+            "uq_participacion_interna", "informe_id", "usuario_id", "rol",
+            unique=True,
+            sqlite_where=text("usuario_id IS NOT NULL"),
+            postgresql_where=text("usuario_id IS NOT NULL"),
+        ),
+        Index(
+            "uq_participacion_externa", "informe_id", "stakeholder_id", "rol",
+            unique=True,
+            sqlite_where=text("stakeholder_id IS NOT NULL"),
+            postgresql_where=text("stakeholder_id IS NOT NULL"),
+        ),
+    )
+
+    @property
+    def es_externa(self) -> bool:
+        return self.stakeholder_id is not None
+
+    @property
+    def parte(self):
+        return self.stakeholder if self.es_externa else self.usuario
+
+    @property
+    def nombre(self) -> str:
+        return getattr(self.parte, "nombre", "") if self.parte else ""
+
 
 class Informe(Base):
     __tablename__ = "cat_informes"
@@ -205,9 +290,9 @@ class Informe(Base):
 
     # ===== NUEVOS CAMPOS (Fase 1 y 2) =====
 
-    # Tipo de Flujo del Informe (ALTA PRIORIDAD)
-    tipo_flujo = Column(String(20), default='ENVIO_INTERNO')
-    # Opciones: ENVIO_INTERNO, ENVIO_EXTERNO, RECEPCION_EXTERNA, BIDIRECCIONAL
+    # `tipo_flujo` YA NO es una columna: se calcula a partir de las partes
+    # (ver la propiedad más abajo). Almacenarlo permitía que un informe marcado
+    # RECEPCION_EXTERNA tuviera todas sus partes internas.
 
     # Subsistema y Conjunto de Datos (antes en JSON, ahora relacionales)
     subsistema = Column(String(100), nullable=True, index=True)
@@ -241,12 +326,55 @@ class Informe(Base):
 
     # ===== RELACIONES =====
 
-    responsables = relationship("Usuario", secondary=asignaciones_usuarios, backref="informes_asignados")
+    participaciones = relationship(
+        "Participacion", back_populates="informe", cascade="all, delete-orphan"
+    )
     configuracion_variables = relationship("ConfiguracionInformeVariable", back_populates="informe", cascade="all, delete-orphan")
-    solicitantes = relationship("Stakeholder", secondary=solicitantes_informe, back_populates="informes_solicitados")
-    destinatarios = relationship("Stakeholder", secondary=destinatarios_informe, back_populates="informes_recibidos")
     conjunto_datos = relationship("ConjuntoDatos", back_populates="informes")
     unidad = relationship("UnidadOrganizacional", foreign_keys=[unidad_id])
+
+    # ===== EL FLUJO =====
+
+    def partes(self, rol=None, externas=None):
+        """Partes del flujo, filtrables por rol y por interna/externa."""
+        ps = self.participaciones
+        if rol is not None:
+            ps = [p for p in ps if p.rol == rol]
+        if externas is not None:
+            ps = [p for p in ps if p.es_externa is externas]
+        return sorted(ps, key=lambda p: (not p.es_principal, p.orden))
+
+    @property
+    def responsables(self):
+        """Personas internas que ejecutan o envían (lo que antes era la
+        asignación por defecto)."""
+        return [p.usuario for p in self.partes() if not p.es_externa
+                and p.rol in (ROL_EJECUTA, ROL_ORIGEN)]
+
+    @property
+    def solicitantes(self):
+        return [p.stakeholder for p in self.partes(ROL_USUARIO, externas=True)]
+
+    @property
+    def destinatarios(self):
+        return [p.stakeholder for p in self.partes(ROL_DESTINO, externas=True)]
+
+    @property
+    def tipo_flujo(self) -> str:
+        """Derivado, nunca almacenado: lo dicen las partes.
+
+        Sale información si algún DESTINO es externo; entra si algún ORIGEN lo
+        es. Ambas cosas a la vez es un flujo bidireccional; ninguna, interno.
+        """
+        sale = any(p.es_externa for p in self.participaciones if p.rol == ROL_DESTINO)
+        entra = any(p.es_externa for p in self.participaciones if p.rol == ROL_ORIGEN)
+        if sale and entra:
+            return "BIDIRECCIONAL"
+        if sale:
+            return "ENVIO_EXTERNO"
+        if entra:
+            return "RECEPCION_EXTERNA"
+        return "ENVIO_INTERNO"
 
 class ConfiguracionInformeVariable(Base):
     __tablename__ = "config_informe_variables"

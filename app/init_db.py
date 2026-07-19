@@ -1,6 +1,5 @@
 from app.core.database import engine, Base
-# CORRECCIÓN AQUÍ: 'asignaciones_usuarios'
-from app.models.meta_tables import MetaVariable, MetaRegla, Usuario, Informe, asignaciones_usuarios
+from app.models.meta_tables import MetaVariable, MetaRegla, Usuario, Informe, Participacion
 
 def init_db():
     """
