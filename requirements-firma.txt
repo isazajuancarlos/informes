@@ -1,8 +1,34 @@
-# Dependencia OPCIONAL para la firma post-cuántica de entregas (Quipu).
-# No es parte del núcleo de informes; instálala solo si activas esa función:
+# Firma post-cuántica de entregas y licencia offline (Quipu).
+#
+# Dependencia OPCIONAL: sin ella las entregas se registran igual y quedan sin
+# firma, y la licencia no se puede verificar. Nada se bloquea.
+#
 #   pip install -r requirements-firma.txt
 #
-# Licencia: quipu-crypto es AGPL-3.0. Se usa aquí como producto propio (Xiliux es
-# titular de Quipu, con doble licencia AGPL + comercial). Un tercero necesitaría
-# la licencia comercial para incorporarlo a un producto propietario.
-quipu-crypto>=0.7.0
+# ============================================================================
+# NO SE INSTALA DESDE PyPI, Y ES DELIBERADO
+# ============================================================================
+#
+# `--no-index` corta el índice público a propósito. Si el cliente obtuviera
+# `quipu-crypto` de PyPI lo obtendría **bajo AGPL-3.0**, y su uso en red del
+# conjunto activaría el artículo 13: quedaría obligado a ofrecer el código
+# fuente del sistema completo a quien interactúe con él por red. Un cliente
+# corporativo con asesoría competente lo detecta en la debida diligencia.
+#
+# La Cláusula 9.2 del EULA entrega esa copia bajo licencia comercial —para eso
+# existe la doble licencia— y la 9.3 le prohíbe sustituirla por la pública.
+# Estas dos banderas son la mitad TÉCNICA de esas cláusulas.
+#
+# Poblar vendor/ antes de empaquetar:
+#
+#   python preparar_distribucion.py
+#
+# Si vendor/ está vacío, esta instalación FALLA en vez de caer a PyPI. Es lo
+# correcto: fallar ruidosamente al empaquetar es barato; descubrir en una
+# auditoría que el cliente instaló la copia AGPL, no.
+# ============================================================================
+
+--no-index
+--find-links vendor/
+
+quipu-crypto>=0.9.1

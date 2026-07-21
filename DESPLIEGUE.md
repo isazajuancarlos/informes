@@ -102,13 +102,31 @@ En el log verás el perfil detectado:
   notificaciones in-app siguen funcionando. Si el cliente tiene un servidor de
   correo en su red, configura `SMTP_HOST`/`SENDER_EMAIL`/`SENDER_PASSWORD` y el
   email se reactiva solo.
-- **Backups**: en PostgreSQL el backup usa `pg_dump`; en SQLite (standalone) el
-  backup es copiar `storage/informes.db`. El servicio de backup automático para
-  SQLite es un pendiente (hoy el respaldo en standalone se hace copiando el
-  volumen `data`).
-- **Licencia offline**: un cliente air-gapped no puede validar licencia contra un
-  servidor. El plan es un archivo de licencia firmado que la app verifica en
-  local (pendiente; aprovecha la criptografía de Quipu).
+- **Backups**: en PostgreSQL usa `pg_dump`; en SQLite (standalone) usa la API de
+  respaldo EN CALIENTE de `sqlite3`, no una copia del archivo. La diferencia
+  importa: copiar una base viva puede capturar una transacción a medias y
+  producir un respaldo que parece bueno y no restaura. Al restaurar se guarda
+  antes una copia de la base anterior (`informes.db.previa-*`), porque restaurar
+  es justo cuando alguien está nervioso y puede equivocarse de archivo.
+- **Licencia offline**: un archivo `licencia.quipu` firmado por EL LICENCIANTE,
+  que la aplicación verifica en local — sin red, apto para air-gapped. Se emite
+  con `python emitir_licencia.py` y sus campos son los del **Anexo A** del EULA.
+  La ruta se configura con `INFORMES_LICENCIA` y la clave pública con
+  `INFORMES_LICENCIA_PUBKEY`.
+
+  **La licencia NUNCA bloquea nada**: ni ausente, ni vencida, ni manipulada. Da
+  visibilidad —un aviso permanente en la cabecera— y evidencia; el remedio ante
+  el exceso es contractual. Es la aplicación del principio del modo degradado:
+  la ausencia de una capa opcional no puede ser la causa de que el cliente
+  incumpla ante un tercero. Si una licencia vencida impidiera registrar una
+  entrega, Xiliux pasaría a ser la causa del incumplimiento del cliente.
+- **Firma de entregas y componente Quipu**: la copia de `quipu-crypto` que se
+  entrega **no se instala desde PyPI**. Se empaqueta en `vendor/` con
+  `python preparar_distribucion.py` y `requirements-firma.txt` la instala con
+  `--no-index`. Obtenerla del índice público la entregaría bajo AGPL-3.0 y
+  activaría el artículo 13 sobre el servicio en red del cliente; la Cláusula 9.2
+  del EULA la entrega bajo licencia comercial. Si `vendor/` está vacío, la
+  instalación FALLA en vez de caer a PyPI, que es lo correcto.
 - **Actualizaciones**: on-premise no se hotfixea remotamente. La ruta de upgrade
   es reconstruir/recargar la imagen; las migraciones (`migrate_v4.py`) son
   idempotentes.
