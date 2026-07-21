@@ -2,6 +2,7 @@ from nicegui import ui, app
 from app.core.database import get_db_session
 from app.models.meta_tables import EntregaEsperada, Comentario, AuditLog
 from app.services.signing_service import verificar_entrega
+from app.core.tiempo import formatear_utc
 from datetime import datetime
 import io
 import csv
@@ -28,7 +29,7 @@ def page_audit():
                             with ui.column().classes(f'{bg} p-2 rounded max-w-[80%] gap-0'):
                                 ui.label(m.autor.nombre).classes('text-[10px] font-bold text-blue-800')
                                 ui.label(m.texto).classes('text-sm')
-                                ui.label(m.fecha.strftime('%d/%m %H:%M')).classes('text-[9px] text-gray-500 self-end')
+                                ui.label(formatear_utc(m.fecha, '%d/%m %H:%M')).classes('text-[9px] text-gray-500 self-end')
 
         def enviar():
             if not txt_in.value: return
@@ -147,7 +148,13 @@ def page_audit():
                 }
                 rows.append({
                     'id': log.id,
-                    'fecha': log.timestamp.strftime('%Y-%m-%d %H:%M:%S') if log.timestamp else '',
+                    # `AuditLog.timestamp` se guarda en UTC (`default=datetime.utcnow`)
+                    # y aquí se pintaba con `strftime` directo, o sea COMO SI
+                    # fuera local: en Colombia, cada evento aparecía 5 horas en
+                    # el futuro. La conversión arregla también las filas
+                    # antiguas, porque todas son UTC. La exportación CSV
+                    # reutiliza esta misma cadena, así que queda corregida sola.
+                    'fecha': formatear_utc(log.timestamp),
                     'evento': log.evento or '',
                     'email': log.email or '',
                     'resultado': 'OK' if log.exitoso else ('Fallido' if log.exitoso is False else '—'),

@@ -1,5 +1,6 @@
 from nicegui import ui, app
 from app.services.notification_service import NotificationService
+from app.core.tiempo import formatear_utc
 
 
 def _render_notification_bell(usuario_id):
@@ -33,7 +34,7 @@ def _render_notification_bell(usuario_id):
                             with ui.column().classes('gap-0 flex-grow'):
                                 ui.label(n.titulo).classes('font-medium text-sm')
                                 ui.label(n.mensaje[:100]).classes('text-xs text-slate-500')
-                                ui.label(n.fecha_creacion.strftime('%d/%m/%Y %H:%M')).classes('text-xs text-slate-400')
+                                ui.label(formatear_utc(n.fecha_creacion, '%d/%m/%Y %H:%M')).classes('text-xs text-slate-400')
 
             with ui.row().classes('w-full justify-between p-3 border-t'):
                 ui.button('Marcar todas leídas', on_click=lambda: _marcar_todo_y_cerrar(usuario_id, d)) \

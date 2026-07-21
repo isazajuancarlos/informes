@@ -7,6 +7,7 @@ from app.core.database import get_db_session
 from app.models.meta_tables import SolicitudNuevoInforme, Stakeholder, Usuario
 from datetime import datetime
 import asyncio
+from app.core.tiempo import formatear_utc
 
 def page_requests_manager():
     """Gestión de Solicitudes de Terceros"""
@@ -53,7 +54,7 @@ def page_requests_manager():
                 with ui.column().classes('gap-1 flex-grow'):
                     ui.label(solicitud.titulo).classes('text-lg font-bold text-slate-800')
                     ui.label(f'Solicitante: {solicitud.stakeholder.nombre}').classes('text-sm text-slate-600')
-                    ui.label(f'Fecha: {solicitud.fecha_solicitud.strftime("%d/%m/%Y %H:%M")}').classes('text-xs text-slate-400')
+                    ui.label(f'Fecha: {formatear_utc(solicitud.fecha_solicitud, "%d/%m/%Y %H:%M")}').classes('text-xs text-slate-400')
 
                 # Badge de estado
                 badge_color = {
