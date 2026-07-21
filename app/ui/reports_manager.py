@@ -8,6 +8,7 @@ from app.models.meta_tables import (
 from app.ui.ui_helpers import estado_vacio, ayuda
 from datetime import datetime
 from app.services.preview_calendario import proximos as _proximos_vencimientos
+from app.services.validar_regla import validar as _validar_regla
 
 #: Las tres únicas respuestas posibles a «¿y si cae en día no hábil?». Ser un
 #: selector y no dos casillas es lo que impide el estado ambiguo por
@@ -219,6 +220,23 @@ def page_reports_manager():
         f_inicio = nuevo_informe['fecha_inicio']
 
         rec_final = _construir_regla(nuevo_informe)
+
+        # La regla se valida ANTES de guardar. Un barrido del motor encontró
+        # varias configuraciones que se aceptaban en silencio y dejaban una
+        # obligación que no hace lo que su autor cree — y ese error no se
+        # descubre por su efecto, porque el efecto es que NO PASA NADA.
+        revision = _validar_regla(rec_final)
+        if not revision.se_puede_guardar:
+            for problema in revision.errores:
+                ui.notify(problema, type='negative', multi_line=True,
+                          classes='w-[420px]', timeout=8000)
+            return
+        for aviso in revision.advertencias:
+            # Se avisa y se guarda: la regla funciona, solo puede que no como se
+            # espera. Bloquear aquí haría que alguien acabara buscándole la
+            # vuelta al validador, y entonces no serviría para nada.
+            ui.notify(aviso, type='warning', multi_line=True,
+                      classes='w-[420px]', timeout=7000)
 
         datos_gen = {"extensiones": nuevo_informe['extensiones']}
 
