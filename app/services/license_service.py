@@ -9,8 +9,8 @@ su clave privada, la aplicación lo verifica con la pública, y nadie necesita r
 
 **No bloquea nada. Nunca.**
 
-Ni sin licencia, ni con una vencida, ni con una manipulada, ni con exceso de
-usuarios. Y no es una omisión: es la aplicación directa del principio del modo
+Ni sin licencia, ni con el mantenimiento vencido, ni con una manipulada, ni con
+exceso de usuarios. Y no es una omisión: es la aplicación directa del principio del modo
 degradado.
 
     La ausencia de una capa OPCIONAL nunca debe impedirle al cliente cumplir una
@@ -37,11 +37,26 @@ siete de la mañana.
 Los campos son EXACTAMENTE los del Anexo A del EULA, para que el archivo y el
 contrato no puedan discrepar. Si el Anexo A cambia, este módulo cambia con él.
 
+# LA LICENCIA NO CADUCA, Y ESO NO ES UN DESCUIDO
+
+`mantenimiento_hasta` NO es la vigencia de la licencia: es el fin del **Período
+de Mantenimiento**. Son cosas distintas y confundirlas sería un error con
+consecuencias comerciales.
+
+  - El derecho de uso es **PERPETUO** (Cláusulas 3.1 y 3.2) y el no pago de la
+    cuota anual **no lo afecta** (7.6).
+  - La Cláusula 3.4 declara además que la validación es local y **no está sujeta
+    a caducidad** — es un argumento de venta y una obligación técnica.
+
+Por eso, pasada esa fecha, el estado es `mantenimiento_vencido` y NUNCA
+«licencia vencida»: decirle a un cliente con licencia perpetua que su licencia
+caducó sería falso y, peor, lo empujaría a pagar por algo que ya tiene.
+
 # Emitir una licencia
 
     python emitir_licencia.py --licenciatario "ACME S.A.S." --nit 900123456 \\
         --edicion profesional --perfil onprem --usuarios 25 --sedes 3 \\
-        --vigencia-hasta 2027-07-21
+        --mantenimiento-hasta 2027-07-21
 """
 from __future__ import annotations
 
@@ -67,7 +82,7 @@ PERFILES = ("standalone", "onprem", "cloud")
 #: un alcance incompleto no delimita nada (directiva 20).
 CAMPOS = (
     "licenciatario", "nit", "edicion", "perfil", "version",
-    "usuarios", "sedes", "modalidad", "emitida", "vigencia_hasta",
+    "usuarios", "sedes", "modalidad", "emitida", "mantenimiento_hasta",
 )
 
 
@@ -91,7 +106,8 @@ def _clave_publica() -> str:
 class Estado:
     """Veredicto sobre la licencia. Tres resultados, no dos."""
 
-    #: `valida` | `ausente` | `invalida` | `vencida` | `sin_verificador`
+    #: `valida` | `ausente` | `invalida` | `mantenimiento_vencido`
+    #: | `sin_verificador`
     situacion: str
     #: Texto corto para la interfaz.
     mensaje: str
@@ -104,13 +120,16 @@ class Estado:
 
     @property
     def es_grave(self) -> bool:
-        """Distingue «no hay licencia» de «la licencia no cuadra».
+        """Solo una situación merece color de alarma: que la licencia no cuadre.
 
-        Sin licencia es un estado normal en evaluación o en una instalación
-        recién hecha. Una licencia manipulada o vencida es otra cosa, y
-        mezclarlas entrenaría a ignorar el aviso.
+        NO lo es el mantenimiento vencido: el derecho de uso es PERPETUO
+        (Cláusulas 3.1, 3.2 y 7.6) y lo único que se pierde son actualizaciones
+        y soporte. Pintarlo de rojo asustaría a un cliente que está en su pleno
+        derecho, y entrenaría a ignorar el aviso que sí importa.
+
+        Tampoco lo es la ausencia de licencia, normal en evaluación.
         """
-        return self.situacion in ("invalida", "vencida")
+        return self.situacion == "invalida"
 
 
 def _canonico(datos: dict) -> bytes:
@@ -186,21 +205,28 @@ def estado(hoy: date | None = None) -> Estado:
         return Estado("invalida", "La licencia está incompleta.")
 
     try:
-        hasta = datetime.strptime(str(datos["vigencia_hasta"]), "%Y-%m-%d").date()
+        hasta = datetime.strptime(str(datos["mantenimiento_hasta"]), "%Y-%m-%d").date()
     except (ValueError, TypeError):
-        return Estado("invalida", "La licencia tiene una vigencia ilegible.", datos)
+        return Estado("invalida",
+                      "La licencia tiene una fecha de mantenimiento ilegible.",
+                      datos)
 
     if hoy > hasta:
-        dias = (hoy - hasta).days
+        # NO se dice «la licencia venció»: LA LICENCIA NO VENCE. El derecho de
+        # uso es perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA) y lo único que
+        # termina es el derecho a actualizaciones y soporte. Decirle a un
+        # cliente con licencia perpetua que «su licencia venció» sería falso y,
+        # peor, lo empujaría a pagar por algo que ya tiene.
         return Estado(
-            "vencida",
-            f"La licencia venció hace {dias} día(s) ({hasta.isoformat()}). "
-            "El sistema sigue operando con normalidad; regularice con "
-            "EL LICENCIANTE.",
+            "mantenimiento_vencido",
+            f"Mantenimiento vencido el {hasta.isoformat()}. El derecho de uso "
+            "es perpetuo y no se ve afectado; lo que cesa es el acceso a "
+            "actualizaciones y soporte.",
             datos,
         )
 
-    return Estado("valida", f"Licencia vigente hasta {hasta.isoformat()}.", datos)
+    return Estado("valida", f"Mantenimiento vigente hasta {hasta.isoformat()}.",
+                  datos)
 
 
 def excede_usuarios(activos: int) -> tuple[bool, str]:

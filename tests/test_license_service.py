@@ -3,8 +3,8 @@
 Dos cosas se prueban, y la segunda importa tanto como la primera:
 
 1. Que **discrimine**: detecta una licencia manipulada, una firmada con otra
-   clave, una vencida y una incompleta.
-2. Que **NUNCA bloquee**. Ninguna situación —ausente, inválida, vencida— puede
+   clave, el mantenimiento vencido y una licencia incompleta.
+2. Que **NUNCA bloquee**. Ninguna situación puede
    impedir operar. Es el principio del modo degradado: la ausencia de una capa
    opcional no puede ser la causa de que el cliente incumpla ante un tercero.
    Si alguien "endurece" esto en el futuro, estas pruebas tienen que caerse.
@@ -37,7 +37,7 @@ def datos_validos(**cambios):
         "sedes": 3,
         "modalidad": "asistida",
         "emitida": date.today().isoformat(),
-        "vigencia_hasta": (date.today() + timedelta(days=365)).isoformat(),
+        "mantenimiento_hasta": (date.today() + timedelta(days=365)).isoformat(),
     }
     d.update(cambios)
     return d
@@ -65,7 +65,7 @@ def instalar(entorno, datos):
 # --------------------------------------------------------------------------
 
 @CRIPTO
-@pytest.mark.parametrize("situacion", ["ausente", "invalida", "vencida"])
+@pytest.mark.parametrize("situacion", ["ausente", "invalida", "mantenimiento_vencido"])
 def test_ninguna_situacion_bloquea_la_operacion(entorno, situacion):
     """El módulo NO expone ninguna forma de bloquear, y así debe seguir.
 
@@ -75,9 +75,9 @@ def test_ninguna_situacion_bloquea_la_operacion(entorno, situacion):
     """
     if situacion == "invalida":
         entorno["ruta"].write_text("basura que no es una firma", encoding="utf-8")
-    elif situacion == "vencida":
+    elif situacion == "mantenimiento_vencido":
         instalar(entorno, datos_validos(
-            vigencia_hasta=(date.today() - timedelta(days=1)).isoformat()))
+            mantenimiento_hasta=(date.today() - timedelta(days=1)).isoformat()))
 
     e = ls.estado()
     assert e.situacion == situacion
@@ -124,7 +124,7 @@ def test_sin_archivo_es_ausente_y_no_grave(entorno):
     ("usuarios", 9999),
     ("sedes", 99),
     ("edicion", "corporativa"),
-    ("vigencia_hasta", "2099-01-01"),
+    ("mantenimiento_hasta", "2099-01-01"),
 ])
 def test_detecta_la_licencia_manipulada(entorno, campo, valor):
     """EL PUNTO DEL SISTEMA. Ampliarse los usuarios o la vigencia editando el
@@ -152,23 +152,45 @@ def test_rechaza_una_licencia_firmada_con_OTRA_clave(entorno, monkeypatch):
 
 
 @CRIPTO
-def test_una_licencia_vencida_se_reconoce_y_dice_cuanto(entorno):
+def test_el_mantenimiento_vencido_NO_es_grave(entorno):
+    """LA LICENCIA NO VENCE. Lo que termina es el Período de Mantenimiento.
+
+    El derecho de uso es perpetuo (Cláusulas 3.1 y 3.2) y el no pago de la cuota
+    anual no lo afecta (7.6). Pintar esto de rojo asustaría a un cliente que está
+    en su pleno derecho.
+    """
     instalar(entorno, datos_validos(
-        vigencia_hasta=(date.today() - timedelta(days=10)).isoformat()))
+        mantenimiento_hasta=(date.today() - timedelta(days=10)).isoformat()))
     e = ls.estado()
-    assert e.situacion == "vencida"
-    assert e.es_grave is True
-    assert "10" in e.mensaje
-    assert e.datos is not None, "una vencida sigue siendo legible: hay que poder ver de quién es"
+    assert e.situacion == "mantenimiento_vencido"
+    assert e.es_grave is False
+    assert e.datos is not None, "sigue siendo legible: hay que poder ver de quién es"
 
 
 @CRIPTO
-def test_el_ultimo_dia_de_vigencia_TODAVIA_vale(entorno):
-    """Fuera por uno clásico: la licencia vence AL FINAL del día indicado."""
+def test_el_mensaje_NUNCA_dice_que_la_licencia_vencio(entorno):
+    """Prueba de regresión de una contradicción real entre código y contrato.
+
+    La primera versión de este módulo llamaba al campo `vigencia_hasta` y decía
+    «La licencia venció hace N días». Es FALSO —la licencia es perpetua— y,
+    peor, empujaría al cliente a pagar por algo que ya tiene. La Cláusula 3.4
+    declara además que la validación local **no está sujeta a caducidad**.
+    """
+    instalar(entorno, datos_validos(
+        mantenimiento_hasta=(date.today() - timedelta(days=30)).isoformat()))
+    msg = ls.estado().mensaje.lower()
+    assert "licencia" not in msg or "perpetuo" in msg
+    assert "venci" in msg and "mantenimiento" in msg
+    assert "perpetuo" in msg, "debe recordar que el derecho de uso no se ve afectado"
+
+
+@CRIPTO
+def test_el_ultimo_dia_de_mantenimiento_TODAVIA_cuenta(entorno):
+    """Fuera por uno clásico: el mantenimiento cubre TODO el día indicado."""
     hoy = date.today()
-    instalar(entorno, datos_validos(vigencia_hasta=hoy.isoformat()))
+    instalar(entorno, datos_validos(mantenimiento_hasta=hoy.isoformat()))
     assert ls.estado(hoy=hoy).situacion == "valida"
-    assert ls.estado(hoy=hoy + timedelta(days=1)).situacion == "vencida"
+    assert ls.estado(hoy=hoy + timedelta(days=1)).situacion == "mantenimiento_vencido"
 
 
 # --------------------------------------------------------------------------
@@ -211,7 +233,7 @@ def test_los_campos_son_los_del_anexo_A():
     para que la discrepancia se note aquí y no en una auditoría."""
     assert set(ls.CAMPOS) == {
         "licenciatario", "nit", "edicion", "perfil", "version",
-        "usuarios", "sedes", "modalidad", "emitida", "vigencia_hasta",
+        "usuarios", "sedes", "modalidad", "emitida", "mantenimiento_hasta",
     }
     assert ls.EDICIONES == ("esencial", "profesional", "corporativa")
     assert ls.PERFILES == ("standalone", "onprem", "cloud")

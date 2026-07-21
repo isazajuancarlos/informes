@@ -1,10 +1,24 @@
 # CONTRATO DE LICENCIA DE USO DE SOFTWARE — INFORMES
 
-**BORRADOR v1.0 · 2026-07-18 · Para revisión del titular**
+**MODELO DE REFERENCIA v1.0 · 2026-07-18 · No vinculante**
 
-> Este es un borrador de trabajo, no un documento firmable. Las decisiones que
-> requieren criterio del titular están marcadas con ⚑ y recogidas al final en
-> «Notas al redactor». Los campos entre corchetes se diligencian por negocio.
+> **Qué es este documento.** Un modelo de referencia que recoge las condiciones
+> bajo las cuales se licencia INFORMES. **No es una oferta ni un documento de
+> adhesión**, y no pretende sustituir el clausulado propio de EL LICENCIATARIO.
+>
+> Es normal —y razonable— que una entidad, pública o privada, contrate bajo su
+> propio contrato, aprobado por sus órganos de gobierno y su oficina jurídica.
+> Cuando así sea, este documento opera como **anexo de condiciones de licencia**
+> conforme a la Cláusula 21.6, y sus cláusulas técnicas y de licenciamiento se
+> integran al contrato de la entidad.
+>
+> Se entrega por anticipado para que el área jurídica de la contraparte conozca
+> el alcance del derecho de uso antes de sentarse a negociar. Los campos entre
+> corchetes se diligencian por negocio.
+>
+> *Uso interno: las decisiones que requieren criterio del titular van marcadas
+> con ⚑ y recogidas al final en «Notas al redactor»; esa sección se suprime en
+> la versión que se entrega a un tercero.*
 
 ---
 
@@ -87,10 +101,19 @@ patrimonial de autor alguno.** Concede exclusivamente un derecho de uso.
 
 ## TERCERA — CONCESIÓN Y NATURALEZA DE LA LICENCIA
 
-**3.1. Carácter perpetuo.** EL LICENCIANTE concede a EL LICENCIATARIO una
-licencia **perpetua, no exclusiva, intransferible y no sublicenciable** para
-usar la **Versión Licenciada** del Software, dentro del Entorno Autorizado y con
-el número de Usuarios Autorizados señalados en el Anexo A.
+**3.1. Carácter perpetuo y alcance.** EL LICENCIANTE concede a EL LICENCIATARIO
+una licencia **perpetua, no exclusiva, intransferible y no sublicenciable** para
+usar la **Versión Licenciada** del Software.
+
+La licencia se concede **exclusivamente** para su uso:
+
+  a) en las **Sedes** señaladas en el Anexo A;
+  b) dentro del **Entorno Autorizado** allí descrito; y
+  c) por un número de personas no superior al de **Usuarios Autorizados**
+     indicado en el mismo Anexo.
+
+El uso fuera de cualquiera de esos tres límites requiere la ampliación previa
+prevista en la Cláusula 3.5.
 
 **3.2. Alcance temporal de lo perpetuo.** LAS PARTES declaran entender y aceptar
 expresamente que:
@@ -123,6 +146,42 @@ alguna con EL LICENCIANTE.
 
 > ⚑ Esta declaración es un argumento de venta y también una obligación técnica:
 > compromete a que el archivo de licencia nunca lleve fecha de expiración.
+
+**3.5. Ampliación del alcance.** El uso del Software en sedes distintas de las
+señaladas en el Anexo A, fuera del Entorno Autorizado, o por un número de
+personas superior al de Usuarios Autorizados, requiere **ampliación previa y
+escrita** de la licencia, con el **ajuste de contraprestación** que corresponda.
+La ampliación se tramitará así:
+
+  a) **Solicitud escrita** de EL LICENCIATARIO, indicando las sedes, el entorno
+     o el número de usuarios que desea incorporar.
+  b) **Cotización** de EL LICENCIANTE con el valor de la ampliación y su efecto
+     sobre la Cuota Anual, dentro de los [___] días hábiles siguientes.
+  c) **Aprobación escrita** de EL LICENCIATARIO.
+  d) Lo aprobado se documenta en un **Anexo A sustitutivo**, suscrito por ambas
+     Partes, que reemplaza al anterior desde la fecha que en él se indique.
+
+**3.5.1. Uso por fuera sin ampliación.** Si EL LICENCIATARIO despliega o usa el
+Software fuera de los límites del Anexo A sin haber tramitado la ampliación, EL
+LICENCIANTE podrá requerirlo por escrito para que **regularice dentro de los
+[treinta (30)] días calendario** siguientes, mediante el procedimiento de la
+Cláusula 3.5 y el pago de la contraprestación correspondiente al uso ya
+realizado.
+
+La terminación por esta causa solo procederá si, vencido ese plazo, EL
+LICENCIATARIO no ha regularizado ni ha cesado el uso excedente.
+
+> ⚑ Esta cláusula convierte un incumplimiento en una venta, que es lo que
+> conviene a ambas partes. La Cláusula 4(g) ya prohíbe exceder el Anexo A «sin
+> ampliación previa de la licencia», pero hasta ahora **ese procedimiento no
+> existía en ninguna parte del contrato**: una prohibición que remite a un
+> trámite inexistente deja al cliente sin camino y a EL LICENCIANTE sin palanca,
+> y lo que invita en la práctica es a desplegar en silencio.
+>
+> El plazo de regularización antes de cualquier terminación es deliberado. Un
+> contrato que permita terminar de inmediato por abrir una sede de más es un
+> contrato que una oficina jurídica no firma: el riesgo de perder el sistema por
+> un descuido administrativo pesa más que el precio.
 
 ---
 
@@ -207,6 +266,28 @@ causa imputable a EL LICENCIATARIO, capacitación adicional, ni la atención de
 fallas originadas en modificaciones no autorizadas, infraestructura inadecuada o
 uso contrario a la Documentación.
 
+**7.2.1. Gestión de cambios.** Toda solicitud de EL LICENCIATARIO que exceda lo
+comprendido en 7.1 se tramitará así:
+
+  a) **Solicitud escrita**, describiendo el resultado esperado.
+  b) **Cotización** de EL LICENCIANTE con alcance, plazo, valor y efecto sobre el
+     mantenimiento, dentro de los [___] días hábiles siguientes.
+  c) **Aprobación escrita** de EL LICENCIATARIO. Solo desde ese momento nace la
+     obligación de ejecutar.
+  d) Lo aprobado se documenta en un **anexo suscrito por ambas Partes**, que
+     **se remitirá expresamente a la Cláusula 8.4** en cuanto a la titularidad de
+     lo desarrollado.
+
+Ninguna solicitud verbal, ni la mera discusión de una necesidad, genera
+obligación de ejecutar ni derecho a exigir el desarrollo.
+
+> ⚑ Sin este procedimiento, "¿me puedes agregar esto?" se convierte en expectativa
+> no facturada, y es el desgaste más común en contratos de mantenimiento. El
+> literal (d) no es decorativo: la Cláusula 21.6 permite que prevalezca el
+> clausulado del cliente, y la 8.4 solo cede ante un documento posterior que se
+> refiera **expresamente** a ella. Un anexo de desarrollo que guarde silencio
+> reactivaría la presunción del art. 28 de la Ley 1450 de 2011.
+
 **7.3. Renovación y valor.** El Período de Mantenimiento se renueva por períodos
 anuales. La Cuota Anual equivale al **veinte por ciento (20%) del precio de lista
 vigente** de la licencia correspondiente.
@@ -243,14 +324,35 @@ por EL LICENCIATARIO en el Software es de su exclusiva propiedad. EL LICENCIANTE
 no adquiere derecho alguno sobre ella y, en los perfiles `onprem` y
 `standalone`, no tiene acceso a la misma.
 
-**8.4. Desarrollos a la medida.** La titularidad de los desarrollos específicos
-contratados por EL LICENCIATARIO se regirá por lo pactado en el respectivo
-documento. **A falta de estipulación expresa, pertenecen a EL LICENCIANTE**,
-quien concede sobre ellos licencia de uso en los mismos términos de este
-contrato.
+**8.4. Desarrollos a la medida — pacto expreso en contrario.** Las Partes
+declaran que esta estipulación constituye el **pacto en contrario** previsto en
+el artículo 20 de la Ley 23 de 1982, modificado por el artículo 28 de la Ley 1450
+de 2011, y que en tal virtud **no opera la presunción de transferencia de
+derechos patrimoniales** a favor de EL LICENCIATARIO respecto de los desarrollos
+que EL LICENCIANTE realice en ejecución de este contrato o de cualquier documento
+que lo desarrolle.
 
-> ⚑ Regla por defecto favorable al licenciante. Con entidades públicas suele
-> negociarse; conviene decidir el margen antes de sentarse.
+En consecuencia, la titularidad de los desarrollos específicos contratados por EL
+LICENCIATARIO **corresponde a EL LICENCIANTE**, quien concede sobre ellos
+licencia de uso en los mismos términos de este contrato. Esta regla prevalece
+salvo que un documento posterior, **suscrito por ambas Partes y que se refiera
+expresamente a esta cláusula**, disponga otra cosa.
+
+**8.5. Software preexistente.** EL LICENCIATARIO reconoce que el Software y sus
+componentes —incluido Quipu— son Propiedad Intelectual **preexistente** de EL
+LICENCIANTE o de sus titulares, anterior e independiente de este contrato. Sobre
+dicha propiedad **no se entenderá cesión ni transferencia alguna** a favor de EL
+LICENCIATARIO por causa o con ocasión de este contrato, cualquiera que sea el
+alcance de los desarrollos a la medida que llegaren a contratarse.
+
+> ⚑ La 8.4 debe leerse antes de firmar cualquier orden de desarrollo separada: si
+> esa orden guarda silencio Y no remite a esta cláusula, la contraparte puede
+> sostener que rige la presunción legal del art. 28. La remisión expresa es lo
+> que cierra esa puerta.
+>
+> ⚑ Con entidades públicas la 8.4 suele negociarse. La 8.5, en cambio, **no se
+> cede nunca**: sin ella, un encargo de adaptación puede acabar arrastrando la
+> titularidad del producto entero.
 
 ---
 
@@ -323,6 +425,20 @@ sin culpa de la Parte receptora, la que ya obraba legítimamente en su poder, o
 aquella cuya divulgación sea ordenada por autoridad competente, caso en el cual
 se informará previamente a la otra Parte cuando sea legalmente posible.
 
+**11.4. Conocimiento residual.** Nada en esta cláusula impide a EL LICENCIANTE
+emplear el **conocimiento general, la experiencia y las habilidades** —incluidas
+las técnicas, metodologías y mejoras de carácter genérico— retenidos en la
+memoria no asistida de su personal como consecuencia natural de la ejecución de
+este contrato, siempre que ello **no implique divulgar ni reproducir información
+confidencial de EL LICENCIATARIO, sus datos, ni elementos identificables de su
+operación**.
+
+> ⚑ Sin esta salvedad, un cliente puede sostener que las mejoras hechas al
+> producto durante una implantación quedan restringidas. Es la única excepción
+> que faltaba frente a las minutas revisadas, y opera igual en ambas
+> direcciones: se redacta para EL LICENCIANTE porque es quien desarrolla, pero
+> conviene aceptarla recíproca si la contraparte lo pide.
+
 ---
 
 ## DÉCIMA SEGUNDA — GARANTÍA
@@ -393,6 +509,26 @@ se produjo el exceso.
 
 **14.3.** La verificación se hará por medios que **no impliquen acceso a datos
 personales ni a información confidencial** de EL LICENCIATARIO.
+
+**14.4. Pena por uso no autorizado.** El uso del Software en exceso de los
+Usuarios o del Entorno Autorizado, su sublicenciamiento, o cualquiera de las
+conductas prohibidas en la Cláusula Cuarta, dará lugar a una pena equivalente al
+**[veinte por ciento (20%)]** del valor de la licencia, exigible ejecutivamente,
+**sin perjuicio de la regularización prevista en 14.2**.
+
+Dicha pena constituye **estimación anticipada, única y definitiva** de los
+perjuicios por ese concepto, y su pago no habilita el uso no autorizado hacia el
+futuro.
+
+> ⚑ Se pacta porque el perjuicio por uso no autorizado de software es
+> notoriamente difícil de cuantificar: una pena convierte un daño impreciso en
+> una suma exigible. Ambas minutas revisadas la traen (la EAN al 20%).
+>
+> "Única y definitiva" es deliberado y es lo contrario de lo que hacen las dos
+> minutas, que reservan el cobro de perjuicios adicionales *sobre* la pena. Como
+> aquí quien redacta es el licenciante, la pena juega a favor — pero un tope
+> claro es más defendible ante un juez que una cláusula sin techo, y evita que la
+> contraparte pida suprimirla entera.
 
 ---
 
@@ -474,23 +610,28 @@ anticipación.
 arreglo directo dentro de los treinta (30) días siguientes a la comunicación
 escrita de la controversia.
 
-**20.3.** ⚑ *[Seleccionar una:]*
+**20.3. Jurisdicción.** Agotada la etapa anterior, las controversias se someterán
+a los jueces competentes del circuito de [Medellín].
 
-> **Opción A — Jurisdicción ordinaria.** Agotada la etapa anterior, las
-> controversias se someterán a los jueces competentes del circuito de Medellín.
-
-> **Opción B — Arbitraje.** Agotada la etapa anterior, las controversias se
-> someterán a un tribunal de arbitramento del Centro de Conciliación, Arbitraje y
-> Amigable Composición de la Cámara de Comercio de Medellín para Antioquia,
-> integrado por [un (1)] árbitro, que fallará en derecho, conforme a la Ley 1563
-> de 2012.
+> ⚑ Elegida la jurisdicción ordinaria sobre el arbitraje: un tribunal de
+> arbitramento en la Cámara de Comercio puede costar más que la disputa en
+> contratos de este rango, y esa asimetría castiga siempre al más pequeño. Si la
+> contraparte exige cláusula compromisoria, el texto alternativo es un tribunal
+> del Centro de Conciliación, Arbitraje y Amigable Composición de la Cámara de
+> Comercio de Medellín para Antioquia, con un (1) árbitro que falle en derecho
+> conforme a la Ley 1563 de 2012. Conviene aceptarlo solo si el valor del
+> contrato lo justifica.
+>
+> En todo caso, la 21.6(a) cede este punto al clausulado de la entidad, así que
+> rara vez será una batalla propia.
 
 ---
 
 ## VIGÉSIMA PRIMERA — DISPOSICIONES FINALES
 
-**21.1. Integridad.** Este contrato y sus Anexos constituyen el acuerdo íntegro
-entre LAS PARTES y sustituyen todo acuerdo anterior sobre la materia.
+**21.1. Integridad.** Sin perjuicio de lo previsto en la Cláusula 21.6, este
+contrato y sus Anexos constituyen el acuerdo íntegro entre LAS PARTES y
+sustituyen todo acuerdo anterior sobre la materia.
 
 **21.2. Modificaciones.** Solo por escrito y suscritas por ambas Partes.
 
@@ -503,6 +644,35 @@ ni de agencia comercial.
 **21.5. Anexos.** Forman parte integral: **A** (alcance de la licencia), **B**
 (niveles de servicio), **C** (condiciones económicas) y, cuando aplique, **D**
 (transmisión de datos personales).
+
+**21.6. Contratación bajo el clausulado de EL LICENCIATARIO.** Cuando EL
+LICENCIATARIO contrate bajo su propio modelo contractual, este documento podrá
+incorporarse como **anexo de condiciones de licencia**. En tal caso:
+
+  a) Prevalece el clausulado de EL LICENCIATARIO en lo relativo a la relación
+     contractual general —plazo, precio, forma de pago, supervisión, garantías,
+     terminación y solución de controversias—.
+
+  b) Prevalecen las estipulaciones de este documento en lo relativo al **objeto
+     licenciado**: naturaleza y alcance de la licencia (Cláusula 3), incluido su
+     **carácter perpetuo**; restricciones de uso (Cláusula 4); propiedad
+     intelectual (Cláusula 8), incluida la salvaguarda de propiedad intelectual
+     preexistente; y régimen de los componentes de terceros y de Quipu
+     (Cláusula 9).
+
+  c) En lo no previsto, o ante contradicción no resuelta por los literales
+     anteriores, LAS PARTES lo acordarán expresamente por escrito antes de la
+     suscripción.
+
+> ⚑ Esta cláusula reconoce lo que ocurre en la práctica: las entidades contratan
+> bajo su propio clausulado, aprobado por sus órganos de gobierno. Pretender
+> imponer el propio contrato a una entidad grande no funciona y se lee como
+> inexperiencia.
+>
+> Lo que **no** se cede está en el literal (b), y son solo cuatro cláusulas: qué
+> se licencia, cómo se usa, de quién es, y qué pasa con los componentes de
+> terceros. Todo lo demás es negociable — porque en esas cuatro está el negocio,
+> y en el resto solo están las condiciones.
 
 En constancia se firma en [_____], a los [___] días del mes de [_____] de [___].
 

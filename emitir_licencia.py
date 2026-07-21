@@ -4,7 +4,7 @@
         --licenciatario "ACME S.A.S." --nit 900123456-1 \
         --edicion profesional --perfil onprem \
         --version 4.0 --usuarios 25 --sedes 3 --modalidad asistida \
-        --vigencia-hasta 2027-07-21 \
+        --mantenimiento-hasta 2027-07-21 \
         --salida licencia.quipu
 
 La clave de firma se lee de `INFORMES_LICENCIA_SK` (hex). **Es el secreto que
@@ -42,7 +42,7 @@ def main() -> int:
     p.add_argument("--sedes", required=True, type=int, help="Sedes / entornos")
     p.add_argument("--modalidad", default="asistente",
                    choices=("asistente", "asistida", "air-gapped"))
-    p.add_argument("--vigencia-hasta", required=True, help="AAAA-MM-DD")
+    p.add_argument("--mantenimiento-hasta", required=True, help="AAAA-MM-DD. Fin del\n                   PERÍODO DE MANTENIMIENTO, no de la licencia: el derecho de uso es\n                   perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA).")
     p.add_argument("--salida", default="licencia.quipu")
     args = p.parse_args()
 
@@ -53,9 +53,9 @@ def main() -> int:
         return 1
 
     try:
-        date.fromisoformat(args.vigencia_hasta)
+        date.fromisoformat(args.mantenimiento_hasta)
     except ValueError:
-        print("ERROR: --vigencia-hasta debe ser AAAA-MM-DD.", file=sys.stderr)
+        print("ERROR: --mantenimiento-hasta debe ser AAAA-MM-DD.", file=sys.stderr)
         return 1
 
     datos = {
@@ -68,7 +68,7 @@ def main() -> int:
         "sedes": args.sedes,
         "modalidad": args.modalidad,
         "emitida": date.today().isoformat(),
-        "vigencia_hasta": args.vigencia_hasta,
+        "mantenimiento_hasta": args.mantenimiento_hasta,
     }
 
     try:
