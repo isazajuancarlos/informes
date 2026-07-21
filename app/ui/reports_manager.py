@@ -7,6 +7,84 @@ from app.models.meta_tables import (
 )
 from app.ui.ui_helpers import estado_vacio, ayuda
 from datetime import datetime
+from app.services.preview_calendario import proximos as _proximos_vencimientos
+
+#: Las tres únicas respuestas posibles a «¿y si cae en día no hábil?». Ser un
+#: selector y no dos casillas es lo que impide el estado ambiguo por
+#: construcción, en vez de tener que validarlo después.
+AJUSTE_HABIL = {
+    'ninguno': 'Dejar la fecha como está',
+    'siguiente': 'Mover al siguiente día hábil',
+    'anterior': 'Mover al día hábil anterior (seguro para plazos legales)',
+}
+AYUDA_AJUSTE = ("Si el vencimiento cae en fin de semana o festivo. «Anterior» es "
+                "la opción segura para plazos legales: adelantar nunca llega tarde, "
+                "aplazar sí.")
+
+
+def _ajuste_desde_banderas(siguiente, anterior):
+    """Banderas guardadas -> opción del selector.
+
+    Las configuraciones creadas antes del selector pueden traer las DOS
+    banderas en verdadero. Se resuelve igual que el motor (`siguiente` gana por
+    su `elif`) para que abrir un informe viejo muestre lo que el sistema está
+    haciendo de verdad, y no lo que la interfaz preferiría.
+    """
+    if siguiente:
+        return 'siguiente'
+    if anterior:
+        return 'anterior'
+    return 'ninguno'
+
+
+def _construir_regla(datos):
+    """La configuración de periodicidad, tal como se guarda.
+
+    Extraída de `guardar()` para que la VISTA PREVIA use exactamente la misma
+    construcción. Una vista previa que arme la regla de otra forma mostraría
+    fechas que el sistema luego no genera — y nadie sabría cuál de las dos está
+    mal, que es peor que no tener vista previa.
+    """
+    modo = datos['modo_tiempo']
+    f_inicio = datos['fecha_inicio']
+    if modo == 'CICLICO':
+        total = datos['tiempo_ciclico']['total_dias']
+        return {"modo": "CICLICO", "frecuencia": 'ONCE' if total == 0 else 'DAILY',
+                "intervalo": total, "fecha_inicio": f_inicio,
+                **_banderas_desde_ajuste(datos['tiempo_ciclico']['ajuste'],
+                                         "mover_habil", "mover_habil_anterior")}
+    if modo == 'ESPECIFICO':
+        return {"modo": "ESPECIFICO",
+                "meses": datos['tiempo_especifico']['meses_seleccionados'],
+                "dia_corte": int(datos['tiempo_especifico']['dia_corte'] or 1),
+                "es_ultimo_dia": datos['tiempo_especifico']['es_ultimo_dia'],
+                **_banderas_desde_ajuste(datos['tiempo_especifico']['ajuste'],
+                                         "ajuste_habil", "ajuste_habil_anterior"),
+                "fecha_inicio": f_inicio}
+    if modo == 'SEMANAL':
+        return {"modo": "SEMANAL",
+                "dias_semana": datos['tiempo_semanal']['dias_seleccionados'],
+                "mover_habil": datos['tiempo_semanal']['mover_habil'],
+                "fecha_inicio": f_inicio}
+    if modo == 'HOURLY':
+        return {"modo": "HOURLY",
+                "hora_inicio": int(datos['tiempo_horas']['hora_inicio']),
+                "hora_fin": int(datos['tiempo_horas']['hora_fin']),
+                "intervalo_horas": int(datos['tiempo_horas']['intervalo']),
+                "fecha_inicio": f_inicio}
+    return {"modo": "INMEDIATO", "descripcion": "A demanda", "fecha_inicio": f_inicio}
+
+
+def _banderas_desde_ajuste(ajuste, clave_siguiente, clave_anterior):
+    """Opción del selector -> las banderas que espera el motor.
+
+    Se emiten SIEMPRE las dos claves, con su valor explícito. Omitir la que va
+    en falso dejaría el valor anterior si alguien fusiona diccionarios, y ese es
+    el tipo de resto que hace que una obligación cambie de comportamiento sin
+    que nadie la haya tocado.
+    """
+    return {clave_siguiente: ajuste == 'siguiente',
+            clave_anterior: ajuste == 'anterior'}
 
 def page_reports_manager():
     # --- 1. ESTADO GLOBAL ---
@@ -33,8 +111,8 @@ def page_reports_manager():
         'aplicativo_origen': '',
         'modo_tiempo': 'CICLICO',
         'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
-        'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'mover_habil': False, 'mover_habil_anterior': False},
-        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste_habil': False, 'ajuste_habil_anterior': False},
+        'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
+        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
         'tiempo_semanal': {'dias_seleccionados': [], 'mover_habil': False},
         'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
         'variables_config': {}
@@ -59,6 +137,12 @@ def page_reports_manager():
         m = int(nuevo_informe['tiempo_ciclico']['meses'] or 0)
         d = int(nuevo_informe['tiempo_ciclico']['dias'] or 0)
         nuevo_informe['tiempo_ciclico']['total_dias'] = (a * 360) + (m * 30) + d
+        # La vista previa se refresca desde el cierre que la define; si aún no
+        # existe (durante el primer render) no hace nada.
+        try:
+            refrescar_vista_previa()
+        except NameError:
+            pass
 
     def limpiar_formulario():
         nuevo_informe.update({
@@ -75,8 +159,8 @@ def page_reports_manager():
             'aplicativo_origen': '',
             'modo_tiempo': 'CICLICO',
             'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
-            'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'mover_habil': False, 'mover_habil_anterior': False},
-            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste_habil': False, 'ajuste_habil_anterior': False},
+            'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
+            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
             'tiempo_semanal': {'dias_seleccionados': [], 'mover_habil': False},
             'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
             'variables_config': {}
@@ -118,9 +202,9 @@ def page_reports_manager():
             
             if modo == 'CICLICO':
                 total = int(rec.get('intervalo', 0))
-                nuevo_informe['tiempo_ciclico'].update({'total_dias': total, 'anos': total // 360, 'meses': (total % 360) // 30, 'dias': (total % 360) % 30, 'mover_habil': rec.get('mover_habil', False), 'mover_habil_anterior': rec.get('mover_habil_anterior', False)})
+                nuevo_informe['tiempo_ciclico'].update({'total_dias': total, 'anos': total // 360, 'meses': (total % 360) // 30, 'dias': (total % 360) % 30, 'ajuste': _ajuste_desde_banderas(rec.get('mover_habil'), rec.get('mover_habil_anterior'))})
             elif modo == 'ESPECIFICO':
-                nuevo_informe['tiempo_especifico'].update({'meses_seleccionados': rec.get('meses', []), 'dia_corte': rec.get('dia_corte', 1), 'es_ultimo_dia': rec.get('es_ultimo_dia', False), 'ajuste_habil': rec.get('ajuste_habil', False), 'ajuste_habil_anterior': rec.get('ajuste_habil_anterior', False)})
+                nuevo_informe['tiempo_especifico'].update({'meses_seleccionados': rec.get('meses', []), 'dia_corte': rec.get('dia_corte', 1), 'es_ultimo_dia': rec.get('es_ultimo_dia', False), 'ajuste': _ajuste_desde_banderas(rec.get('ajuste_habil'), rec.get('ajuste_habil_anterior'))})
             elif modo == 'SEMANAL':
                 nuevo_informe['tiempo_semanal'].update({'dias_seleccionados': rec.get('dias_semana', []), 'mover_habil': rec.get('mover_habil', False)})
             elif modo == 'HOURLY':
@@ -134,17 +218,7 @@ def page_reports_manager():
         modo = nuevo_informe['modo_tiempo']
         f_inicio = nuevo_informe['fecha_inicio']
 
-        if modo == 'CICLICO':
-            total = nuevo_informe['tiempo_ciclico']['total_dias']
-            rec_final = {"modo": "CICLICO", "frecuencia": 'ONCE' if total == 0 else 'DAILY', "intervalo": total, "fecha_inicio": f_inicio, "mover_habil": nuevo_informe['tiempo_ciclico']['mover_habil'], "mover_habil_anterior": nuevo_informe['tiempo_ciclico']['mover_habil_anterior']}
-        elif modo == 'ESPECIFICO':
-            rec_final = {"modo": "ESPECIFICO", "meses": nuevo_informe['tiempo_especifico']['meses_seleccionados'], "dia_corte": int(nuevo_informe['tiempo_especifico']['dia_corte'] or 1), "es_ultimo_dia": nuevo_informe['tiempo_especifico']['es_ultimo_dia'], "ajuste_habil": nuevo_informe['tiempo_especifico']['ajuste_habil'], "ajuste_habil_anterior": nuevo_informe['tiempo_especifico']['ajuste_habil_anterior'], "fecha_inicio": f_inicio}
-        elif modo == 'SEMANAL':
-            rec_final = {"modo": "SEMANAL", "dias_semana": nuevo_informe['tiempo_semanal']['dias_seleccionados'], "mover_habil": nuevo_informe['tiempo_semanal']['mover_habil'], "fecha_inicio": f_inicio}
-        elif modo == 'HOURLY':
-            rec_final = {"modo": "HOURLY", "hora_inicio": int(nuevo_informe['tiempo_horas']['hora_inicio']), "hora_fin": int(nuevo_informe['tiempo_horas']['hora_fin']), "intervalo_horas": int(nuevo_informe['tiempo_horas']['intervalo']), "fecha_inicio": f_inicio}
-        else:
-            rec_final = {"modo": "INMEDIATO", "descripcion": "A demanda", "fecha_inicio": f_inicio}
+        rec_final = _construir_regla(nuevo_informe)
 
         datos_gen = {"extensiones": nuevo_informe['extensiones']}
 
@@ -400,7 +474,42 @@ def page_reports_manager():
 
                     # Fecha inicio compartida por todos los modos
                     with ui.row().classes('w-full px-4 pt-4'):
-                        ui.input('Fecha Inicio', value=nuevo_informe['fecha_inicio']).props('type="date"').bind_value(nuevo_informe, 'fecha_inicio').classes('w-full')
+                        ui.input('Fecha Inicio', value=nuevo_informe['fecha_inicio'], on_change=refrescar_vista_previa).props('type="date"').bind_value(nuevo_informe, 'fecha_inicio').classes('w-full')
+
+                    # --- Vista previa de los vencimientos --------------
+                    # Definir la obligación era, hasta ahora, un acto a ciegas:
+                    # se elegía periodicidad y ajuste, se guardaba, y las fechas
+                    # solo se veían cuando el planificador ya había creado las
+                    # tareas. Una regla mal entendida no falla ruidosamente —
+                    # genera fechas distintas de las que la persona creía, o
+                    # ninguna.
+                    contenedor_vista_previa = None  # se crea bajo las pestañas
+
+                    def refrescar_vista_previa(*_):
+                        if contenedor_vista_previa is None:
+                            return  # aún no se ha construido la interfaz
+                        contenedor_vista_previa.clear()
+                        with contenedor_vista_previa:
+                            with ui.card().classes('w-full bg-slate-50 mt-3 p-3'):
+                                with ui.row().classes('items-center gap-2'):
+                                    ui.icon('event_available').classes('text-slate-500')
+                                    ui.label('Próximos vencimientos con esta regla') \
+                                        .classes('text-sm font-bold text-slate-700')
+                                try:
+                                    venc, aviso = _proximos_vencimientos(
+                                        _construir_regla(nuevo_informe), cuantos=6)
+                                except Exception as e:  # noqa: BLE001
+                                    ui.label(f'No se pudo calcular: {e}') \
+                                        .classes('text-xs text-red-600')
+                                    return
+                                if aviso:
+                                    ui.label(aviso).classes('text-xs text-amber-700')
+                                for v in venc:
+                                    with ui.row().classes('items-center gap-2'):
+                                        ui.icon('chevron_right').classes('text-xs text-slate-400')
+                                        ui.label(v.describir()).classes(
+                                            'text-xs ' + ('text-amber-800' if v.se_ajusto
+                                                          else 'text-slate-600'))
 
                     with ui.tab_panels(tabs, value=tabs.value).classes('w-full p-4'):
                         with ui.tab_panel(t_cic):
@@ -409,9 +518,17 @@ def page_reports_manager():
                                 ui.number('Meses', format='%.0f', on_change=calcular_dias).bind_value(nuevo_informe['tiempo_ciclico'], 'meses').classes('w-1/3')
                                 ui.number('Días', format='%.0f', on_change=calcular_dias).bind_value(nuevo_informe['tiempo_ciclico'], 'dias').classes('w-1/4')
                             ui.separator().classes('my-2')
-                            with ui.column().classes('gap-1'):
-                                ui.checkbox('Si finde -> Siguiente hábil').bind_value(nuevo_informe['tiempo_ciclico'], 'mover_habil').props('color=purple')
-                                ui.checkbox('Si finde -> Anterior hábil').bind_value(nuevo_informe['tiempo_ciclico'], 'mover_habil_anterior').props('color=orange')
+                            # UN selector, no dos casillas. Antes se podían marcar
+                            # las dos a la vez y el motor resolvía con un `elif`:
+                            # ganaba «siguiente» EN SILENCIO. Y la dirección no es
+                            # cosmética — si un plazo legal cae en sábado, moverlo
+                            # al lunes puede ser TARDE. Quien pedía «anterior»
+                            # recibía lo contrario sin enterarse. Con un selector,
+                            # ese estado no se puede expresar.
+                            ui.select(AJUSTE_HABIL, label='Si cae en día no hábil',
+                                      on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_ciclico'], 'ajuste') \
+                                .classes('w-full').tooltip(AYUDA_AJUSTE)
 
                         with ui.tab_panel(t_esp):
                             nombres_meses = {1:'Ene', 2:'Feb', 3:'Mar', 4:'Abr', 5:'May', 6:'Jun', 7:'Jul', 8:'Ago', 9:'Sep', 10:'Oct', 11:'Nov', 12:'Dic'}
@@ -422,15 +539,17 @@ def page_reports_manager():
                                         sel = nuevo_informe['tiempo_especifico']['meses_seleccionados']
                                         if m in sel: sel.remove(m)
                                         else: sel.append(m)
+                                        refrescar_vista_previa()
                                     checked = num in nuevo_informe['tiempo_especifico']['meses_seleccionados']
                                     ui.checkbox(nombre, value=checked, on_change=toggle_mes).props('dense')
                             ui.separator().classes('my-2')
                             with ui.row().classes('w-full gap-4 items-center'):
-                                ui.number('Día de corte', min=1, max=31, format='%.0f').bind_value(nuevo_informe['tiempo_especifico'], 'dia_corte').classes('w-1/3')
-                                ui.checkbox('Último día del mes').bind_value(nuevo_informe['tiempo_especifico'], 'es_ultimo_dia')
-                            with ui.column().classes('gap-1 mt-2'):
-                                ui.checkbox('Si finde -> Siguiente hábil').bind_value(nuevo_informe['tiempo_especifico'], 'ajuste_habil').props('color=purple')
-                                ui.checkbox('Si finde -> Anterior hábil').bind_value(nuevo_informe['tiempo_especifico'], 'ajuste_habil_anterior').props('color=orange')
+                                ui.number('Día de corte', min=1, max=31, format='%.0f', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'dia_corte').classes('w-1/3')
+                                ui.checkbox('Último día del mes', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'es_ultimo_dia')
+                            ui.select(AJUSTE_HABIL, label='Si cae en día no hábil',
+                                      on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_especifico'], 'ajuste') \
+                                .classes('w-full mt-2').tooltip(AYUDA_AJUSTE)
 
                         with ui.tab_panel(t_sem):
                             dias_semana = {0:'Lunes', 1:'Martes', 2:'Miércoles', 3:'Jueves', 4:'Viernes', 5:'Sábado', 6:'Domingo'}
@@ -455,6 +574,9 @@ def page_reports_manager():
                         with ui.tab_panel(t_inm):
                             ui.label('Este informe se genera a demanda.').classes('text-gray-500 italic')
                             ui.label('No tiene periodicidad automática. Las entregas se crean manualmente desde "Entregas Manuales".').classes('text-sm text-gray-400')
+
+                    contenedor_vista_previa = ui.column().classes('w-full px-4 pb-3')
+                    refrescar_vista_previa()
 
             # NUEVA SECCIÓN: CLASIFICACIÓN Y ORIGEN v3.0
             with ui.row().classes('w-full gap-4 mt-4'):

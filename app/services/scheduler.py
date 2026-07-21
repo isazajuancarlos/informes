@@ -26,6 +26,36 @@ class GeneradorTareas:
         return _get_motor()._ajustar_fecha(fecha, 'PREV_WORKDAY')
 
     @staticmethod
+    def _mes_desplazado(fecha, desplazamiento):
+        """(año, mes) tras sumar `desplazamiento` meses, cruzando el año bien."""
+        indice = fecha.year * 12 + (fecha.month - 1) + desplazamiento
+        return indice // 12, indice % 12 + 1
+
+    @staticmethod
+    def _objetivo_del_mes(year, month, config):
+        """Fecha de vencimiento que corresponde a ese mes, YA ajustada a hábil.
+
+        Se extrajo del bloque ESPECÍFICO para poder evaluarla sobre meses
+        vecinos: el ajuste puede sacar el objetivo del mes que lo origina.
+        """
+        if config.get('es_ultimo_dia'):
+            target = datetime(year, month, calendar.monthrange(year, month)[1]).date()
+        else:
+            try:
+                target = datetime(year, month, int(config.get('dia_corte', 1))).date()
+            except (ValueError, TypeError):
+                # Día 31 en un mes de 30: se usa el último día real del mes en
+                # vez de descartar el vencimiento. Descartarlo lo haría
+                # desaparecer sin avisar, que es el fallo que este bloque corrige.
+                target = datetime(year, month, calendar.monthrange(year, month)[1]).date()
+
+        if config.get('ajuste_habil'):
+            target = GeneradorTareas.mover_a_habil_siguiente(target)
+        elif config.get('ajuste_habil_anterior'):
+            target = GeneradorTareas.mover_a_habil_anterior(target)
+        return target
+
+    @staticmethod
     def obtener_deadlines_para_fecha(fecha_evaluar, config):
         str_inicio = config.get('fecha_inicio')
         if str_inicio:
@@ -59,20 +89,25 @@ class GeneradorTareas:
         # ESPECÍFICO
         elif modo == 'ESPECIFICO':
             meses = config.get('meses', [])
-            if fecha_evaluar.month in meses:
-                year, month = fecha_evaluar.year, fecha_evaluar.month
-                target = None
-                if config.get('es_ultimo_dia'):
-                    last = calendar.monthrange(year, month)[1]
-                    target = datetime(year, month, last).date()
-                else:
-                    try: target = datetime(year, month, int(config.get('dia_corte', 1))).date()
-                    except: target = datetime(year, month, calendar.monthrange(year, month)[1]).date()
-
-                if config.get('ajuste_habil'): target = GeneradorTareas.mover_a_habil_siguiente(target)
-                elif config.get('ajuste_habil_anterior'): target = GeneradorTareas.mover_a_habil_anterior(target)
-
-                if target == fecha_evaluar: deadlines.append(datetime.combine(fecha_evaluar, fin_dia))
+            # El objetivo AJUSTADO puede caer fuera del mes que lo origina: con
+            # día de corte 1 y ajuste al hábil ANTERIOR, el vencimiento de
+            # febrero cae en enero; con «último día» y ajuste SIGUIENTE, el de
+            # enero cae en febrero.
+            #
+            # Comprobar solo el mes de `fecha_evaluar` perdía esos vencimientos
+            # EN SILENCIO. Medido sobre 2026: «día 1 + anterior» generaba 6 de
+            # 12, y «último día + siguiente», 8 de 12. En un sistema de
+            # cumplimiento eso son obligaciones que nunca aparecen —sin tarea,
+            # sin alerta y sin rastro— hasta que las pregunta un ente de
+            # control. Por eso se miran también los meses vecinos.
+            for desplazamiento in (-1, 0, 1):
+                year, month = GeneradorTareas._mes_desplazado(fecha_evaluar, desplazamiento)
+                if month not in meses:
+                    continue
+                target = GeneradorTareas._objetivo_del_mes(year, month, config)
+                if target == fecha_evaluar:
+                    deadlines.append(datetime.combine(fecha_evaluar, fin_dia))
+                    break  # un solo vencimiento por día, aunque dos meses coincidan
 
         # SEMANAL
         elif modo == 'SEMANAL':
