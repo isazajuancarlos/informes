@@ -1,6 +1,7 @@
 from nicegui import ui, app
 from app.core.database import get_db_session
 from app.models.meta_tables import EntregaEsperada, Comentario, AuditLog
+from app.services.signing_service import verificar_entrega
 from datetime import datetime
 import io
 import csv
@@ -61,11 +62,65 @@ def page_audit():
                     'id': t.id, 'inf': t.informe.nombre, 'resp': t.usuario.nombre,
                     'fecha': t.fecha_programada.strftime('%Y-%m-%d'), 'st': t.estado, 'col': col,
                     'chat_lbl': f'Chat ({n_msgs})' if n_msgs else 'Chat',
-                    'arch': 'Sí' if t.ruta_archivo else 'No'
+                    'arch': 'Sí' if t.ruta_archivo else 'No',
+                    # `firmada` distingue TRES estados, no dos. «Sin firma» no
+                    # es lo mismo que «firma inválida»: las entregas anteriores
+                    # a esta función, y las registradas sin el servicio activo,
+                    # no tienen firma y eso es normal. Pintarlas como
+                    # sospechosas entrenaría a ignorar el aviso de verdad.
+                    'firmada': bool(t.firma),
                 })
             tabla_entregas.rows = rows
             _entregas_rows.clear()
             _entregas_rows.extend(rows)
+
+    def verificar_firma(eid):
+        """Comprueba que la firma corresponde a la entrega TAL COMO ESTÁ HOY.
+
+        El valor de esto no es decir «sí, está firmada» —eso ya lo dice el icono
+        de la tabla— sino detectar que alguien cambió el estado, la fecha o el
+        archivo DESPUÉS de firmar. Por eso se recalcula la forma canónica en el
+        momento de verificar y no se guarda un veredicto: un veredicto
+        almacenado envejece y deja de significar nada.
+        """
+        with get_db_session() as db:
+            t = db.query(EntregaEsperada).get(eid)
+            if t is None:
+                ui.notify('La entrega ya no existe', type='negative')
+                return
+            if not t.firma:
+                ui.notify('Esta entrega no tiene firma (no es un fallo: la firma '
+                          'es opcional y las entregas anteriores no la llevan)',
+                          type='info', multi_line=True, classes='w-96')
+                return
+            ok, motivo = verificar_entrega(t, t.firma)
+
+        with ui.dialog() as dlg, ui.card().classes('w-[520px]'):
+            with ui.row().classes('items-center gap-2'):
+                ui.icon('verified' if ok else 'gpp_bad',
+                        color='green' if ok else 'red').classes('text-3xl')
+                ui.label('Firma verificada' if ok else 'Firma NO verificada') \
+                    .classes('text-lg font-bold')
+            ui.label(motivo).classes('text-sm text-gray-600')
+            ui.separator()
+            if ok:
+                ui.label(
+                    'Los campos auditables (informe, responsable, fecha límite, '
+                    'fecha de entrega, estado y el SHA-256 del archivo) son los '
+                    'mismos que se firmaron al registrar la entrega.'
+                ).classes('text-xs text-gray-500')
+            else:
+                # Se explica qué significa cada fallo, porque «inválida» a secas
+                # invita a asumir manipulación cuando lo más común es una
+                # configuración distinta de claves.
+                ui.label(
+                    'Puede deberse a que la entrega se modificó después de '
+                    'firmarse, o a que el sistema está configurado con una clave '
+                    'de verificación distinta de la que firmó. Antes de concluir '
+                    'manipulación, comprobar QUIPU_VERIFYING_KEY.'
+                ).classes('text-xs text-gray-500')
+            ui.button('Cerrar', on_click=dlg.close).props('flat').classes('self-end')
+        dlg.open()
 
     # --- Funciones de Seguridad (nuevo) ---
     filtro_seg = {'evento': None, 'email': '', 'resultado': None}
@@ -150,8 +205,9 @@ def page_audit():
                     cols = [{'name':'fecha','label':'Fecha','field':'fecha','align':'left'}, {'name':'inf','label':'Informe','field':'inf','align':'left'}, {'name':'resp','label':'Resp.','field':'resp','align':'left'}, {'name':'st','label':'Estado','field':'st','align':'center'}, {'name':'act','label':'Acciones','field':'act','align':'center'}]
                     tabla_entregas = ui.table(columns=cols, rows=[]).classes('w-full shadow-sm')
                     tabla_entregas.add_slot('body-cell-st', '<q-td :props="props"><q-badge :color="props.row.col">{{ props.row.st }}</q-badge></q-td>')
-                    tabla_entregas.add_slot('body-cell-act', '<q-td :props="props"><q-btn :label="props.row.chat_lbl" icon="chat" flat dense size="sm" color="purple" @click="$parent.$emit('+"'chat'"+', props.row.id)" /><q-icon v-if="props.row.arch==\'Sí\'" name="attachment" color="grey" class="ml-2"/></q-td>')
+                    tabla_entregas.add_slot('body-cell-act', '<q-td :props="props"><q-btn :label="props.row.chat_lbl" icon="chat" flat dense size="sm" color="purple" @click="$parent.$emit('+"'chat'"+', props.row.id)" /><q-icon v-if="props.row.arch==\'Sí\'" name="attachment" color="grey" class="ml-2"/><q-btn v-if="props.row.firmada" icon="verified_user" flat dense size="sm" color="teal" @click="$parent.$emit('+"'verificar'"+', props.row.id)"><q-tooltip>Verificar firma</q-tooltip></q-btn></q-td>')
                     tabla_entregas.on('chat', lambda e: abrir_chat(e.args))
+                    tabla_entregas.on('verificar', lambda e: verificar_firma(e.args))
 
         # --- Tab Seguridad (nuevo) ---
         with ui.tab_panel(tab_seguridad):

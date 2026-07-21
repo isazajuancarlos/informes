@@ -3,6 +3,7 @@ from app.core.database import get_db_session
 from app.models.meta_tables import EntregaEsperada, Informe, Delegacion, Usuario
 from app.services.scheduler import GeneradorTareas
 from app.services.file_manager import GestorArchivos
+from app.services.signing_service import firmar_entrega
 import os
 import time
 import inspect
@@ -70,10 +71,32 @@ def page_my_tasks():
                 tarea.ruta_archivo = ruta_completa
                 tarea.fecha_entrega_real = hora_actual
                 tarea.estado = nuevo_estado
+
+                # Firma post-cuántica de los campos auditables, ANTES del commit
+                # y no después: así no existe ningún instante en el que la
+                # entrega esté guardada sin su firma. Un segundo commit podría
+                # no llegar a ocurrir —excepción, corte, reinicio— y dejaría
+                # entregas firmables sin firmar sin que nadie lo note.
+                #
+                # `firmar_entrega` devuelve None si el servicio no está
+                # disponible (sin `quipu-crypto` o sin claves). Eso NO es un
+                # error: la firma es opcional y una entrega debe poder
+                # registrarse siempre. Lo que no puede pasar es que un fallo de
+                # la firma impida entregar.
+                try:
+                    tarea.firma = firmar_entrega(tarea)
+                except Exception as ex_firma:
+                    # Se traga la excepción a propósito, pero NO en silencio:
+                    # queda en el log del servidor. Bloquear una entrega porque
+                    # falló un extra sería el peor intercambio posible.
+                    print(f"[firma] no se pudo firmar la entrega {tarea_id}: {ex_firma}")
+                    tarea.firma = None
+
                 db.commit()
-                
+
                 tipo_notif = 'warning' if nuevo_estado == 'EXTEMPORANEO' else 'positive'
-                ui.notify(f'Entrega registrada: {nuevo_estado}', type=tipo_notif)
+                sufijo = ' · firmada' if tarea.firma else ''
+                ui.notify(f'Entrega registrada: {nuevo_estado}{sufijo}', type=tipo_notif)
 
             dialogo.close()
             cargar_tabla() # Refrescar vista

@@ -436,6 +436,20 @@ class EntregaEsperada(Base):
     alerta_proximidad_en = Column(DateTime, nullable=True)
     alerta_incumplimiento_en = Column(DateTime, nullable=True)
 
+    # Firma post-cuántica de los campos auditables (Ed25519 + ML-DSA-87, vía
+    # Quipu). Ver app/services/signing_service.py.
+    #
+    # NULL es un estado legítimo y frecuente: la firma es OPCIONAL. Si
+    # `quipu-crypto` no está instalado o no hay par de claves configurado, las
+    # entregas se registran igual y esta columna queda vacía. Que la firma sea
+    # un extra no puede convertirse en un motivo para no poder entregar.
+    #
+    # Lo que NO es negociable: si hay firma, tiene que corresponder a la entrega
+    # tal como quedó guardada. Por eso se firma DENTRO de la misma transacción
+    # que fija estado, fecha y archivo — no después, en una segunda pasada que
+    # podría no llegar a ocurrir.
+    firma = Column(Text, nullable=True)
+
     informe = relationship("Informe")
     usuario = relationship("Usuario", back_populates="entregas", foreign_keys=[usuario_id])
     creador_manual = relationship("Usuario", foreign_keys=[creador_manual_id])
