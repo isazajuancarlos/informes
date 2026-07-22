@@ -111,6 +111,25 @@ class GeneradorTareas:
         return _get_motor()._ajustar_fecha(fecha, 'PREV_WORKDAY')
 
     @staticmethod
+    def _n_esimo_habil_semana(fecha, n):
+        """El n-ésimo día HÁBIL de la semana a la que pertenece `fecha`.
+
+        La semana empieza el lunes. Si el lunes es festivo, el 4º día hábil es
+        el viernes, no el jueves — que es toda la diferencia con marcar «jueves»
+        y con «el 4º día hábil del mes».
+
+        Si la semana tiene menos días hábiles que `n` se usa el último, por el
+        mismo criterio que el día 31 en un mes de 30: una obligación que se
+        esfuma es peor que una mal fechada.
+        """
+        lunes = fecha - timedelta(days=fecha.weekday())
+        habiles = [lunes + timedelta(days=d) for d in range(7)
+                   if _get_motor()._es_habil(lunes + timedelta(days=d))]
+        if not habiles:
+            return None
+        return habiles[min(n, len(habiles)) - 1]
+
+    @staticmethod
     def _n_esimo_habil(year, month, n):
         """El n-ésimo día HÁBIL del mes. No es «el día n ajustado a hábil».
 
@@ -329,7 +348,19 @@ class GeneradorTareas:
 
         # SEMANAL
         elif modo == 'SEMANAL':
-            if fecha_evaluar.weekday() in config.get('dias_semana', []):
+            # «El 4º día hábil de la SEMANA» — distinto del 4º del mes, y
+            # distinto de «el jueves»: si el lunes es festivo, el 4º hábil es el
+            # viernes. En la base real de la que salió esta forma era el tercer
+            # código más usado, y clasificarlo junto al día hábil del MES fue un
+            # error mío: la cifra de cobertura salió inflada.
+            n_habil = config.get('dia_habil_semana')
+            if n_habil:
+                nominal = GeneradorTareas._n_esimo_habil_semana(
+                    fecha_evaluar, int(n_habil))
+                if nominal == fecha_evaluar:
+                    # Ya es hábil por construcción: no hay ajuste que aplicar.
+                    vencimientos.append(Vencimiento(nominal, nominal, AJUSTE_NINGUNO))
+            elif fecha_evaluar.weekday() in config.get('dias_semana', []):
                 vencimientos.append(GeneradorTareas._con_ajuste(fecha_evaluar, config))
 
         # HORAS

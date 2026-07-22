@@ -81,7 +81,7 @@ PASOS = [
     ("Cuándo vence", {"meses", "cada_n_anios", "dia_corte", "dias_corte", "dia_habil",
                       "es_ultimo_dia", "usar_ultimo_dia_en_meses_cortos",
                       "dia_semana_mes", "semana_del_mes", "intervalo",
-                      "dias_semana", "fechas", "hora_inicio", "hora_fin",
+                      "dias_semana", "dia_habil_semana", "fechas", "hora_inicio", "hora_fin",
                       "intervalo_horas"}),
     ("Si cae en día no hábil", {"ajuste_habil", "ajuste_habil_anterior",
                                 "mover_habil", "mover_habil_anterior"}),
@@ -352,7 +352,21 @@ def _especifico(config, r):
 
 
 def _semanal(config, r):
-    if not r.toca("dias_semana"):
+    if not r.toca("dias_semana", "dia_habil_semana"):
+        return
+    if config.get("dia_habil_semana"):
+        n = _entero(config.get("dia_habil_semana"), 0)
+        if not 1 <= n <= 7:
+            r.errores.append(
+                "El día hábil de la semana debe estar entre 1 y 7.")
+        elif n > 5:
+            r.advertencias.append(
+                "Una semana normal tiene 5 días hábiles; en las que tengan "
+                "menos, el vencimiento será el último día hábil de la semana.")
+        if config.get("dias_semana"):
+            r.advertencias.append(
+                "Indicó un día hábil de la semana, así que los días marcados "
+                "no se usarán.")
         return
     dias = config.get("dias_semana") or []
     if not dias:

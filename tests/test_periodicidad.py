@@ -270,3 +270,82 @@ def test_todos_los_grupos_declarados_pertenecen_a_algun_modo():
     for grupos in CAMPOS_QUE_USA.values():
         usados |= grupos
     assert set(GRUPOS) == usados, set(GRUPOS) ^ usados
+
+
+# --------------------------------------------------------------------------
+# Los patrones de una base real, EJECUTADOS
+# --------------------------------------------------------------------------
+#
+# Antes se medía que eran «expresables» clasificando los códigos con expresiones
+# regulares. Eso mide la FORMA del código, no lo que el motor hace con él. Aquí
+# se traduce cada uno a una regla, se ejecuta, y se comprueba el resultado
+# contra lo que el propio código declara —periodicidad y dirección del ajuste—,
+# ninguna de las dos cosas sacada del motor.
+
+def _patrones():
+    import json
+    import pathlib
+
+    ruta = pathlib.Path(__file__).parent.parent / "herramientas" / "patrones_referencia.json"
+    if not ruta.exists():
+        pytest.skip("sin fichero de patrones de referencia")
+    return json.load(open(ruta, encoding="utf-8"))
+
+
+def test_los_patrones_reales_se_cumplen_TODOS():
+    """Cero fallos. «Sin traducción» se cuenta aparte: es un límite de la
+    notación de origen, no del sistema."""
+    from herramientas.verificar_patrones import comprobar
+
+    fallos = []
+    for periodicidad, codigo in _patrones():
+        estado, detalle = comprobar(periodicidad, codigo)
+        if estado == "FALLA":
+            fallos.append(f"{periodicidad} {codigo}: {detalle}")
+    assert not fallos, fallos
+
+
+def test_el_verificador_de_patrones_DISCRIMINA():
+    """Una regla mal traducida a propósito tiene que salir FALLA.
+
+    Sin esto, «79 de 80 cumplen» no informa de nada. La primera versión de la
+    herramienta tenía un punto ciego justo aquí: las formas semanales pasaban
+    sin comprobar nada, y una mutación del motor no la ponía roja.
+    """
+    from herramientas.verificar_patrones import comprobar
+
+    from datetime import date
+
+    from app.services.scheduler import (AJUSTE_ANTICIPADO, GeneradorTareas,
+                                        Vencimiento)
+    from herramientas import verificar_patrones as vp
+
+    assert comprobar("MENSUAL", "M<15")[0] == "OK"
+    assert comprobar("MENSUAL", "ESTO_NO_ES_UN_CODIGO")[0] == "SIN_TRADUCCION"
+
+    # No se puede provocar el fallo desde la entrada: el traductor toma los
+    # meses de la columna de periodicidad, así que la regla es coherente con lo
+    # esperado por construcción. Lo que hay que romper es el MOTOR, que es
+    # justo lo que la herramienta debe vigilar.
+    original = GeneradorTareas.obtener_vencimientos_para_fecha
+    try:
+        GeneradorTareas.obtener_vencimientos_para_fecha = staticmethod(
+            lambda fecha, config: [])
+        estado, detalle = comprobar("MENSUAL", "M<15")
+        assert estado == "FALLA" and "ningún vencimiento" in detalle, detalle
+
+        # Y un ajuste que va en la dirección contraria a la que dice el código.
+        def al_reves(fecha, config):
+            if fecha != date(2026, 3, 15):
+                return []
+            return [Vencimiento(date(2026, 3, 15), date(2026, 3, 20),
+                                AJUSTE_ANTICIPADO)]
+
+        GeneradorTareas.obtener_vencimientos_para_fecha = staticmethod(al_reves)
+        estado, detalle = comprobar("ANUAL", "A3<15")
+        assert estado == "FALLA" and "hacia atrás" in detalle, detalle
+    finally:
+        GeneradorTareas.obtener_vencimientos_para_fecha = original
+
+    # Y comprobado que vuelve a estar sano, o el resto del banco mentiría.
+    assert comprobar("MENSUAL", "M<15")[0] == "OK"

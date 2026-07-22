@@ -61,7 +61,7 @@ GRUPOS = {
     "cada_n_anios": {"cada_n_anios"},
     "meses": {"meses"},
     "dia": set(FORMAS_DEL_DIA) | {"dia_semana_mes", "usar_ultimo_dia_en_meses_cortos"},
-    "dias_semana": {"dias_semana"},
+    "dias_semana": {"dias_semana", "dia_habil_semana"},
     "fechas": {"fechas"},
     "franja_horaria": {"hora_inicio", "hora_fin", "intervalo_horas"},
     "ajuste": {"ajuste_habil", "ajuste_habil_anterior",

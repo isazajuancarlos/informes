@@ -154,6 +154,26 @@ jobs:
           done
           echo "La aplicación no respondió en 60 s"; exit 1
 
+  patrones:
+    name: los patrones de una base real se cumplen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Ejecutar los 80 patrones contra el motor
+        env:
+          DATABASE_URL: "sqlite:///:memory:"
+          DEPLOYMENT_PROFILE: standalone
+        # No comprueba que los códigos «se puedan expresar» —eso mide la forma
+        # del código— sino que el motor produce lo que cada uno declara: la
+        # periodicidad fija cuántos al año, y el modificador < > = fija hacia
+        # dónde puede moverse la entrega. Ninguna de las dos sale del motor.
+        run: python herramientas/verificar_patrones.py herramientas/patrones_referencia.json
+
   clausulado:
     name: EULA y modelo de licencia coinciden
     runs-on: ubuntu-latest
