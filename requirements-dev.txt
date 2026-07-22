@@ -2,3 +2,8 @@
 #   pip install -r requirements.txt -r requirements-dev.txt
 -r requirements.txt
 pytest==8.3.4
+
+# El simulador de cliente de NiceGUI (`user`) es una fixture asíncrona. Sin esto
+# las pruebas de pantalla no salen en rojo: salen en ERROR de setup, que parece
+# un problema de entorno y se acaba ignorando.
+pytest-asyncio==1.4.0

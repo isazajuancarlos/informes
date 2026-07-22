@@ -6,6 +6,7 @@ from app.models.meta_tables import (
     ROL_ORIGEN, ROL_DESTINO, ROL_USUARIO,
 )
 from app.ui.ui_helpers import estado_vacio, ayuda
+from app.ui.asistente_cronograma import abrir_asistente
 from datetime import datetime
 from app.services.preview_calendario import proximos as _proximos_vencimientos
 from app.services.validar_regla import validar as _validar_regla
@@ -51,6 +52,65 @@ def _ajuste_desde_banderas(siguiente, anterior):
     return 'ninguno'
 
 
+#: Campos de regla que las pestañas de esta pantalla NO saben representar.
+#:
+#: No es una lista de cosas pendientes: es el motivo por el que una regla creada
+#: con el asistente se guarda tal cual en vez de traducirse a los campos del
+#: formulario. La traducción PIERDE — `dias_corte: [7, 20]` vuelve como
+#: `dia_corte: 7` y la obligación pasa de veinticuatro entregas al año a doce,
+#: sin que nadie toque nada ni vea un aviso. Solo se descubre cuando lo pregunta
+#: un ente de control.
+CAMPOS_QUE_LAS_PESTANAS_NO_SABEN = {
+    'dias_corte', 'dia_semana_mes', 'semana_del_mes', 'cada_n_anios',
+    'cada_n_semanas', 'dia_habil_semana', 'omitir_festivos', 'fechas',
+}
+
+
+def excede_a_las_pestanas(regla: dict) -> bool:
+    """¿Esta regla se perdería al abrirla en las pestañas de siempre?"""
+    if (regla or {}).get('modo') == 'FECHAS':
+        return True
+    return any((regla or {}).get(c) for c in CAMPOS_QUE_LAS_PESTANAS_NO_SABEN)
+
+
+def _describir_regla(regla: dict) -> str:
+    """Una línea que dice qué es esta regla, sin inventarse nada.
+
+    Se recorre el camino del asistente AL REVÉS: se generan las fechas de un año
+    y se le pregunta al reconocedor qué patrón son. Así la frase que ve quien
+    abre un informe viejo es la misma que vería al crearlo, y no una segunda
+    redacción que con el tiempo diga otra cosa.
+
+    Si el reconocedor no encuentra un patrón exacto, se dice eso mismo en vez de
+    aproximar: una descripción aproximada de una obligación es una descripción
+    equivocada.
+    """
+    from datetime import date, timedelta
+
+    from app.services.inferir_periodicidad import inferir
+    from app.services.scheduler import GeneradorTareas
+
+    if (regla or {}).get('modo') == 'HOURLY':
+        return (f"Varias veces al día, de las {regla.get('hora_inicio')} a las "
+                f"{regla.get('hora_fin')}, cada {regla.get('intervalo_horas')} h")
+    try:
+        inicio = date.fromisoformat(str(regla.get('fecha_inicio')))
+    except (ValueError, TypeError):
+        return "Cronograma definido"
+
+    fechas = []
+    for i in range(366):
+        dia = inicio + timedelta(days=i)
+        fechas += [v.nominal
+                   for v in GeneradorTareas.obtener_vencimientos_para_fecha(dia, regla)]
+    if not fechas:
+        return "Cronograma definido — no genera vencimientos en el primer año"
+    inferencia = inferir(fechas)
+    if inferencia.periodicidad == "SIN_PATRON":
+        return f"Cronograma propio — {len(fechas)} vencimiento(s) en el primer año"
+    return inferencia.explicacion
+
+
 def _construir_regla(datos):
     """La configuración de periodicidad, tal como se guarda.
 
@@ -59,6 +119,12 @@ def _construir_regla(datos):
     fechas que el sistema luego no genera — y nadie sabría cuál de las dos está
     mal, que es peor que no tener vista previa.
     """
+    # Una regla del asistente se guarda VERBATIM. Reconstruirla desde los campos
+    # del formulario es exactamente lo que no se puede hacer: las pestañas no
+    # tienen dónde poner la mitad de lo que el asistente sabe expresar.
+    if datos.get('regla'):
+        return dict(datos['regla'])
+
     modo = datos['modo_tiempo']
     f_inicio = datos['fecha_inicio']
     if modo == 'CICLICO':
@@ -128,6 +194,8 @@ def page_reports_manager():
         'justificacion_normatividad': '',
         'aplicativo_origen': '',
         'modo_tiempo': 'CICLICO',
+        'regla': None,
+        'regla_resumen': '',
         'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
         'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
         'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'usar_ultimo_dia_en_meses_cortos': False, 'ajuste': 'ninguno'},
@@ -176,6 +244,11 @@ def page_reports_manager():
             'justificacion_normatividad': '',
             'aplicativo_origen': '',
             'modo_tiempo': 'CICLICO',
+            # La regla del asistente, cuando la hay. Cuando está puesta manda
+            # ella y las pestañas ni se muestran: dos fuentes para la misma
+            # obligación garantizan que una esté mal.
+            'regla': None,
+            'regla_resumen': '',
             'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
             'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
             'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'usar_ultimo_dia_en_meses_cortos': False, 'ajuste': 'ninguno'},
@@ -217,7 +290,16 @@ def page_reports_manager():
             modo = rec.get('modo', 'CICLICO')
             nuevo_informe['modo_tiempo'] = modo
             nuevo_informe['fecha_inicio'] = rec.get('fecha_inicio', datetime.now().strftime('%Y-%m-%d'))
-            
+
+            # Una regla que las pestañas no saben representar se queda ENTERA y
+            # no se reparte por los campos. Antes se repartía igualmente y lo
+            # que no cabía se perdía al guardar: abrir un informe quincenal para
+            # cambiarle el nombre lo convertía en mensual. Nadie lo veía, porque
+            # el efecto de una fecha que deja de generarse es que no pasa nada.
+            if excede_a_las_pestanas(rec):
+                nuevo_informe['regla'] = dict(rec)
+                nuevo_informe['regla_resumen'] = _describir_regla(rec)
+
             if modo == 'CICLICO':
                 total = int(rec.get('intervalo', 0))
                 nuevo_informe['tiempo_ciclico'].update({'total_dias': total, 'anos': total // 360, 'meses': (total % 360) // 30, 'dias': (total % 360) % 30, 'ajuste': _ajuste_desde_banderas(rec.get('mover_habil'), rec.get('mover_habil_anterior'))})
@@ -233,9 +315,10 @@ def page_reports_manager():
         if not nuevo_informe['nombre']: ui.notify('Nombre obligatorio', type='warning'); return
         if not nuevo_informe['extensiones']: ui.notify('Seleccione extensiones', type='warning'); return
 
-        modo = nuevo_informe['modo_tiempo']
-        f_inicio = nuevo_informe['fecha_inicio']
-
+        # Aquí se leían `modo` y `f_inicio` sin usarlos para nada: quedaron de
+        # cuando esta función armaba la regla a mano. Ahora la arma
+        # `_construir_regla`, y dejarlos sugería que el modo del formulario
+        # decide algo cuando puede estar mandando el cronograma del asistente.
         rec_final = _construir_regla(nuevo_informe)
 
         # La regla se valida ANTES de guardar. Un barrido del motor encontró
@@ -488,13 +571,62 @@ def page_reports_manager():
                 with ui.card().classes('w-1/2 p-0 overflow-hidden border-t-4 border-purple-600'):
                     with ui.row().classes('items-center gap-0 no-wrap px-4 pt-3'):
                         ui.label('Cronograma').classes('font-bold text-purple-800 text-sm')
-                        ayuda('Define cuándo vence este informe. '
-                              'Cíclico: cada cierto intervalo (ej. cada 30 días). '
-                              'Específico: en meses y día de corte concretos (ej. día 7 de marzo y septiembre). '
-                              'Semanal: en días de la semana. '
-                              'Por Horas: varias veces al día. '
-                              'A Demanda: sin cronograma fijo, se genera cuando se solicita. '
-                              'Las casillas de "día hábil" mueven la fecha si cae en fin de semana o festivo.')
+                        ayuda('Define cuándo vence este informe.\n\n'
+                              'El camino recomendado es el asistente: se marcan '
+                              'las fechas en un calendario y el sistema dice qué '
+                              'periodicidad son. Quien crea una obligación tiene '
+                              'delante fechas —las de la norma o el contrato—, no '
+                              'un catálogo de periodicidades.\n\n'
+                              'Las pestañas son el modo manual, y no saben '
+                              'expresar todo lo que el motor admite: varios días '
+                              'al mes, «el último martes», cada N semanas o cada '
+                              'N años solo se pueden definir con el asistente.')
+
+                    # --- El asistente: el calendario pregunta, la lista responde
+                    def usar_regla_del_asistente(regla, resumen):
+                        nuevo_informe['regla'] = regla
+                        nuevo_informe['regla_resumen'] = resumen
+                        # La vigencia del cronograma manda sobre la del
+                        # formulario: son el mismo dato y tener dos sería
+                        # garantizar que uno esté mal.
+                        if regla.get('fecha_inicio'):
+                            nuevo_informe['fecha_inicio'] = regla['fecha_inicio']
+                        ui.notify('Cronograma definido', type='positive')
+                        render_ui()
+
+                    def quitar_regla():
+                        nuevo_informe['regla'] = None
+                        nuevo_informe['regla_resumen'] = ''
+                        render_ui()
+
+                    with ui.column().classes('w-full px-4 pt-3 gap-2'):
+                        if nuevo_informe.get('regla'):
+                            with ui.row().classes('w-full items-start gap-2 p-3 no-wrap '
+                                                  'bg-emerald-50 border border-emerald-200 rounded'):
+                                ui.icon('event_available').classes('text-emerald-600 mt-0.5')
+                                with ui.column().classes('gap-0 flex-1'):
+                                    ui.label(nuevo_informe.get('regla_resumen')
+                                             or 'Cronograma definido') \
+                                        .classes('text-sm font-bold text-emerald-900')
+                                    ui.label('Rige desde '
+                                             f"{nuevo_informe['regla'].get('fecha_inicio', '—')}") \
+                                        .classes('text-xs text-emerald-700')
+                            with ui.row().classes('w-full gap-2'):
+                                ui.button('Volver a definirlo', icon='edit_calendar',
+                                          on_click=lambda: abrir_asistente(
+                                              usar_regla_del_asistente,
+                                              nuevo_informe['regla'])).props('outline dense')
+                                ui.button('Quitar', icon='delete', on_click=quitar_regla) \
+                                    .props('flat dense color=grey')
+                        else:
+                            ui.button('Definir con el calendario', icon='edit_calendar',
+                                      on_click=lambda: abrir_asistente(
+                                          usar_regla_del_asistente)) \
+                                .classes('w-full bg-purple-700 text-white')
+                            ui.label('Se marcan las fechas y el sistema dice qué '
+                                     'periodicidad son. O úselo a mano, más abajo.') \
+                                .classes('text-xs text-slate-500')
+
                     with ui.tabs().classes('bg-slate-100 text-slate-600 w-full') as tabs:
                         t_cic = ui.tab('Cíclico'); t_esp = ui.tab('Específico'); t_sem = ui.tab('Semanal'); t_hor = ui.tab('Por Horas'); t_inm = ui.tab('A Demanda')
                     
@@ -507,10 +639,6 @@ def page_reports_manager():
                     map_tabs = {'CICLICO': 'Cíclico', 'ESPECIFICO': 'Específico', 'SEMANAL': 'Semanal', 'HOURLY': 'Por Horas', 'INMEDIATO': 'A Demanda'}
                     tabs.set_value(map_tabs.get(curr, 'Cíclico'))
 
-                    # Fecha inicio compartida por todos los modos
-                    with ui.row().classes('w-full px-4 pt-4'):
-                        ui.input('Fecha Inicio', value=nuevo_informe['fecha_inicio'], on_change=refrescar_vista_previa).props('type="date"').bind_value(nuevo_informe, 'fecha_inicio').classes('w-full')
-
                     # --- Vista previa de los vencimientos --------------
                     # Definir la obligación era, hasta ahora, un acto a ciegas:
                     # se elegía periodicidad y ajuste, se guardaba, y las fechas
@@ -518,6 +646,14 @@ def page_reports_manager():
                     # tareas. Una regla mal entendida no falla ruidosamente —
                     # genera fechas distintas de las que la persona creía, o
                     # ninguna.
+                    #
+                    # Esto va ANTES del campo de fecha de inicio, y no es
+                    # cosmético: aquel lo pasa como `on_change`, así que el
+                    # nombre tiene que existir ya. Estando después, abrir «Nuevo
+                    # Informe» reventaba con UnboundLocalError y el formulario
+                    # se quedaba a medio dibujar. Lo encontró
+                    # `tests/test_asistente_pantalla.py`, que es la primera
+                    # prueba que ABRE esta pantalla en vez de importarla.
                     contenedor_vista_previa = None  # se crea bajo las pestañas
 
                     def refrescar_vista_previa(*_):
@@ -546,7 +682,11 @@ def page_reports_manager():
                                             'text-xs ' + ('text-amber-800' if v.se_ajusto
                                                           else 'text-slate-600'))
 
-                    with ui.tab_panels(tabs, value=tabs.value).classes('w-full p-4'):
+                    # Fecha inicio compartida por todos los modos
+                    with ui.row().classes('w-full px-4 pt-4') as fila_fecha_inicio:
+                        ui.input('Fecha Inicio', value=nuevo_informe['fecha_inicio'], on_change=refrescar_vista_previa).props('type="date"').bind_value(nuevo_informe, 'fecha_inicio').classes('w-full')
+
+                    with ui.tab_panels(tabs, value=tabs.value).classes('w-full p-4') as paneles:
                         with ui.tab_panel(t_cic):
                             with ui.row().classes('w-full gap-2'):
                                 ui.number('Años', format='%.0f', on_change=calcular_dias).bind_value(nuevo_informe['tiempo_ciclico'], 'anos').classes('w-1/3')
@@ -640,6 +780,16 @@ def page_reports_manager():
                         with ui.tab_panel(t_inm):
                             ui.label('Este informe se genera a demanda.').classes('text-gray-500 italic')
                             ui.label('No tiene periodicidad automática. Las entregas se crean manualmente desde "Entregas Manuales".').classes('text-sm text-gray-400')
+
+                    # Con un cronograma del asistente puesto, el modo manual se
+                    # esconde entero. Tener las dos vías visibles a la vez sería
+                    # dejar en pantalla dos fuentes para la misma obligación, y
+                    # quien tocara las pestañas creería estar cambiando algo que
+                    # `_construir_regla` ya no mira.
+                    if nuevo_informe.get('regla'):
+                        tabs.visible = False
+                        paneles.visible = False
+                        fila_fecha_inicio.visible = False
 
                     contenedor_vista_previa = ui.column().classes('w-full px-4 pb-3')
                     refrescar_vista_previa()

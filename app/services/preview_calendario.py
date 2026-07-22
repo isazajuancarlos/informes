@@ -48,8 +48,19 @@ MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
             "agosto", "septiembre", "octubre", "noviembre", "diciembre")
 
 
-def _dia_largo(d: date) -> str:
+def dia_largo(d: date) -> str:
+    """«lunes 6 de julio de 2026»."""
     return f"{DIAS_ES[d.weekday()]} {d.day} de {MESES_ES[d.month-1]} de {d.year}"
+
+
+def dia_corto(d: date) -> str:
+    """«6 jul 2026». Para listas, donde el día de la semana estorba.
+
+    Vive aquí, junto a `dia_largo`, y no en la pantalla que la usa: dos sitios
+    donde se escriben fechas en castellano acaban escribiéndolas distinto, y
+    quien lea el sistema no sabrá si «6 jul» y «6 de julio» son el mismo dato.
+    """
+    return f"{d.day} {MESES_ES[d.month-1][:3]} {d.year}"
 
 
 @dataclass(frozen=True)
@@ -78,14 +89,14 @@ class Vencimiento:
 
     def describir(self) -> str:
         """Una línea que dice las dos cosas sin obligar a deducir ninguna."""
-        txt = f"Vence {_dia_largo(self.nominal)}"
+        txt = f"Vence {dia_largo(self.nominal)}"
         if not self.se_ajusto:
             return txt
         if self.ajuste == "GRACIA":
             # El plazo se amplía: entregar ese día NO es tarde.
-            return txt + f" · plazo hasta {_dia_largo(self.limite)}"
+            return txt + f" · plazo hasta {dia_largo(self.limite)}"
         # Anticipado: el día nominal no es hábil, así que se entrega antes.
-        return txt + f" · entregar antes de {_dia_largo(self.limite)}"
+        return txt + f" · entregar antes de {dia_largo(self.limite)}"
 
 
 def proximos(config: dict, cuantos: int = 6, desde: date | None = None

@@ -22,6 +22,8 @@ ENV/
 
 # Database
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 
 # Backups
