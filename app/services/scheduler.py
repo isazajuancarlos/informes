@@ -106,6 +106,17 @@ class GeneradorTareas:
                 year, month = GeneradorTareas._mes_desplazado(fecha_evaluar, desplazamiento)
                 if month not in meses:
                     continue
+                # El MES QUE ORIGINA el vencimiento debe estar dentro de
+                # vigencia, no solo el día en que cae. Sin esto, una obligación
+                # que empieza el 1 de enero generaba un vencimiento el 2 de
+                # enero originado en el 31 de diciembre ANTERIOR —un mes en que
+                # la obligación todavía no existía—. Se veía en 2024, donde
+                # salían 13 vencimientos en vez de 12.
+                #
+                # Es la misma comprobación que ya hacía el modo SEMANAL; no
+                # replicarla aquí fue una inconsistencia del arreglo anterior.
+                if inicio_dt and (year, month) < (inicio_dt.year, inicio_dt.month):
+                    continue
                 target = GeneradorTareas._objetivo_del_mes(year, month, config)
                 if target == fecha_evaluar:
                     deadlines.append(datetime.combine(fecha_evaluar, fin_dia))

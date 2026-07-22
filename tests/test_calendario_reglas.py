@@ -48,27 +48,141 @@ def mensual(**extra):
 # El defecto del cruce de mes — una prueba por combinación
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("nombre,extra", [
+#: Configuraciones mensuales que un usuario puede crear. Se prueban TODAS contra
+#: TODOS los años del rango, no contra un año de ejemplo.
+CONFIGS_MENSUALES = [
     ("día 1, sin ajuste",            {"dia_corte": 1}),
     ("día 1, hábil siguiente",       {"dia_corte": 1, "ajuste_habil": True}),
     ("día 1, hábil ANTERIOR",        {"dia_corte": 1, "ajuste_habil_anterior": True}),
     ("día 15, hábil siguiente",      {"dia_corte": 15, "ajuste_habil": True}),
     ("día 15, hábil anterior",       {"dia_corte": 15, "ajuste_habil_anterior": True}),
+    ("día 28, hábil anterior",       {"dia_corte": 28, "ajuste_habil_anterior": True}),
+    ("día 29, hábil siguiente",      {"dia_corte": 29, "ajuste_habil": True}),
     ("día 31, hábil siguiente",      {"dia_corte": 31, "ajuste_habil": True}),
+    ("día 31, hábil anterior",       {"dia_corte": 31, "ajuste_habil_anterior": True}),
     ("último día, sin ajuste",       {"es_ultimo_dia": True}),
     ("último día, hábil SIGUIENTE",  {"es_ultimo_dia": True, "ajuste_habil": True}),
     ("último día, hábil anterior",   {"es_ultimo_dia": True, "ajuste_habil_anterior": True}),
-])
-def test_una_obligacion_mensual_genera_DOCE_vencimientos(nombre, extra):
-    """Doce meses, doce vencimientos. Sin excepciones y sin importar el ajuste.
+]
 
-    Las dos combinaciones que fallaban —«día 1 + anterior» y «último +
-    siguiente»— están aquí a propósito: son las que empujan el objetivo fuera
-    del mes que lo origina.
+#: Rango de años. Cubre bisiestos, años que empiezan en cada día de la semana y
+#: veinte configuraciones distintas de festivos móviles.
+#:
+#: **Un año concreto es un EJEMPLO, no la especificación.** La primera versión de
+#: este banco solo probaba 2026 y daba todo por bueno; el barrido de 2020-2040
+#: destapó que «último día + siguiente» generaba un vencimiento originado en el
+#: mes ANTERIOR a la vigencia. Con un solo año eso no se ve.
+ANIOS = range(2020, 2041)
+
+
+def origen(v):
+    """El día que ORIGINA el vencimiento, antes de mover a hábil.
+
+    Contar vencimientos por año natural no funciona: con «último día +
+    siguiente», el de diciembre cae en enero del año siguiente y el año parece
+    tener once. El mes de origen es la unidad estable, y además es la que
+    importa jurídicamente: el plazo pertenece al periodo que lo genera.
     """
-    fechas = barrer(mensual(**extra), date(2026, 1, 1), date(2026, 12, 31))
-    assert len(fechas) == 12, f"{nombre}: {len(fechas)} de 12"
-    assert len(set(fechas)) == 12, f"{nombre}: hay vencimientos duplicados"
+    return v.sin_ajustar or v.fecha
+
+
+@pytest.mark.parametrize("nombre,extra", CONFIGS_MENSUALES)
+def test_una_obligacion_mensual_genera_UN_VENCIMIENTO_POR_MES_TODOS_LOS_ANIOS(nombre, extra):
+    """Un mes, un vencimiento — en cualquier año y con cualquier ajuste.
+
+    Se piden los doce primeros desde el 1 de enero y se comprueba que sus meses
+    de ORIGEN son enero..diciembre, en orden y sin repetir. Así la prueba no
+    depende de dónde caigan las fechas, que es justo lo que el ajuste altera.
+    """
+    from app.services.preview_calendario import proximos
+
+    for anio in ANIOS:
+        cfg = {"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES,
+               "fecha_inicio": f"{anio}-01-01", **extra}
+        venc, aviso = proximos(cfg, cuantos=12, desde=date(anio, 1, 1))
+        assert len(venc) == 12, f"{nombre} en {anio}: {len(venc)} de 12 ({aviso})"
+
+        origenes = [(origen(v).year, origen(v).month) for v in venc]
+
+        # Consecutivos, sin huecos ni repeticiones. Es la propiedad que de
+        # verdad importa: un mes que se salta en medio es una obligación
+        # incumplida que nadie ve.
+        for previo, siguiente in zip(origenes, origenes[1:]):
+            esperado = (previo[0] + 1, 1) if previo[1] == 12 else (previo[0], previo[1] + 1)
+            assert siguiente == esperado, (
+                f"{nombre} en {anio}: hueco o repetición entre {previo} y "
+                f"{siguiente} -> {origenes}")
+
+        # El primer origen es el mes en que arranca la vigencia, SALVO que su
+        # vencimiento cayera antes de esa fecha —con «hábil anterior», el día 1
+        # de enero se mueve al 31 de diciembre del año previo, cuando la
+        # obligación aún no existía—. Ese salto es correcto y es el único que se
+        # admite; comprobarlo contra la causa evita que tape un fallo real.
+        primero = origenes[0]
+        if primero != (anio, 1):
+            assert primero == (anio, 2), f"{nombre} en {anio}: empieza en {primero}"
+            objetivo = G._objetivo_del_mes(anio, 1, cfg)
+            assert objetivo is not None and objetivo < date(anio, 1, 1), (
+                f"{nombre} en {anio}: se saltó enero sin que su vencimiento "
+                f"({objetivo}) cayera antes de la vigencia")
+
+        fechas = [v.fecha for v in venc]
+        assert len(set(fechas)) == 12, f"{nombre} en {anio}: fechas duplicadas {fechas}"
+        assert fechas == sorted(fechas), f"{nombre} en {anio}: desordenadas"
+
+
+@pytest.mark.parametrize("nombre,extra", CONFIGS_MENSUALES)
+def test_el_ajuste_respeta_su_direccion_TODOS_LOS_ANIOS(nombre, extra):
+    """«Anterior» nunca puede mover hacia adelante, ni «siguiente» hacia atrás.
+
+    Es la propiedad de la que depende la seguridad jurídica del plazo: adelantar
+    nunca llega tarde, aplazar sí.
+    """
+    from app.services.preview_calendario import proximos
+
+    hacia_atras = extra.get("ajuste_habil_anterior")
+    hacia_alante = extra.get("ajuste_habil")
+    if not (hacia_atras or hacia_alante):
+        pytest.skip("sin ajuste no hay dirección que comprobar")
+
+    for anio in ANIOS:
+        cfg = {"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES,
+               "fecha_inicio": f"{anio}-01-01", **extra}
+        venc, _ = proximos(cfg, cuantos=12, desde=date(anio, 1, 1))
+        for v in venc:
+            if not v.se_ajusto:
+                continue
+            if hacia_atras:
+                assert v.fecha < v.sin_ajustar, f"{nombre} en {anio}: {v.fecha} no está antes de {v.sin_ajustar}"
+            else:
+                assert v.fecha > v.sin_ajustar, f"{nombre} en {anio}: {v.fecha} no está después de {v.sin_ajustar}"
+
+
+@pytest.mark.parametrize("nombre,extra", CONFIGS_MENSUALES)
+def test_ningun_vencimiento_nace_antes_de_la_vigencia_TODOS_LOS_ANIOS(nombre, extra):
+    """El MES que origina el vencimiento debe estar dentro de vigencia, no solo
+    el día en que cae.
+
+    Sin esto, una obligación que empieza el 1 de enero generaba un vencimiento
+    el 2 de enero originado en el 31 de diciembre ANTERIOR. Se veía en 2024:
+    trece vencimientos en vez de doce.
+    """
+    from app.services.preview_calendario import proximos
+
+    for anio in ANIOS:
+        cfg = {"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES,
+               "fecha_inicio": f"{anio}-03-01", **extra}
+        venc, _ = proximos(cfg, cuantos=6, desde=date(anio, 1, 1))
+        assert venc, f"{nombre} en {anio}: no generó nada"
+        primero = origen(venc[0])
+        # Nunca ANTES de marzo. Puede ser abril si el vencimiento de marzo caía
+        # antes del 1 de marzo por el ajuste hacia atrás; lo prohibido es nacer
+        # en un mes anterior a la vigencia.
+        assert (primero.year, primero.month) >= (anio, 3), (
+            f"{nombre} en {anio}: el primer vencimiento nace en "
+            f"{primero}, antes del inicio de vigencia ({anio}-03-01)")
+        assert (primero.year, primero.month) <= (anio, 4), (
+            f"{nombre} en {anio}: se saltó más de un mes -> {primero}")
 
 
 @pytest.mark.parametrize("extra", [

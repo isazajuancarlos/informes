@@ -93,6 +93,8 @@ def validar(config: dict) -> Resultado:
                 "periodicidad, los meses seleccionados y la fecha de inicio."
                 + (f" ({aviso})" if aviso else "")
             )
+        elif venc and desde:
+            _aviso_primer_periodo_perdido(config, desde, r)
 
     return r
 
@@ -171,3 +173,40 @@ def _horas(config, r):
         )
     if intervalo < 1:
         r.errores.append("El intervalo en horas debe ser de al menos 1.")
+
+
+def _aviso_primer_periodo_perdido(config, desde, r):
+    """Avisa cuando el primer periodo se queda sin vencimiento por el ajuste.
+
+    Con «día 1» y ajuste al hábil ANTERIOR, el vencimiento de enero cae el 31 de
+    diciembre — antes de que la obligación exista. El motor lo descarta, y hace
+    bien: un plazo anterior al nacimiento de la obligación no se puede cumplir, y
+    fabricarle una fecha de relleno sería inventarse un dato.
+
+    Pero descartarlo **en silencio** deja a quien creó la regla contando doce
+    vencimientos y viendo once, sin saber por qué. Esto no bloquea nada; solo lo
+    dice, que es la diferencia entre un sistema correcto y uno que además se
+    entiende.
+    """
+    if config.get("modo") != "ESPECIFICO":
+        return
+    meses = config.get("meses") or []
+    if desde.month not in meses:
+        return  # el primer mes de vigencia no era de entrega; nada que perder
+
+    from app.services.scheduler import GeneradorTareas
+
+    objetivo = GeneradorTareas._objetivo_del_mes(desde.year, desde.month, config)
+    if objetivo is None or objetivo >= desde:
+        return
+
+    r.advertencias.append(
+        f"El vencimiento correspondiente a {_MES[desde.month]} caería el "
+        f"{objetivo.day} de {_MES[objetivo.month]} de {objetivo.year}, antes del "
+        "inicio de vigencia, así que no se generará. El primero será el "
+        "siguiente que produzca la regla."
+    )
+
+
+_MES = (None, "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+        "agosto", "septiembre", "octubre", "noviembre", "diciembre")
