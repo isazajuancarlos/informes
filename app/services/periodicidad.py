@@ -74,7 +74,7 @@ class Periodicidad:
     """Una periodicidad tal como la nombra quien crea la obligación."""
 
     def __init__(self, nombre, modo, pregunta, fija=None, ayuda="",
-                 al_anio=None, multiples_dias=False):
+                 al_anio=None, multiples_dias=False, sinonimos=()):
         self.nombre = nombre
         self.modo = modo
         #: Grupos de `GRUPOS` que hay que preguntar, EN ORDEN.
@@ -95,6 +95,11 @@ class Periodicidad:
         self.al_anio = al_anio
         #: Si tiene sentido que ocurra varias veces dentro de su periodo.
         self.multiples_dias = multiples_dias
+        #: Cómo la llama la gente, incluidos los términos AMBIGUOS a propósito.
+        #: Si la norma del cliente dice «bisemanal» y aquí no aparece, no se
+        #: desambigua nada: se esconde, y el usuario adivina. Un término que
+        #: lleva a dos periodicidades obliga a elegir, que es lo que hace falta.
+        self.sinonimos = tuple(sinonimos)
 
     def regla_base(self) -> dict:
         """El punto de partida de la regla: el modo y lo que ya está decidido."""
@@ -106,23 +111,25 @@ class Periodicidad:
 CATALOGO = {
     "DIARIA": Periodicidad(
         "Diaria", "CICLICO", ["ajuste"], fija={"intervalo": 1},
+        sinonimos=("diario", "diaria", "a diario", "todos los días"),
         ayuda="Todos los días. Si además ocurre varias veces al día, use "
               "«Varias veces al día»."),
     "VARIAS_AL_DIA": Periodicidad(
         "Varias veces al día", "HOURLY", ["franja_horaria"], al_anio=None, multiples_dias=True,
+        sinonimos=("por horas", "varias veces al día", "intradía"),
         ayuda="Se pregunta la franja de horas, no una fecha. El ajuste a día "
               "hábil no aplica: una franja no se traslada a otro día."),
     "SEMANAL": Periodicidad(
         "Semanal", "SEMANAL", ["dias_semana", "ajuste"], multiples_dias=True,
+        sinonimos=("semanal", "cada semana", "bisemanal",
+                   "dos veces por semana", "2 veces por semana"),
         ayuda="Se pregunta el día de la SEMANA, no un número de día ni una "
               "fecha."),
-    "DOS_VECES_POR_SEMANA": Periodicidad(
-        "Dos veces por semana", "SEMANAL", ["dias_semana", "ajuste"],
-        multiples_dias=True,
-        ayuda="Se marcan los dos días: por ejemplo miércoles y viernes."),
     "CADA_N_SEMANAS": Periodicidad(
         "Cada varias semanas", "SEMANAL",
         ["cada_n_semanas", "dias_semana", "ajuste"], multiples_dias=True,
+        sinonimos=("bisemanal", "cada dos semanas", "cada quince días",
+                   "catorcenal", "cada 15 días"),
         ayuda="Cada dos semanas, cada tres. Se elige el DÍA de la semana y el "
               "sistema cuenta desde la vigencia — no hace falta que la fecha de "
               "inicio caiga en ese día.\n\n"
@@ -131,37 +138,47 @@ CATALOGO = {
               "aquí. Son 104 y 26 entregas al año: no da igual cuál."),
     "MENSUAL": Periodicidad(
         "Mensual", "ESPECIFICO", ["dia", "ajuste"], al_anio=12, multiples_dias=True,
+        sinonimos=("mensual", "cada mes"),
         fija={"meses": list(range(1, 13))},
         ayuda="Todos los meses. Solo se pregunta qué día."),
     "QUINCENAL": Periodicidad(
         "Quincenal", "ESPECIFICO", ["dia", "ajuste"],
+        sinonimos=("quincenal", "dos veces al mes", "bimensual", "quincena"),
         fija={"meses": list(range(1, 13))}, al_anio=24, multiples_dias=True,
         ayuda="Dos veces al mes. La multiplicidad de días no es una excepción "
               "aquí: es la definición. Lo normal es «el 15 y el último» o «el 7 "
               "y el 20»."),
     "BIMESTRAL": Periodicidad(
         "Bimestral", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=6,
+        sinonimos=("bimestral", "cada dos meses"),
         ayuda="Seis entregas al año. Se preguntan los meses y el día."),
     "TRIMESTRAL": Periodicidad(
         "Trimestral", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=4,
+        sinonimos=("trimestral", "cada trimestre", "cada tres meses"),
         ayuda="Cuatro entregas al año."),
     "SEMESTRAL": Periodicidad(
         "Semestral", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=2,
+        sinonimos=("semestral", "cada semestre", "dos veces al año"),
         ayuda="Dos entregas al año."),
     "ANUAL": Periodicidad(
         "Anual", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=1,
+        sinonimos=("anual", "cada año", "una vez al año", "bianual"),
         ayuda="Una vez al año: se pregunta el MES y el DÍA."),
     "PLURIANUAL": Periodicidad(
         "Cada varios años", "ESPECIFICO", ["cada_n_anios", "meses", "dia", "ajuste"],
+        sinonimos=("bienal", "bianual", "trienal", "quinquenal", "decenal",
+                   "plurianual", "cada varios años"),
         ayuda="Bienal, trienal, un plan quinquenal, un censo decenal. Se cuenta "
               "desde el año de la fecha de inicio. No es lo mismo que «cada 730 "
               "días»: los días se desfasan, los años no."),
     "CADA_N_DIAS": Periodicidad(
         "Cada cierto número de días", "CICLICO", ["intervalo", "ajuste"],
+        sinonimos=("cada n días", "cada cierto número de días", "catorcenal"),
         ayuda="Para ciclos que no encajan en el calendario: cada 45 días, cada "
               "tres años. Se cuenta desde la fecha de inicio."),
     "SIN_PATRON": Periodicidad(
         "Fechas sueltas, sin patrón", "FECHAS", ["fechas", "ajuste"],
+        sinonimos=("sin patrón", "fechas sueltas", "eventual", "por solicitud"),
         ayuda="Cuando ningún patrón encaja, se escriben las fechas. Ninguna "
               "obligación se queda sin poder registrarse."),
 }
@@ -201,3 +218,57 @@ def campos_ignorados(config: dict) -> list[str]:
 def formas_del_dia_contestadas(config: dict) -> list[str]:
     """Cuáles de las formas excluyentes de decir «qué día» vienen contestadas."""
     return [c for c in FORMAS_DEL_DIA if config.get(c)]
+
+
+def buscar(termino: str) -> list[str]:
+    """Las periodicidades que responden a ese término. Puede devolver VARIAS.
+
+    Que devuelva más de una no es un fallo de la búsqueda: es el término el que
+    es ambiguo, y el momento de resolverlo es al crear la obligación, no cuando
+    un ente de control pregunte por qué el informe salió 104 veces en vez de 26.
+
+    Los casos que ocurren de verdad:
+
+      «bisemanal»  → semanal marcando dos días (104/año) o cada dos semanas
+                     (26/año). La RAE admite los dos sentidos.
+      «quincenal»  → dos veces al mes en días fijos (24/año) o cada quince días
+                     corridos (26/año). El segundo se desplaza; el primero no.
+      «bianual»    → cada dos años, o dos veces al año.
+    """
+    t = (termino or "").strip().lower()
+    if not t:
+        return []
+    return [clave for clave, p in CATALOGO.items()
+            if t in p.sinonimos or t in p.nombre.lower()]
+
+
+def es_ambiguo(termino: str) -> bool:
+    return len(buscar(termino)) > 1
+
+
+#: Cuántas entregas produce cada periodicidad, dicho para una persona. Lo que
+#: de verdad separa dos opciones es esto: ofrecer dos nombres sin decir en qué
+#: se distinguen deja al usuario eligiendo a cara o cruz.
+_CUANTAS = {
+    "DIARIA": "una cada día",
+    "VARIAS_AL_DIA": "varias cada día",
+    "SEMANAL": "una por cada día de la semana que marque — 52 al año con uno, "
+               "104 con dos",
+    "CADA_N_SEMANAS": "una cada N semanas — 26 al año si son dos",
+    "CADA_N_DIAS": "una cada N días",
+    "PLURIANUAL": "una cada N años",
+    "SIN_PATRON": "las fechas que escriba",
+}
+
+
+def desambiguar(termino: str) -> list[tuple[str, str, str]]:
+    """(clave, nombre, en qué se diferencia) para que la elección sea informada."""
+    salida = []
+    for clave in buscar(termino):
+        p = CATALOGO[clave]
+        cuantas = _CUANTAS.get(clave)
+        if cuantas is None:
+            cuantas = (f"{p.al_anio} al año" if p.al_anio
+                       else "depende de lo que se conteste")
+        salida.append((clave, p.nombre, cuantas))
+    return salida

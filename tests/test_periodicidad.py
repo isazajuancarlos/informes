@@ -493,25 +493,68 @@ def test_el_cuadro_de_posibilidades_NO_promete_nada_que_el_sistema_no_haga():
 # «Cada N semanas» — y por qué «bisemanal» no es un nombre admisible
 # --------------------------------------------------------------------------
 
-def test_bisemanal_significa_DOS_COSAS_y_por_eso_no_se_usa_como_nombre():
-    """En español «bisemanal» es tanto «dos veces por semana» como «cada dos
-    semanas». Son 104 y 26 entregas al año: no da igual cuál.
+def test_DOS_VECES_POR_SEMANA_no_es_una_periodicidad_sino_semanal_con_dos_dias():
+    """Tuvo entrada propia en el catálogo y estaba mal.
 
-    Un sistema de cumplimiento no puede llevar una etiqueta que signifique dos
-    cosas — es la misma razón por la que «día 31 con excepción» no se admite
-    como forma de decir «último día del mes».
+    «Dos veces por semana» no es una periodicidad distinta: es SEMANAL con dos
+    días marcados. Darle nombre propio creaba una segunda manera de decir lo
+    mismo — el defecto que este módulo existe para impedir, cometido dentro del
+    propio módulo.
     """
-    dos_por_semana = fechas({"modo": "SEMANAL", "dias_semana": [2, 4], **INICIO},
-                            2026, 2026)
-    cada_dos = fechas({"modo": "SEMANAL", "dias_semana": [1],
-                       "cada_n_semanas": 2, **INICIO}, 2026, 2026)
-    assert len(dos_por_semana) == 104
-    assert len(cada_dos) == 26
+    claves = set(CATALOGO)
+    assert "DOS_VECES_POR_SEMANA" not in claves, claves
 
-    nombres = {p.nombre.lower() for p in CATALOGO.values()}
-    assert not any("bisemanal" in n for n in nombres), nombres
-    assert "dos veces por semana" in nombres
-    assert "cada varias semanas" in nombres
+    uno = fechas({"modo": "SEMANAL", "dias_semana": [1], **INICIO}, 2026, 2026)
+    dos = fechas({"modo": "SEMANAL", "dias_semana": [2, 4], **INICIO}, 2026, 2026)
+    assert len(uno) == 52 and len(dos) == 104
+    # La misma periodicidad; lo que cambia es la respuesta a «qué días».
+    assert CATALOGO["SEMANAL"].multiples_dias
+
+
+def test_bisemanal_es_AMBIGUO_y_lleva_a_una_eleccion_en_vez_de_a_nada():
+    """En español significa tanto «dos veces por semana» (104 al año) como
+    «cada dos semanas» (26). La RAE admite los dos sentidos.
+
+    La primera solución fue quitar la palabra del catálogo. Estaba mal: quitarla
+    no la desambigua, la ESCONDE — si la norma del cliente dice «bisemanal» y no
+    la encuentra, adivina. Ahora el término lleva a las dos y obliga a elegir,
+    diciendo en qué se diferencian.
+    """
+    from app.services.periodicidad import desambiguar, es_ambiguo
+
+    assert es_ambiguo("bisemanal")
+    opciones = desambiguar("bisemanal")
+    claves = {c for c, _, _ in opciones}
+    assert claves == {"SEMANAL", "CADA_N_SEMANAS"}, claves
+    # Y se dice en qué se distinguen: dos nombres sin diferencia visible dejan
+    # al usuario eligiendo a cara o cruz.
+    texto = " ".join(t for _, _, t in opciones)
+    assert "104" in texto and "26" in texto, texto
+
+
+def test_bianual_tambien_es_ambiguo():
+    """«Cada dos años» o «dos veces al año». Ocurre de verdad en las normas."""
+    from app.services.periodicidad import es_ambiguo
+
+    assert es_ambiguo("bianual")
+
+
+@pytest.mark.parametrize("termino", ["mensual", "trimestral", "anual",
+                                     "cada dos semanas", "diario"])
+def test_los_terminos_CLAROS_no_piden_desambiguar(termino):
+    """Un sistema que pregunta por todo entrena a contestar sin leer."""
+    from app.services.periodicidad import buscar, es_ambiguo
+
+    assert buscar(termino), termino
+    assert not es_ambiguo(termino), termino
+
+
+def test_toda_periodicidad_se_puede_encontrar_por_su_nombre():
+    """Una que no responda a ninguna búsqueda es inalcanzable en el asistente."""
+    from app.services.periodicidad import buscar
+
+    for clave, p in CATALOGO.items():
+        assert clave in buscar(p.nombre), f"{clave} no se encuentra por su nombre"
 
 
 @pytest.mark.parametrize("cada,esperado", [(1, 52), (2, 26), (3, 18), (4, 13)])
