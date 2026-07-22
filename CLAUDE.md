@@ -31,6 +31,19 @@ pip install -r requirements.txt   # installs openpyxl
 python migrate_v4.py              # adds new tables/columns safely
 ```
 
+### Schema migrations
+```bash
+python migrar_esquema.py   # Adds missing columns. Idempotent, verified, both dialects.
+```
+
+Run it after every upgrade, before starting the app. It adds `firma`,
+`fecha_vencimiento_nominal` and `tipo_ajuste` to `entregas_esperadas`.
+
+**Do not use `migrate_firma.py`**: it uses PostgreSQL-only syntax
+(`ADD COLUMN IF NOT EXISTS`, `information_schema`) and silently did nothing on
+SQLite, which is the engine for the `standalone` and `cloud` profiles. It now
+refuses to run.
+
 ### Database Operations
 ```bash
 python -m app.init_db    # Safe: creates missing tables only

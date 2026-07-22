@@ -32,6 +32,19 @@ MIGRACIONES = [
 
 
 def main() -> int:
+    # OBSOLETA Y ROTA EN SQLITE. No se borra por si algún despliegue la invoca,
+    # pero no debe ejecutarse: `ADD COLUMN IF NOT EXISTS` e `information_schema`
+    # son de PostgreSQL, y en SQLite —el motor de los perfiles standalone y
+    # cloud— fallan las dos. La columna nunca se creaba y la comprobación
+    # tampoco podía correr: informaba «NO SE PUDO VERIFICAR» y devolvía 1 sin
+    # que nadie mirara.
+    #
+    # Esto va en código y no en el docstring a propósito: un aviso que hay que
+    # leer no impide nada.
+    print("OBSOLETA: use `python migrar_esquema.py`, que funciona en SQLite y "
+          "en PostgreSQL y verifica el resultado contra el esquema.")
+    return 1
+
     aplicadas = 0
     fallos = 0
     for sql in MIGRACIONES:
