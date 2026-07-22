@@ -197,8 +197,7 @@ async def test_el_formulario_de_NUEVO_INFORME_se_dibuja_entero(user: User):
     await user.should_see("Datos Básicos")
     await user.should_see("Fecha Inicio")
     await user.should_see("Próximos vencimientos con esta regla")
-    await user.should_see("Ficha del informe")
-    await user.should_see("Datos que lleva la entrega")   # el último bloque
+    await user.should_see("Ficha del informe")            # el último bloque
     await user.should_see("Guardar")
 
 
@@ -328,3 +327,52 @@ async def test_se_puede_CREAR_una_parte_sin_salir_del_formulario(user: User):
     from app.models.meta_tables import Stakeholder
     with get_db_session() as db:
         assert db.query(Stakeholder).filter_by(nombre="Ministerio de Salud").first()
+
+
+async def test_el_esqueleto_del_informe_son_TRES_bloques_y_nada_mas(user: User):
+    """Datos básicos, cronograma y ficha. Todo lo demás era estructura impuesta.
+
+    La tarjeta «Clasificación» traía el tipo de flujo, el conjunto de datos y la
+    unidad; se midió y nada fuera de esta pantalla leía esas dos relaciones. Y
+    los campos estaban partidos en dos secciones por una distinción que ningún
+    camino de entrega usa. Dos secciones para lo mismo garantizan que una se
+    quede atrás.
+    """
+    from app.ui.reports_manager import page_reports_manager
+
+    @ui.page("/")
+    def _():
+        page_reports_manager()
+
+    await user.open("/")
+    user.find(marker="nuevo-informe").click()
+    await user.should_see("Datos Básicos")
+    await user.should_see("Cronograma")
+    await user.should_see("Ficha del informe")
+
+    for sobra in ("Clasificación", "Conjunto de Datos", "Unidad Responsable",
+                  "Tipo de Flujo", "Datos que lleva la entrega"):
+        await user.should_not_see(sobra)
+
+
+async def test_la_ficha_empieza_VACIA(user: User):
+    """Los campos que describen un informe los decide cada entidad, no el
+    programa. Traerlos puestos sería volver a imponer el ejemplo de un cliente,
+    aunque esta vez fueran borrables."""
+    from app.ui.reports_manager import page_reports_manager
+
+    @ui.page("/")
+    def _():
+        page_reports_manager()
+
+    await user.open("/")
+    user.find(marker="nuevo-informe").click()
+    await user.should_see("La ficha está vacía")
+
+    # Y se puede llenar desde aquí mismo.
+    user.find(marker="alta-campo-ficha").click()
+    await user.should_see("Nuevo campo")
+    _solo(user, "nombre-campo").set_value("Subsistema")
+    user.find("Crear campo").click()
+    assert user.notify.contains("creado"), user.notify.messages
+    await user.should_see("Subsistema")

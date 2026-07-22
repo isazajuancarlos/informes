@@ -397,17 +397,22 @@ def test_un_campo_OBLIGATORIO_en_blanco_bloquea_el_guardado():
     assert faltan_campos(definiciones, {'1': 'Vigilancia', '2': ''}) == []
 
 
-def test_un_NO_no_es_lo_mismo_que_no_contestado():
-    """Al mover los campos viejos, `False` en una casilla es un dato —«no»— y
-    no un hueco. Tratarlo como vacío perdería la diferencia entre «no requiere
-    acuerdo» y «nadie lo ha contestado»."""
+def test_un_NO_que_nadie_escribio_no_se_mueve():
+    """Parece lo contrario de lo que este sistema defiende, y no lo es.
+
+    «No» es un dato cuando alguien lo contesta. El problema es que en esa
+    columna NO SE PUEDE SABER: tiene `default=False`, así que todos los informes
+    que existen valen «No» —los que alguien marcó y los que nadie miró— y son
+    indistinguibles. Moverlo crearía 276 «No» que nadie escribió: un dato
+    inventado con apariencia de contestado.
+    """
     from migrar_campos_ficha import _texto
 
-    assert _texto(False) == 'No'
-    assert _texto(True) == 'Sí'
+    assert _texto(False) is None
+    assert _texto(True) == "S\u00ed"
     assert _texto(None) is None
-    assert _texto('   ') is None
-    assert _texto('Vigilancia') == 'Vigilancia'
+    assert _texto("   ") is None
+    assert _texto("Vigilancia") == "Vigilancia"
 
 
 def test_los_campos_de_ficha_MIGRADOS_conservan_su_etiqueta():
@@ -470,3 +475,54 @@ def test_borrar_un_campo_EN_USO_se_impide_y_se_dice_cuantos():
         # El contrapunto, para que la prueba no pase por prohibirlo todo.
         puede, motivo = puede_borrarse(db, id_libre)
         assert puede is True, motivo
+
+
+def test_una_instalacion_NUEVA_no_crea_ningun_campo():
+    """La ficha empieza vacía, y eso no es un descuido: los campos que describen
+    un informe los decide cada entidad. Crear los siete de la migración en una
+    base sin datos sería volver a imponer el ejemplo de un cliente, solo que
+    esta vez borrable."""
+    from app.core.database import Base, engine, get_db_session
+    from app.models.meta_tables import MetaVariable
+    from migrar_campos_ficha import columnas_con_datos
+
+    Base.metadata.create_all(engine)
+    with get_db_session() as db:
+        antes = db.query(MetaVariable).count()
+        assert columnas_con_datos(db) == set(), "sin informes no hay nada que mover"
+    import migrar_campos_ficha
+    assert migrar_campos_ficha.main() == 0
+    with get_db_session() as db:
+        assert db.query(MetaVariable).count() == antes, "no debe crear campos"
+
+
+def test_lo_que_SI_tiene_datos_se_mueve():
+    """El contrapunto: la prueba no puede pasar por no mover nunca nada."""
+    from app.core.database import Base, engine, get_db_session
+    from app.models.meta_tables import (ConfiguracionInformeVariable, Informe,
+                                        MetaVariable, Usuario)
+    from migrar_campos_ficha import columnas_con_datos, main
+
+    Base.metadata.create_all(engine)
+    with get_db_session() as db:
+        autor = db.query(Usuario).first()
+        if autor is None:
+            autor = Usuario(nombre='P', email='p@local', password_hash='x')
+            db.add(autor); db.flush()
+        inf = Informe(nombre='Informe con subsistema', creador_id=autor.id,
+                      subsistema='Vigilancia')
+        db.add(inf); db.commit()
+        ident = inf.id
+        assert columnas_con_datos(db) == {'subsistema'}
+        # Solo esa: no se crean los siete «por si acaso», y el booleano en
+        # falso no cuenta porque es el valor por defecto de la columna.
+
+    assert main() == 0
+    with get_db_session() as db:
+        campo = db.query(MetaVariable).filter_by(nombre_interno='subsistema').first()
+        assert campo is not None, "el campo con datos sí se crea"
+        assert db.query(MetaVariable).filter_by(
+            nombre_interno='cargo_autorizador').first() is None, "ese no tiene datos"
+        valor = db.query(ConfiguracionInformeVariable).filter_by(
+            informe_id=ident, variable_id=campo.id).first()
+        assert valor.valor_parametro == 'Vigilancia'

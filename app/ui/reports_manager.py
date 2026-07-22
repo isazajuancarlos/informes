@@ -2,9 +2,9 @@ from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import (
     Informe, Usuario, MetaVariable, ConfiguracionInformeVariable, Stakeholder,
-    ConjuntoDatos, UnidadOrganizacional, Participacion,
+    Participacion,
     ROL_ORIGEN, ROL_DESTINO, ROL_USUARIO,
-    AMBITO_FICHA, AMBITO_CONTENIDO,
+    AMBITO_FICHA,
 )
 from app.ui.ui_helpers import estado_vacio, ayuda
 from app.ui.asistente_cronograma import abrir_asistente
@@ -327,8 +327,6 @@ def page_reports_manager():
         'responsables': [], 'extensiones': [],
         'solicitantes': [], 'destinatarios': [],
         # NUEVOS CAMPOS v3.0
-        'conjunto_datos_id': None,
-        'unidad_id': None,
         'modo_tiempo': 'CICLICO',
         'regla': None,
         'regla_resumen': '',
@@ -370,8 +368,6 @@ def page_reports_manager():
         nuevo_informe.update({
             'nombre': '', 'descripcion': '', 'responsables': [], 'extensiones': [],
             'solicitantes': [], 'destinatarios': [],
-            'conjunto_datos_id': None,
-            'unidad_id': None,
             'modo_tiempo': 'CICLICO',
             # La regla del asistente, cuando la hay. Cuando está puesta manda
             # ella y las pestañas ni se muestran: dos fuentes para la misma
@@ -406,8 +402,6 @@ def page_reports_manager():
                                               for p in inf.partes(ROL_DESTINO)]
 
             # Cargar nuevos campos v3.0 + v4.0 (tipo_flujo es derivado)
-            nuevo_informe['conjunto_datos_id'] = str(inf.conjunto_datos_id) if inf.conjunto_datos_id else None
-            nuevo_informe['unidad_id'] = inf.unidad_id
 
             datos = inf.datos_generales or {}
             nuevo_informe['extensiones'] = datos.get('extensiones', [])
@@ -503,8 +497,6 @@ def page_reports_manager():
                 # tenía. `migrar_campos_ficha.py` mueve los valores viejos.
                 #
                 # tipo_flujo no se asigna: lo determinan las partes del flujo.
-                inf.conjunto_datos_id = int(nuevo_informe['conjunto_datos_id']) if nuevo_informe['conjunto_datos_id'] else None
-                inf.unidad_id = nuevo_informe.get('unidad_id')
                 inf.tipo_novedad = "Actualización"; inf.fecha_actualizacion = datetime.now()
                 # Las partes se reescriben enteras: una sola tabla que limpiar.
                 for p in list(inf.participaciones): db.delete(p)
@@ -519,7 +511,6 @@ def page_reports_manager():
                     recurrencia_json=rec_final,
                     datos_generales=datos_gen,
                     # Nuevos campos v3.0 + v4.0 (tipo_flujo es derivado, no se pasa)
-                    conjunto_datos_id=int(nuevo_informe['conjunto_datos_id']) if nuevo_informe['conjunto_datos_id'] else None,
                     unidad_id=nuevo_informe.get('unidad_id'),
                     activo=True,
                     tipo_novedad="Creación",
@@ -558,7 +549,7 @@ def page_reports_manager():
         ui.notify(f'Informe {msg}', type='positive'); ir_a_lista()
 
     # --- LOS CAMPOS, DIBUJADOS DESDE LO QUE EL ADMINISTRADOR DEFINIÓ ---
-    def _pintar_campos(ambito: str, vacio: str):
+    def _pintar_campos(vacio: str):
         """Un control por campo definido, del tipo que el campo declara.
 
         Antes todos los campos se capturaban con un `ui.input` de texto, aunque
@@ -568,7 +559,6 @@ def page_reports_manager():
         """
         with get_db_session() as db:
             campos = db.query(MetaVariable) \
-                .filter(MetaVariable.ambito == ambito) \
                 .filter((MetaVariable.activo == True) | (MetaVariable.activo.is_(None))) \
                 .order_by(MetaVariable.orden, MetaVariable.id).all()
             campos = [{'id': c.id, 'etiqueta': c.etiqueta_visual,
@@ -613,15 +603,14 @@ def page_reports_manager():
 
     # --- ALTA DE UN CAMPO SIN SALIR DEL FORMULARIO ---
     nuevo_campo = {'etiqueta': '', 'tipo': 'TEXTO', 'opciones': '',
-                   'obligatorio': False, 'descripcion': '', 'ambito': AMBITO_FICHA}
+                   'obligatorio': False, 'descripcion': ''}
 
     TIPOS_DE_CAMPO = ['TEXTO', 'TEXTO_LARGO', 'NUMERO', 'FECHA', 'BOOLEANO',
                       'LISTA', 'HORA_MILITAR', 'MONEDA']
 
-    def abrir_alta_campo(ambito: str):
+    def abrir_alta_campo():
         nuevo_campo.update({'etiqueta': '', 'tipo': 'TEXTO', 'opciones': '',
-                            'obligatorio': False, 'descripcion': '',
-                            'ambito': ambito})
+                            'obligatorio': False, 'descripcion': ''})
         dialogo_campo.open()
 
     def guardar_campo():
@@ -636,7 +625,7 @@ def page_reports_manager():
                 return
             db.add(MetaVariable(
                 nombre_interno=interno, etiqueta_visual=etiqueta,
-                tipo_dato=nuevo_campo['tipo'], ambito=nuevo_campo['ambito'],
+                tipo_dato=nuevo_campo['tipo'], ambito=AMBITO_FICHA,
                 opciones=(nuevo_campo['opciones'] or '').strip() or None,
                 es_obligatorio=bool(nuevo_campo['obligatorio']),
                 descripcion=(nuevo_campo['descripcion'] or '').strip() or None,
@@ -1149,94 +1138,43 @@ def page_reports_manager():
                     contenedor_vista_previa = ui.column().classes('w-full px-4 pb-3')
                     refrescar_vista_previa()
 
-            # ---- LOS CAMPOS DEL INFORME, DEFINIDOS POR EL ADMINISTRADOR ----
+            # ---- LA FICHA: LOS CAMPOS QUE EL ADMINISTRADOR DEFINA ----
             #
-            # Aquí había DOS TARJETAS con nueve campos fijos —subsistema, cargo
-            # autorizador, URL de plantilla, justificación normativa…— copiados
-            # del Excel de un cliente concreto. Eso convertía el ejemplo en la
-            # especificación: otra entidad clasificaba sus informes de otra
-            # manera y no tenía dónde ponerlo, y añadir un campo exigía tocar el
-            # modelo, la migración y esta pantalla.
+            # El esqueleto de un informe son TRES cosas: qué es (datos básicos),
+            # cuándo vence (cronograma) y cómo lo describe esta entidad (ficha).
+            # Nada más.
             #
-            # Ahora los campos son datos. Los de FICHA describen el informe; los
-            # de CONTENIDO son datos que la entrega lleva y que se validan al
-            # entregarla. Se crean desde aquí mismo.
-            ETIQUETAS_FLUJO = {
-                'ENVIO_INTERNO': 'Envío Interno',
-                'ENVIO_EXTERNO': 'Envío Externo',
-                'RECEPCION_EXTERNA': 'Recepción Externa',
-                'BIDIRECCIONAL': 'Bidireccional',
-            }
-
-            with ui.row().classes('w-full gap-4 mt-4'):
-                with ui.card().classes('w-1/2 p-4 border-l-4 border-teal-500'):
-                    ui.label('Clasificación').classes('text-lg font-bold text-teal-800')
-
-                    # El tipo de flujo se MUESTRA, no se elige: lo determinan las
-                    # partes. Dejarlo elegible permitía marcar «Recepción
-                    # Externa» un informe cuyas partes eran todas internas.
-                    with ui.row().classes('w-full items-center gap-2'):
-                        ui.label('Tipo de Flujo:').classes('text-sm text-gray-600')
-                        lbl_flujo = ui.label().classes('text-sm font-bold text-teal-700')
-                        ayuda('Se deduce de las partes: si algún destinatario es '
-                              'EXTERNO el informe sale de la entidad; si el origen '
-                              'es un tercero, entra. Con todas las partes internas '
-                              'el flujo es interno.')
-                    lbl_flujo.bind_text_from(
-                        nuevo_informe, 'destinatarios',
-                        backward=lambda _: ETIQUETAS_FLUJO[flujo_derivado(nuevo_informe)])
-
-                    # Conjunto de datos y unidad SIGUEN siendo relaciones y no
-                    # campos libres: apuntan a catálogos que se administran en su
-                    # propia pantalla, con su propia integridad. Un campo de
-                    # texto libre aquí rompería esa relación.
-                    with get_db_session() as db2:
-                        conjuntos = db2.query(ConjuntoDatos).filter_by(activo=True).order_by(ConjuntoDatos.nombre).all()
-                        opciones_conjuntos = {str(c.id): c.nombre for c in conjuntos}
-                    opciones_conjuntos[''] = 'Sin asignar'
-                    ui.select(label='Conjunto de Datos', options=opciones_conjuntos,
-                              with_input=True) \
-                        .bind_value(nuevo_informe, 'conjunto_datos_id') \
-                        .classes('w-full').props('outlined')
-
-                    with get_db_session() as db3:
-                        unidades = db3.query(UnidadOrganizacional).filter_by(activo=True).order_by(UnidadOrganizacional.nombre).all()
-                        opts_unidad = {None: '— Sin unidad —'}
-                        opts_unidad.update({u.id: u.nombre for u in unidades})
-                    ui.select(label='Unidad Responsable', options=opts_unidad) \
-                        .bind_value(nuevo_informe, 'unidad_id') \
-                        .classes('w-full').props('outlined')
-
-                with ui.card().classes('w-1/2 p-4 border-l-4 border-orange-500'):
-                    with ui.row().classes('w-full items-center justify-between no-wrap'):
-                        with ui.row().classes('items-center gap-0 no-wrap'):
-                            ui.label('Ficha del informe') \
-                                .classes('text-lg font-bold text-orange-800')
-                            ayuda('Estos campos los define usted en «Campos de los '
-                                  'informes». No vienen impuestos: cada entidad '
-                                  'clasifica sus informes a su manera.')
-                        ui.button(icon='add', on_click=lambda: abrir_alta_campo(AMBITO_FICHA)) \
-                            .props('flat dense round color=orange') \
-                            .mark('alta-campo-ficha') \
-                            .tooltip('Crear un campo nuevo sin salir de aquí')
-                    _pintar_campos(AMBITO_FICHA,
-                                   'Todavía no hay campos de ficha. Créelos con el '
-                                   '«+» y aparecerán aquí para todos los informes.')
-
-            with ui.card().classes('w-full mt-4 p-4 bg-green-50'):
+            # Aquí llegó a haber dos tarjetas más. La primera traía nueve campos
+            # fijos copiados del Excel de un cliente. Al volverlos definibles
+            # quedó una «Clasificación» con el tipo de flujo, el conjunto de
+            # datos y la unidad — y seguía siendo estructura impuesta: se midió
+            # y NADA fuera de esta pantalla leía esas dos relaciones. La segunda
+            # separaba los campos en «ficha» y «datos de la entrega», una
+            # distinción que tampoco cambiaba nada: ningún camino de entrega lee
+            # los valores configurados. Dos secciones para lo mismo garantizan
+            # que una se quede atrás.
+            #
+            # El tipo de flujo no desaparece: lo siguen diciendo las partes, y
+            # se ve en la ficha técnica del informe. Lo que desaparece es
+            # mostrarlo aquí como si fuera un campo que se rellena.
+            with ui.card().classes('w-full mt-4 p-4 border-l-4 border-orange-500'):
                 with ui.row().classes('w-full items-center justify-between no-wrap'):
                     with ui.row().classes('items-center gap-0 no-wrap'):
-                        ui.label('Datos que lleva la entrega') \
-                            .classes('text-lg font-bold text-green-900')
-                        ayuda('Lo que hay DENTRO del informe cuando alguien lo '
-                              'entrega: montos, horas de corte, radicados. Se '
-                              'validan al recibir la entrega, no ahora.')
-                    ui.button(icon='add', on_click=lambda: abrir_alta_campo(AMBITO_CONTENIDO)) \
-                        .props('flat dense round color=green') \
-                        .mark('alta-campo-contenido') \
+                        ui.label('Ficha del informe') \
+                            .classes('text-lg font-bold text-orange-800')
+                        ayuda('Los campos de la ficha los define usted: subsistema, '
+                              'norma que lo exige, aplicativo de origen, lo que su '
+                              'entidad necesite. No viene ninguno impuesto.\n\n'
+                              'Se crean con el «+» y quedan disponibles para TODOS '
+                              'los informes.')
+                    ui.button(icon='add', on_click=abrir_alta_campo) \
+                        .props('flat dense round color=orange') \
+                        .mark('alta-campo-ficha') \
                         .tooltip('Crear un campo nuevo sin salir de aquí')
-                _pintar_campos(AMBITO_CONTENIDO,
-                               'Todavía no hay campos de contenido definidos.')
+                _pintar_campos(
+                    'La ficha está vacía, y así empieza siempre: los campos que '
+                    'describen un informe los decide cada entidad, no el programa. '
+                    'Cree el primero con el «+».')
 
             ui.button('Guardar', on_click=guardar).classes('mt-6 w-full bg-slate-900 text-white')
 

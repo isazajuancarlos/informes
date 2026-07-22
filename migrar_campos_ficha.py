@@ -72,24 +72,60 @@ CAMPOS = [
 def _texto(valor):
     """El valor de la columna, como cadena. `None` si no hay nada que mover.
 
-    `False` en una casilla NO es «no hay dato»: es un dato, y es «no». Tratarlo
-    como vacío perdería la diferencia entre «no requiere acuerdo» y «nadie lo
-    ha contestado», que es justo la distinción que este sistema existe para no
-    perder.
+    **`False` no se mueve**, y esto merece explicación porque parece lo
+    contrario de lo que este sistema defiende. «No» sí es un dato cuando alguien
+    lo contesta; el problema es que aquí NO SE PUEDE SABER si lo contestó. La
+    columna `tiene_acuerdo_confidencialidad` tiene `default=False`, así que
+    todos los informes que existen valen «No» —los que alguien marcó y los que
+    nadie miró— y son indistinguibles.
+
+    Moverlo crearía un campo con doscientos setenta y seis «No» que nadie
+    escribió: un dato inventado con apariencia de contestado, que es justo lo
+    que no puede pasar. `True` sí se mueve: eso alguien lo marcó.
     """
     if valor is None:
         return None
     if isinstance(valor, bool):
-        return "Sí" if valor else "No"
+        return "Sí" if valor else None
     texto = str(valor).strip()
     return texto or None
+
+
+def columnas_con_datos(db) -> set:
+    """Cuáles de las columnas viejas tienen algo que mover.
+
+    Sin esto, una instalación NUEVA se encontraba los siete campos creados: el
+    ejemplo de un cliente vuelto a imponer, solo que esta vez borrable. La ficha
+    de un informe empieza vacía porque los campos que describen un informe los
+    decide cada entidad.
+
+    Se crea únicamente lo que tiene datos detrás, que es lo que significa
+    «migrar»: mover algo que ya está, no inventarlo.
+    """
+    con_datos = set()
+    for inf in db.query(Informe).all():
+        for columna, *_ in CAMPOS:
+            if _texto(getattr(inf, columna, None)) is not None:
+                con_datos.add(columna)
+        if len(con_datos) == len(CAMPOS):
+            break
+    return con_datos
 
 
 def main() -> int:
     creados = movidos = 0
     with get_db_session() as db:
+        hay_datos = columnas_con_datos(db)
+        if not hay_datos:
+            print("Nada que mover: ninguna columna vieja tiene datos.")
+            print("(En una instalación nueva esto es lo normal, y la ficha "
+                  "empieza vacía a propósito.)")
+            return 0
+
         definiciones = {}
         for columna, interno, etiqueta, tipo, ayuda in CAMPOS:
+            if columna not in hay_datos:
+                continue
             campo = db.query(MetaVariable).filter_by(nombre_interno=interno).first()
             if campo is None:
                 campo = MetaVariable(
@@ -108,7 +144,7 @@ def main() -> int:
         for inf in db.query(Informe).all():
             for columna, *_ in CAMPOS:
                 valor = _texto(getattr(inf, columna, None))
-                if valor is None:
+                if valor is None or columna not in definiciones:
                     continue
                 variable_id = definiciones[columna]
                 ya = db.query(ConfiguracionInformeVariable).filter_by(
