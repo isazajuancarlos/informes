@@ -412,6 +412,16 @@ PASOS_BASE_DE_DATOS = [
      "Con el perfil `standalone` esto casi siempre es un problema de\n"
      "permisos de escritura en la carpeta `storage/`.\n"
      "Con `onprem` o `cloud`, revisa DATABASE_URL en el archivo .env."),
+    ("Actualizando el esquema…", ["migrar_esquema.py"],
+     "No se pudo actualizar el esquema de la base de datos.",
+     "Si es una instalación NUEVA esto no debería fallar; si estás\n"
+     "actualizando una anterior, el mensaje de arriba dice qué columna\n"
+     "no se pudo añadir."),
+    ("Moviendo los campos de ficha…", ["migrar_campos_ficha.py"],
+     "No se pudieron mover los campos de ficha.",
+     "Solo afecta a instalaciones ANTERIORES, que guardaban esos campos\n"
+     "en columnas fijas. En una instalación nueva no hay nada que mover\n"
+     "y este paso no hace nada."),
     ("Sembrando los datos iniciales…", ["seed_data.py"],
      "No se pudieron crear los usuarios iniciales.",
      "El sistema quedó instalado pero SIN NINGÚN USUARIO, así que no se\n"

@@ -64,9 +64,13 @@ def test_el_esquema_se_crea_ANTES_de_sembrar():
     instalar.preparar_base_de_datos("py", {}, ejecutar=espia)
 
     textos = [" ".join(c) for c in espia.comandos]
-    assert len(textos) == 2, textos
     assert "app.init_db" in textos[0], textos
-    assert "seed_data.py" in textos[1], textos
+    assert "seed_data.py" in textos[-1], textos
+    # Y las migraciones van EN MEDIO: después de que las tablas existan, y
+    # antes de sembrar, porque la siembra escribe en columnas que la migración
+    # acaba de añadir.
+    assert [i for i, x in enumerate(textos) if "migrar_esquema" in x] == [1], textos
+    assert [i for i, x in enumerate(textos) if "migrar_campos_ficha" in x] == [2], textos
 
 
 def test_si_falla_el_esquema_el_instalador_SALE_CON_ERROR():
@@ -75,7 +79,7 @@ def test_si_falla_el_esquema_el_instalador_SALE_CON_ERROR():
     with pytest.raises(SystemExit) as e:
         instalar.preparar_base_de_datos("py", {}, ejecutar=espia)
     assert e.value.code != 0
-    assert len(espia.comandos) == 1, "no debe intentar sembrar tras fallar el esquema"
+    assert len(espia.comandos) == 1, "no debe seguir tras fallar el esquema"
 
 
 def test_si_falla_la_SIEMBRA_el_instalador_SALE_CON_ERROR():
@@ -100,7 +104,8 @@ def test_cuando_todo_va_bien_NO_sale_con_error():
 def test_el_mensaje_de_fallo_de_la_siembra_dice_que_NO_HAY_USUARIOS():
     """«Falló la siembra» no le dice nada a quien instala. «El sistema quedó sin
     ningún usuario, así que no se puede entrar» sí, y es lo que ocurre."""
-    _, _, fallo, ayuda = instalar.PASOS_BASE_DE_DATOS[1]
+    _, _, fallo, ayuda = next(p for p in instalar.PASOS_BASE_DE_DATOS
+                              if "seed_data.py" in p[1])
     assert "usuarios" in (fallo + ayuda).lower()
     assert "no se puede entrar" in ayuda.lower() or "SIN NINGÚN USUARIO" in ayuda
 
@@ -108,4 +113,5 @@ def test_el_mensaje_de_fallo_de_la_siembra_dice_que_NO_HAY_USUARIOS():
 def test_los_pasos_estan_declarados_en_orden():
     """La lista es la fuente del orden; si alguien la reordena, esto lo dice."""
     argumentos = [" ".join(p[1]) for p in instalar.PASOS_BASE_DE_DATOS]
-    assert argumentos == ["-m app.init_db", "seed_data.py"], argumentos
+    assert argumentos == ["-m app.init_db", "migrar_esquema.py",
+                          "migrar_campos_ficha.py", "seed_data.py"], argumentos

@@ -84,10 +84,39 @@ jobs:
               fecha_programada TIMESTAMP, fecha_limite_teorica TIMESTAMP,
               estado VARCHAR(20))""")
           c.execute("INSERT INTO entregas_esperadas (id, estado) VALUES (1, 'PENDIENTE')")
+          # La base vieja tiene que traer TODAS las tablas que la migración
+          # toca, no solo la primera que se le añadió. Este molde solo creaba
+          # `entregas_esperadas`, así que al migrar también `meta_variables` el
+          # trabajo se puso rojo diciendo «la tabla no existe» — y tenía razón:
+          # una base de verdad la tiene desde hace versiones, el que estaba
+          # incompleto era el molde.
+          c.execute("""CREATE TABLE meta_variables (
+              id INTEGER PRIMARY KEY, nombre_interno VARCHAR(50),
+              etiqueta_visual VARCHAR(150), tipo_dato VARCHAR(20),
+              es_obligatorio BOOLEAN, descripcion VARCHAR(255))""")
+          c.execute("""INSERT INTO meta_variables
+              (id, nombre_interno, etiqueta_visual, tipo_dato, es_obligatorio)
+              VALUES (1, 'monto', 'Monto', 'MONEDA', 1)""")
           c.commit()
           PY
           DATABASE_URL="sqlite:///ci_antigua.db" python migrar_esquema.py
           DATABASE_URL="sqlite:///ci_antigua.db" python migrar_esquema.py
+
+      - name: Las filas viejas quedaron RELLENADAS, no en nulo
+        run: |
+          # Añadir la columna y dejarla en NULL es el trabajo a medias que no se
+          # nota: un `ambito` nulo no es ninguno de los dos ámbitos, así que el
+          # campo no aparecería en ninguna sección y nadie sabría por qué.
+          python - <<'PY'
+          import sqlite3, sys
+          c = sqlite3.connect("ci_antigua.db")
+          fila = c.execute("SELECT ambito, activo, orden FROM meta_variables "
+                           "WHERE id = 1").fetchone()
+          if fila != ('CONTENIDO', 1, 0):
+              print(f"La fila vieja quedó como {fila}, no rellenada.")
+              sys.exit(1)
+          print("La fila anterior a la columna quedó con su valor.")
+          PY
 
       - name: La migración obsoleta sigue negándose a correr
         run: |
