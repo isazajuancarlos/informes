@@ -3,7 +3,8 @@
 **Documento interno de decisión comercial. No se entrega al cliente.**
 Lo que sí se entrega es el EULA y la cotización, que se derivan de aquí.
 
-Versión 1.0 · 2026-07-18 · Propuesta para revisión de Juan Carlos Isaza
+Versión 1.1 · 2026-07-21 · Propuesta para revisión de Juan Carlos Isaza
+Cifras de mercado ancladas a `ANCLAJE_PRECIOS.md`, reproducibles contra SECOP II.
 
 ---
 
@@ -76,49 +77,139 @@ lanzamiento del 40% se convierte en un descuento perpetuo sobre la renta.
 
 ---
 
-## 4. Precios
+## 4. Cómo se valora, y con qué se compara
 
-> **Cifras en COP.** El equivalente en USD es referencial a ~4.000 COP/USD;
-> confírmalo antes de cotizar en moneda extranjera. Todos los valores son
-> **antes de IVA**.
+Hay precios de referencia —§4.4— pero antes va el método, porque una lista
+enumera tres casos y un método sirve para cualquier entidad.
 
-### 4.1. Licencia perpetua — `standalone` y `onprem`
+Lo que sigue no es negociable con uno mismo: es la baranda que evita que la
+tercera reunión dura acabe regalando el trabajo.
 
-| Edición | Perfil | Alcance | Licencia perpetua | Mantenimiento anual (20%) |
+> **Corrección del 2026-07-21.** La versión anterior de este apartado afirmaba
+> que los precios estaban «bajos por un orden de magnitud» y retiraba la lista
+> por eso. **Esa afirmación era falsa.** Salía de pedirle a la API los 200
+> contratos de mayor valor y sacar la mediana de ahí: cuando una muestra se
+> ordena por la variable que se va a medir, deja de ser una muestra. Subir
+> precios sobre esa medición habría dejado el producto fuera de mercado sin que
+> nadie supiera por qué. Todo lo de aquí abajo sale ahora del universo completo
+> y es reproducible con `python analisis_precios_secop.py`; el detalle y los
+> límites están en [`ANCLAJE_PRECIOS.md`](ANCLAJE_PRECIOS.md).
+
+### 4.1. El anclaje: qué gasta hoy la entidad en el mismo problema
+
+**Antes de cotizar, se consulta SECOP.** Los contratos de las entidades públicas
+son públicos: se busca qué paga hoy la entidad por hacer a mano lo que el sistema
+hace, y esa cifra —no nuestro costo— es el punto de partida de la conversación.
+
+**Software de seguimiento** — 2.624 contratos, el comparable directo:
+
+| p25 | mediana | p75 | p90 |
+|---|---|---|---|
+| $18,1M | **$36,5M** | $66,1M | $118,0M |
+
+**Una persona haciendo el trabajo a mano** — 3.344 contratos, anualizados. Es el
+competidor real, y la anualización no es un detalle: la duración mediana es de
+180 días, así que comparar sin normalizar subestimaría el costo anual a la mitad.
+
+| p25 | mediana | p75 | p90 |
+|---|---|---|---|
+| $42,6M | **$54,8M / año** | $73,6M | $99,2M |
+
+Los contratos de $100M–$150M que citaba la versión anterior existen —JEP, ANH,
+IDU, UBPD— pero son el percentil 90 y superior. Sirven como ejemplo de que el
+gasto es real y recurrente; **no como mediana**.
+
+**El argumento, con las cifras corregidas:** una entidad que hoy contrata a una
+persona para esta función gasta la mediana de $54,8M **todos los años**. El
+sistema se paga una vez.
+
+### 4.2. Por dónde entra la venta
+
+| Modalidad | Cuota |
+|---|---|
+| **Contratación directa** | **85,4%** |
+| Régimen especial | 5,3% |
+| Mínima cuantía | 3,2% |
+
+**El 88% del mercado entra por contratación directa o mínima cuantía**, y el
+artículo 6 de la Ley 1150 de 2007 **exime a ambas del RUP**. El temor de que
+«experiencia acreditada en contratos similares» dejara fuera al primer cliente no
+se sostiene: por la puerta que usa el 85% de este mercado, ese requisito no es el
+filtro. Solo 10 de 2.646 contratos fueron por licitación pública.
+
+### 4.3. Qué determina el número en cada caso
+
+En orden de peso:
+
+1. **Cuánto gasta hoy la entidad** en la función (§4.1). Es el techo razonable.
+2. **Cuántas obligaciones de reporte** administra: es lo que escala el valor,
+   no el número de usuarios.
+3. **Si el reporte tiene fundamento legal** — como el SGR de la Ley 2056 — el
+   incumplimiento tiene consecuencia disciplinaria, y eso cambia la conversación
+   entera. No se vende miedo; se constata quién responde si el informe no sale.
+4. **Perfil de despliegue.** `standalone` es instalación asistida y poco más;
+   `onprem` air-gapped implica traslado, kit offline y acompañamiento en sitio.
+5. **Recurrencia.** Si ya contratan a alguien todos los años, se compara contra
+   el acumulado de tres años, no contra el de uno.
+
+### 4.4. Precios de referencia, y dónde caen en el mercado
+
+**Cifras en COP, antes de IVA.** No son una tarifa que se publique en una web:
+son el punto desde el que se aplica §4.3. Un precio publicado es un ancla desde
+la que el comprador negocia hacia abajo.
+
+| Edición | Perfil | Alcance | Licencia perpetua | Mantenimiento (20%) |
 |---|---|---|---|---|
 | **Esencial** | `standalone` | Hasta 25 usuarios · 1 sede · SQLite | **$12.000.000** | $2.400.000 |
 | **Profesional** | `onprem` | Hasta 100 usuarios · multi-área · PostgreSQL | **$28.000.000** | $5.600.000 |
 | **Corporativa** | `onprem` | Usuarios ilimitados · multi-sede · air-gapped | **$55.000.000** | $11.000.000 |
 
-**Año 1 = licencia + mantenimiento incluido.** Es decir, la Profesional se
-factura en **$33.600.000** el primer año y **$5.600.000** cada año siguiente.
+**Año 1 = licencia + mantenimiento.** La Profesional se factura en $33.600.000 el
+primer año y $5.600.000 cada año siguiente.
 
-### 4.2. Suscripción — `cloud`
+Contra la medición de §4.1:
 
-| Edición | Alcance | Mensual | Anual (2 meses de descuento) |
-|---|---|---|---|
-| **Cloud Esencial** | Hasta 25 usuarios | $850.000 | $8.500.000 |
-| **Cloud Profesional** | Hasta 100 usuarios | $1.950.000 | $19.500.000 |
-
-Incluye hospedaje, respaldos, actualizaciones y disponibilidad. Sin licencia
-inicial. El precio anual está calibrado para que **la suscripción se cruce con
-la compra perpetua alrededor del año 3**: antes de eso el cloud es más barato,
-después el perpetuo lo es. Esa es la conversación honesta con el cliente y la
-que además empuja a las empresas grandes hacia el perpetuo, que es donde el
-producto encaja mejor.
-
-### 4.3. Servicios, aparte de la licencia
-
-| Concepto | Precio | Nota |
+| Edición | Percentil del software comparable | Equivale a |
 |---|---|---|
-| Implementación y parametrización | $6.000.000 – $18.000.000 | Según nº de reglas y variables |
-| Migración de datos históricos | Desde $4.500.000 | Cotizar por volumen y estado del origen |
-| Capacitación (sesión de 4 h, hasta 15 personas) | $1.800.000 | Presencial en Medellín sin recargo |
-| Desarrollo a la medida | $320.000 / hora | Mínimo 20 horas |
-| Instalación air-gapped asistida en sitio | $3.500.000 | Viáticos aparte fuera del Valle de Aburrá |
+| Esencial | 12 | **2,6 meses** de una persona |
+| Profesional | 40 | **6,1 meses** de una persona |
+| Corporativa | 68 | **12,1 meses** de una persona |
 
-**La implementación no se regala.** Es donde se va el tiempo real y es lo que un
-cliente entiende que se paga.
+**La Corporativa perpetua cuesta lo mismo que UN AÑO de UNA persona**, y la
+persona vuelve a costar lo mismo al año siguiente. Ese es el argumento, y es una
+cifra medida.
+
+Lo que sí conviene revisar es la **Esencial a $12M**: en el percentil 12 compite
+con mínima cuantía, donde el margen es estrecho y el cliente pide más soporte por
+peso. Es la misma razón por la que en Quipu OPRF se retiró el tramo de 9 USD.
+
+### 4.5. Las barandas, que sí son fijas
+
+| Regla | Valor | Por qué |
+|---|---|---|
+| Mantenimiento anual | **20% del precio de lista** | Rango de mercado 18–22%; por debajo de 15% trabajas gratis |
+| Primer año de mantenimiento | **Incluido y obligatorio** | El año 1 nunca es solo licencia |
+| Reactivación tras vencer | **50% de la licencia** + anualidades no pagadas | Si no, saltan tres años y renuevan solo cuando necesitan algo |
+| Descuento máximo acumulado | **35%** | Por debajo, el proyecto no paga la implementación |
+| Piso absoluto de licencia | **El costo de implementación × 2** | Nunca se firma por debajo. Si no lo cubre, no es cliente |
+
+**Los porcentajes son la protección real**, no las cifras: se mantienen sea cual
+sea el valor negociado. Los precios de §4.4 se negocian; estas barandas, no.
+
+### 4.6. Servicios, siempre aparte
+
+Implementación y parametrización, migración de datos, capacitación, desarrollo a
+la medida e instalación air-gapped asistida **se cotizan por separado y no se
+regalan**. Es donde se va el tiempo real y es lo que un cliente entiende que se
+paga. Se valoran por horas efectivas contra la tarifa vigente, no por porcentaje
+de la licencia.
+
+### 4.7. Suscripción `cloud`
+
+Se calibra para que **se cruce con la compra perpetua alrededor del año 3**:
+antes el cloud sale más barato, después el perpetuo. Esa es la conversación
+honesta, y además empuja a las entidades grandes hacia el perpetuo, que es donde
+el producto encaja mejor.
 
 ---
 
