@@ -227,3 +227,62 @@ def test_una_fecha_anual_dice_EL_MES_y_no_solo_el_dia():
     dichos = {L.dice for L in interpretaciones([date(2026, 7, 6)])}
     assert "cada 6 de julio" in dichos, dichos
     assert "cada año, el día 6" not in dichos, dichos
+
+
+# --------------------------------------------------------------------------
+# Las dos pruebas que faltaban, y por qué faltaban
+# --------------------------------------------------------------------------
+#
+# Se descubrió mutando: quitar el filtro de «la lectura debe contener lo
+# marcado» y volver a deducir la periodicidad del número de meses NO ponían
+# rojo el banco. Dos pruebas que pasaban por la razón equivocada:
+#
+#   - las selecciones que probaba eran tan simples que ninguna candidata se
+#     descartaba nunca, así que quitar el filtro no cambiaba nada;
+#   - solo se miraba el TEXTO de la lectura, y la periodicidad viaja en otro
+#     campo.
+
+def test_una_lectura_IMPOSIBLE_no_se_ofrece():
+    """Dos lunes separados TRES semanas no pueden ser «cada dos semanas»: esa
+    serie no contiene el segundo. Ofrecerla sería proponerle al usuario una
+    obligación que no incluye una de las fechas que acaba de marcar.
+
+    Hace falta una selección donde el filtro llegue a rechazar algo; con una
+    sola fecha ninguna candidata se descarta y la comprobación no mide nada.
+    """
+    from app.services.inferir_periodicidad import interpretaciones
+
+    seleccion = [date(2026, 7, 6), date(2026, 7, 27)]
+    dichos = {L.dice for L in interpretaciones(seleccion)}
+    assert not any("cada dos semanas" in d for d in dichos), dichos
+    # Y el caso contrario, para que la prueba no pase por prohibirlo todo:
+    dos_semanas = {L.dice for L in interpretaciones([date(2026, 7, 6),
+                                                     date(2026, 7, 20)])}
+    assert any("cada dos semanas" in d for d in dos_semanas), dos_semanas
+
+
+@pytest.mark.parametrize("seleccion,esperada", [
+    ([date(2026, 7, 6), date(2026, 8, 6)], "ANUAL"),        # julio y agosto
+    ([date(2026, 1, 6), date(2026, 7, 6)], "SEMESTRAL"),    # a seis meses
+    ([date(2026, m, 15) for m in (3, 6, 9, 12)], "TRIMESTRAL"),
+    ([date(2026, m, 15) for m in (1, 3, 5, 7, 9, 11)], "BIMESTRAL"),
+])
+def test_la_PERIODICIDAD_de_la_lectura_tambien_es_correcta(seleccion, esperada):
+    """No basta con que el texto esté bien: la clave viaja en otro campo y es la
+    que se guarda. Comprobar solo el texto dejaba pasar que la periodicidad se
+    dedujera del número de meses en vez de su separación."""
+    from app.services.inferir_periodicidad import interpretaciones
+
+    claves = {L.periodicidad for L in interpretaciones(seleccion)}
+    assert esperada in claves, (esperada, claves)
+
+
+def test_el_NOMBRE_mostrado_corresponde_a_la_periodicidad():
+    """Si el nombre y la clave se separan, el usuario elige una cosa y se guarda
+    otra."""
+    from app.services.inferir_periodicidad import interpretaciones
+    from app.services.periodicidad import CATALOGO
+
+    for L in interpretaciones([date(2026, 1, 6), date(2026, 7, 6)]):
+        if L.periodicidad in CATALOGO:
+            assert L.nombre == CATALOGO[L.periodicidad].nombre, L.periodicidad
