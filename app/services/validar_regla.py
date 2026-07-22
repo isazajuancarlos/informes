@@ -81,7 +81,7 @@ PASOS = [
     ("Cuándo vence", {"meses", "cada_n_anios", "dia_corte", "dias_corte", "dia_habil",
                       "es_ultimo_dia", "usar_ultimo_dia_en_meses_cortos",
                       "dia_semana_mes", "semana_del_mes", "intervalo",
-                      "dias_semana", "dia_habil_semana", "fechas", "hora_inicio", "hora_fin",
+                      "dias_semana", "dia_habil_semana", "cada_n_semanas", "fechas", "hora_inicio", "hora_fin",
                       "intervalo_horas"}),
     ("Si cae en día no hábil", {"ajuste_habil", "ajuste_habil_anterior",
                                 "mover_habil", "mover_habil_anterior"}),
@@ -362,6 +362,15 @@ def _especifico(config, r):
 def _semanal(config, r):
     if not r.toca("dias_semana", "dia_habil_semana"):
         return
+    if config.get("cada_n_semanas"):
+        cada = _entero(config.get("cada_n_semanas"), 0)
+        if cada < 1:
+            r.errores.append("«Cada cuántas semanas» debe ser 1 o más.")
+        elif cada > 1 and not config.get("fecha_inicio"):
+            # Sin fecha de inicio no hay desde qué semana contar.
+            r.errores.append(
+                "Con una periodicidad de varias semanas hace falta la fecha de "
+                "inicio: es la semana desde la que se cuenta.")
     if config.get("dia_habil_semana"):
         n = _entero(config.get("dia_habil_semana"), 0)
         if not 1 <= n <= 7:

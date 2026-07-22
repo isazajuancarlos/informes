@@ -127,6 +127,7 @@ def test_los_dias_de_la_semana_se_cuentan_SIN_el_motor():
 SONDEO = {
     "intervalo": {"intervalo": 10},
     "cada_n_anios": {"cada_n_anios": 3},
+    "cada_n_semanas": {"cada_n_semanas": 2},
     "meses": {"meses": [3]},
     "dia": {"dia_corte": 9},
     "dias_semana": {"dias_semana": [2]},
@@ -204,8 +205,9 @@ def test_ninguna_periodicidad_deja_SIN_preguntar_algo_que_hace_falta(clave):
     # son los doce meses y «diaria» es intervalo 1. Pedirlo sería hacer repetir
     # lo que se acaba de decir, y abrir la puerta a contradecirse.
     faltan -= set(p.fija)
-    # Una periodicidad de un solo año no pregunta cada cuántos años.
-    faltan -= {"cada_n_anios"}
+    # Una periodicidad de un solo año no pregunta cada cuántos años, ni una
+    # semanal cada cuántas semanas: su nombre ya lo dice.
+    faltan -= {"cada_n_anios", "cada_n_semanas"}
     assert not faltan, f"{clave} no pregunta {sorted(faltan)}, y {p.modo} lo usa"
 
 
@@ -485,3 +487,115 @@ def test_el_cuadro_de_posibilidades_NO_promete_nada_que_el_sistema_no_haga():
             rotas.append(f"{dimension}/{posibilidad}: {r.errores}")
     assert not rotas, rotas
     assert len(FILAS) >= 26, "el cuadro encogió"
+
+
+# --------------------------------------------------------------------------
+# «Cada N semanas» — y por qué «bisemanal» no es un nombre admisible
+# --------------------------------------------------------------------------
+
+def test_bisemanal_significa_DOS_COSAS_y_por_eso_no_se_usa_como_nombre():
+    """En español «bisemanal» es tanto «dos veces por semana» como «cada dos
+    semanas». Son 104 y 26 entregas al año: no da igual cuál.
+
+    Un sistema de cumplimiento no puede llevar una etiqueta que signifique dos
+    cosas — es la misma razón por la que «día 31 con excepción» no se admite
+    como forma de decir «último día del mes».
+    """
+    dos_por_semana = fechas({"modo": "SEMANAL", "dias_semana": [2, 4], **INICIO},
+                            2026, 2026)
+    cada_dos = fechas({"modo": "SEMANAL", "dias_semana": [1],
+                       "cada_n_semanas": 2, **INICIO}, 2026, 2026)
+    assert len(dos_por_semana) == 104
+    assert len(cada_dos) == 26
+
+    nombres = {p.nombre.lower() for p in CATALOGO.values()}
+    assert not any("bisemanal" in n for n in nombres), nombres
+    assert "dos veces por semana" in nombres
+    assert "cada varias semanas" in nombres
+
+
+@pytest.mark.parametrize("cada,esperado", [(1, 52), (2, 26), (3, 18), (4, 13)])
+def test_cada_N_semanas_da_lo_que_dice(cada, esperado):
+    venc = fechas({"modo": "SEMANAL", "dias_semana": [1],
+                   "cada_n_semanas": cada, **INICIO}, 2026, 2026)
+    assert len(venc) == esperado
+    assert all(v.weekday() == 1 for v in venc), "todos deben ser martes"
+
+
+def test_el_dia_de_la_semana_se_ELIGE_y_no_lo_impone_la_fecha_de_inicio():
+    """Con «cada 14 días» el día lo decidía la vigencia: quien quisiera los
+    martes tenía que saber poner un martes de fecha de inicio. Eso es pedirle al
+    usuario que conozca la implementación."""
+    desde_jueves = fechas({"modo": "SEMANAL", "dias_semana": [1],
+                           "cada_n_semanas": 2, "fecha_inicio": "2026-01-01"},
+                          2026, 2026)
+    desde_martes = fechas({"modo": "SEMANAL", "dias_semana": [1],
+                           "cada_n_semanas": 2, "fecha_inicio": "2026-01-06"},
+                          2026, 2026)
+    assert desde_jueves == desde_martes, "la vigencia no debe mover el patrón"
+    assert desde_jueves[0] == date(2026, 1, 6), desde_jueves[0]
+
+
+def test_se_ancla_en_la_PRIMERA_OCURRENCIA_y_no_en_la_semana_de_la_vigencia():
+    """Anclar en la semana de la fecha de inicio se saltaba la primera entrega
+    —el primer martes salía el 13 y no el 6— sin motivo que el usuario pudiera
+    ver en su propia configuración."""
+    venc = fechas({"modo": "SEMANAL", "dias_semana": [1], "cada_n_semanas": 2,
+                   "fecha_inicio": "2026-01-01"}, 2026, 2026)
+    assert venc[0] == date(2026, 1, 6)
+
+
+@pytest.mark.parametrize("anio", [2024, 2027, 2030, 2033])
+def test_cada_dos_semanas_no_se_desfasa_en_ningun_anio(anio):
+    """El patrón tiene que seguir cayendo en el mismo día de la semana aunque
+    el año tenga 53 semanas."""
+    venc = fechas({"modo": "SEMANAL", "dias_semana": [1], "cada_n_semanas": 2,
+                   "fecha_inicio": f"{anio}-01-01"}, anio, anio)
+    assert all(v.weekday() == 1 for v in venc), anio
+    for previo, siguiente in zip(venc, venc[1:]):
+        assert (siguiente - previo).days == 14, f"{anio}: {previo} -> {siguiente}"
+
+
+def test_el_ejemplo_completo_cada_dos_semanas_lunes_y_en_festivo_el_martes():
+    """«Un informe cada dos semanas los lunes, y en festivo se entrega el
+    martes.» Es el caso que reúne las tres dimensiones a la vez: cadencia de
+    semanas, día de la semana elegido, y qué hacer si cae en festivo.
+
+    Lo que se exige aquí es lo que hace útil la distinción: el vencimiento
+    SIGUE siendo el lunes —el informe es el del lunes 20 de julio, no el del
+    martes 21— y lo que se amplía es el plazo.
+    """
+    from app.services.preview_calendario import Vencimiento as Vista
+
+    regla = {"modo": "SEMANAL", "dias_semana": [0], "cada_n_semanas": 2,
+             "mover_habil": True, **INICIO}
+    assert validar(regla).se_puede_guardar
+
+    venc, _ = [], None
+    dia = date(2026, 1, 1)
+    while dia <= date(2026, 12, 31):
+        venc += G.obtener_vencimientos_para_fecha(dia, regla)
+        dia += timedelta(days=1)
+
+    assert len(venc) == 26, len(venc)
+    assert all(v.nominal.weekday() == 0 for v in venc), "todos vencen en LUNES"
+
+    movidos = [v for v in venc if v.se_movio]
+    assert movidos, "en 2026 hay lunes festivos en la serie"
+    for v in movidos:
+        assert v.limite.weekday() == 1, "el festivo se entrega el MARTES"
+        assert v.es_gracia, "es plazo, no anticipación"
+        texto = Vista(nominal=v.nominal, limite=v.limite, ajuste=v.ajuste).describir()
+        assert "Vence lunes" in texto and "plazo hasta martes" in texto, texto
+
+    # Y la misma regla con anticipación entrega el VIERNES anterior, no el
+    # martes: la dirección la elige quien crea la obligación, no el sistema.
+    anticipa = {**regla}
+    anticipa.pop("mover_habil")
+    anticipa["mover_habil_anterior"] = True
+    dia, otros = date(2026, 1, 1), []
+    while dia <= date(2026, 12, 31):
+        otros += G.obtener_vencimientos_para_fecha(dia, anticipa)
+        dia += timedelta(days=1)
+    for v in (x for x in otros if x.se_movio):
+        assert v.limite.weekday() == 4, "anticipar desde lunes cae en VIERNES"

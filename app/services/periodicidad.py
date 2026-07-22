@@ -38,7 +38,7 @@ from __future__ import annotations
 CAMPOS_QUE_USA = {
     "CICLICO": {"intervalo", "ajuste"},
     "ESPECIFICO": {"meses", "cada_n_anios", "dia", "ajuste"},
-    "SEMANAL": {"dias_semana", "ajuste"},
+    "SEMANAL": {"dias_semana", "cada_n_semanas", "ajuste"},
     # El ajuste a día hábil NO aplica: una franja horaria no se traslada a otro
     # día. Preguntarlo aquí sería ofrecer una opción que no hace nada.
     "HOURLY": {"franja_horaria"},
@@ -62,6 +62,7 @@ GRUPOS = {
     "meses": {"meses"},
     "dia": set(FORMAS_DEL_DIA) | {"dia_semana_mes", "usar_ultimo_dia_en_meses_cortos"},
     "dias_semana": {"dias_semana", "dia_habil_semana"},
+    "cada_n_semanas": {"cada_n_semanas"},
     "fechas": {"fechas"},
     "franja_horaria": {"hora_inicio", "hora_fin", "intervalo_horas"},
     "ajuste": {"ajuste_habil", "ajuste_habil_anterior",
@@ -115,6 +116,19 @@ CATALOGO = {
         "Semanal", "SEMANAL", ["dias_semana", "ajuste"], multiples_dias=True,
         ayuda="Se pregunta el día de la SEMANA, no un número de día ni una "
               "fecha."),
+    "DOS_VECES_POR_SEMANA": Periodicidad(
+        "Dos veces por semana", "SEMANAL", ["dias_semana", "ajuste"],
+        multiples_dias=True,
+        ayuda="Se marcan los dos días: por ejemplo miércoles y viernes."),
+    "CADA_N_SEMANAS": Periodicidad(
+        "Cada varias semanas", "SEMANAL",
+        ["cada_n_semanas", "dias_semana", "ajuste"], multiples_dias=True,
+        ayuda="Cada dos semanas, cada tres. Se elige el DÍA de la semana y el "
+              "sistema cuenta desde la vigencia — no hace falta que la fecha de "
+              "inicio caiga en ese día.\n\n"
+              "Ojo con la palabra «bisemanal»: en español significa tanto «dos "
+              "veces por semana» como «cada dos semanas», así que no se usa "
+              "aquí. Son 104 y 26 entregas al año: no da igual cuál."),
     "MENSUAL": Periodicidad(
         "Mensual", "ESPECIFICO", ["dia", "ajuste"], al_anio=12, multiples_dias=True,
         fija={"meses": list(range(1, 13))},

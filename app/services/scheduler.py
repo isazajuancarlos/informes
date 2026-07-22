@@ -118,6 +118,25 @@ class GeneradorTareas:
         return _get_motor()._ajustar_fecha(fecha, 'PREV_WORKDAY')
 
     @staticmethod
+    def _primera_ocurrencia_semanal(inicio, config):
+        """El primer día, a partir de la vigencia, que la regla semanal marca.
+
+        Es el ancla de «cada N semanas»: desde ahí se cuentan. Anclar en la
+        semana de la fecha de inicio, en cambio, se saltaba la primera entrega
+        cuando la vigencia caía después del día marcado en su propia semana.
+        """
+        dias = config.get('dias_semana') or []
+        for salto in range(14):
+            candidato = inicio + timedelta(days=salto)
+            if config.get('dia_habil_semana'):
+                if candidato == GeneradorTareas._n_esimo_habil_semana(
+                        candidato, int(config['dia_habil_semana'])):
+                    return candidato
+            elif candidato.weekday() in dias:
+                return candidato
+        return None
+
+    @staticmethod
     def _n_esimo_habil_semana(fecha, n):
         """El n-ésimo día HÁBIL de la semana a la que pertenece `fecha`.
 
@@ -376,6 +395,34 @@ class GeneradorTareas:
             # viernes. En la base real de la que salió esta forma era el tercer
             # código más usado, y clasificarlo junto al día hábil del MES fue un
             # error mío: la cifra de cobertura salió inflada.
+            # «Cada dos martes». El día de la semana se ELIGE, y el sistema
+            # cuenta las semanas desde la vigencia.
+            #
+            # Se podía hacer ya con «cada 14 días», pero entonces el día de la
+            # semana lo decidía la fecha de inicio: quien quisiera los martes
+            # tenía que saber poner un martes. Eso es pedirle al usuario que
+            # conozca la implementación.
+            cada_semanas = config.get('cada_n_semanas')
+            if cada_semanas:
+                try:
+                    cada_semanas = int(cada_semanas)
+                except (ValueError, TypeError):
+                    cada_semanas = 1
+                if cada_semanas > 1 and inicio_dt:
+                    # Se ancla en la PRIMERA OCURRENCIA real, no en la semana de
+                    # la fecha de inicio. «Cada dos martes desde el 1 de enero»
+                    # empieza el primer martes —el 6— y no el 13: anclar en la
+                    # semana de la vigencia se saltaba el primero sin motivo que
+                    # el usuario pudiera ver.
+                    ancla = GeneradorTareas._primera_ocurrencia_semanal(
+                        inicio_dt, config)
+                    if ancla is None:
+                        return []
+                    lunes_de = lambda f: f - timedelta(days=f.weekday())  # noqa: E731
+                    semanas = (lunes_de(fecha_evaluar) - lunes_de(ancla)).days // 7
+                    if semanas < 0 or semanas % cada_semanas != 0:
+                        return []
+
             n_habil = config.get('dia_habil_semana')
             if n_habil:
                 nominal = GeneradorTareas._n_esimo_habil_semana(

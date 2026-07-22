@@ -72,6 +72,10 @@ FILAS = [
      {"modo": "SEMANAL", "dia_habil_semana": 4, **I},
      "el 4º hábil: jueves, o viernes si hubo festivo"),
 
+    ("SEMANA", "cada N semanas, en el día que se elija",
+     {"modo": "SEMANAL", "dias_semana": [1], "cada_n_semanas": 2, **I},
+     "cada dos martes — «bisemanal» en su sentido de cada dos semanas"),
+
     # ---- JORNADA ----
     ("JORNADA", "de domingo a domingo",
      {"modo": "CICLICO", "intervalo": 1, **I}, "diario, sin excepciones"),
