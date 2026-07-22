@@ -76,62 +76,15 @@ class MotorReglasDinamicas:
         
         return fecha # Fallback
 
-    def generar_calendario(self, regla_json: dict, anio: int) -> list:
-        """
-        EL CORAZÓN DEL SISTEMA:
-        Recibe un JSON con CUALQUIER configuración y devuelve las fechas reales.
-        
-        Ejemplo JSON entrada:
-        {
-            "freq": "MONTHLY",      <- Frecuencia base
-            "interval": 2,          <- Cada 2 meses
-            "bymonthday": 15,       <- El día 15
-            "ajuste": "NEXT_WORKDAY" <- Si cae festivo, mover al siguiente
-        }
-        """
-        # 1. Configurar Parametros del Generador (RRULE)
-        try:
-            parametros_rrule = {
-                "freq": FRECUENCIAS[regla_json.get("freq", "MONTHLY")],
-                "dtstart": datetime(anio, 1, 1),
-                "count": 366, # Límite de seguridad, se cortará por año
-                "interval": regla_json.get("interval", 1)
-            }
-            
-            # Agregar parámetros opcionales dinámicamente
-            if "bymonthday" in regla_json:
-                parametros_rrule["bymonthday"] = regla_json["bymonthday"]
-            
-            if "byweekday" in regla_json:
-                # Convierte "MO,WE" a objetos [MO, WE]
-                dias = [DIAS_SEMANA[d] for d in regla_json["byweekday"].split(",")]
-                parametros_rrule["byweekday"] = dias
-                
-            if "bysetpos" in regla_json:
-                # Ej: 1 (Primer lunes), -1 (Último viernes)
-                parametros_rrule["bysetpos"] = regla_json["bysetpos"]
-
-            # 2. Generar Fechas "Brutas" (Teóricas)
-            fechas_teoricas = list(rrule(**parametros_rrule))
-            
-            # Filtramos solo las del año solicitado
-            fechas_teoricas = [f.date() for f in fechas_teoricas if f.year == anio]
-
-        except Exception as e:
-            return {"error": f"Configuración de regla inválida: {str(e)}"}
-
-        # 3. Procesar Ajustes y Semáforos
-        calendario_final = []
-        ajuste = regla_json.get("ajuste", "KEEP") # Por defecto no mueve
-
-        for f_teorica in fechas_teoricas:
-            f_real = self._ajustar_fecha(f_teorica, ajuste)
-            
-            calendario_final.append({
-                "fecha_teorica": f_teorica,
-                "es_festivo_original": (f_teorica in self.festivos or f_teorica.weekday() >= 5),
-                "fecha_limite_real": f_real,
-                "accion_tomada": "Ajustada por festivo" if f_real != f_teorica else "Sin cambios"
-            })
-
-        return calendario_final
+    # Aquí vivía `generar_calendario(regla_json, anio)`, una SEGUNDA
+    # implementación del cálculo de vencimientos con su propio esquema de regla
+    # (`freq`, `bymonthday`, `byweekday`) y un docstring que se declaraba «EL
+    # CORAZÓN DEL SISTEMA». No lo era: el planificador nunca la llamó. De esta
+    # clase solo se usan `_es_habil` y `_ajustar_fecha`.
+    #
+    # Su único cliente era la demo, y por eso la demo enseñaba fechas que el
+    # producto no habría generado. Dos motores para lo mismo garantizan que uno
+    # esté mal y que nadie sepa cuál.
+    #
+    # El cálculo vive en `GeneradorTareas.obtener_vencimientos_para_fecha`.
+    # `tests/test_demo_es_real.py` vigila que no vuelva.
