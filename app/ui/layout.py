@@ -2,6 +2,7 @@ from nicegui import ui, app
 from app.services.notification_service import NotificationService
 from app.core.tiempo import formatear_utc
 from app.services.license_service import estado as licencia_estado
+from app.core.config import NOMBRE_PRODUCTO
 
 
 def _render_notification_bell(usuario_id):
@@ -84,7 +85,7 @@ def menu_principal():
     with ui.header().classes('bg-slate-900 text-white shadow-lg items-center justify-between h-16 px-4'):
         with ui.row().classes('items-center gap-3'):
             ui.icon('analytics').classes('text-3xl text-blue-400')
-            ui.label('SISTEMA INTEGRAL').classes('text-lg font-bold')
+            ui.label(NOMBRE_PRODUCTO).classes('text-lg font-bold')
             _aviso_de_licencia()
 
         with ui.row().classes('items-center gap-3'):

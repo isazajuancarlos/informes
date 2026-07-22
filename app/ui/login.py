@@ -3,6 +3,7 @@ from app.services.auth import AuthService
 from app.services.email_service import EmailService
 from app.core.database import get_db_session
 from app.services.session_manager import SessionManager, SecurityAudit
+from app.core.config import NOMBRE_PRODUCTO, NOMBRE_LARGO
 
 
 def page_login():
@@ -119,11 +120,11 @@ def page_login():
             with ui.column().classes('items-center gap-6 max-w-sm'):
                 with ui.row().classes('items-center gap-3'):
                     ui.icon('analytics').classes('text-6xl text-blue-400')
-                    ui.label('SIGER').classes(
+                    ui.label(NOMBRE_PRODUCTO).classes(
                         'text-4xl font-black text-white tracking-wider'
                     )
 
-                ui.label('Sistema Integral de\nGestión de Informes').classes(
+                ui.label(NOMBRE_LARGO.replace(' de Gestión', '\nde Gestión')).classes(
                     'text-2xl font-light text-slate-300 text-center whitespace-pre-line'
                 )
 
@@ -152,7 +153,7 @@ def page_login():
                 with ui.column().classes('items-center gap-2 mb-8'):
                     with ui.row().classes('items-center gap-2 lg:hidden'):
                         ui.icon('analytics').classes('text-3xl text-blue-400')
-                        ui.label('SIGER').classes('text-2xl font-black text-white')
+                        ui.label(NOMBRE_PRODUCTO).classes('text-2xl font-black text-white')
                     ui.label('Iniciar sesión').classes(
                         'text-2xl font-bold text-white mt-2'
                     )

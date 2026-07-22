@@ -18,6 +18,22 @@ STORAGE_DIR = BASE_DIR / "storage"
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 BACKUPS_DIR = STORAGE_DIR / "backups"
 
+# --- Cómo se llama el producto ------------------------------------------------
+#
+# UN solo sitio. Estaba en cinco, y decían cinco cosas distintas: la pantalla de
+# entrada «SIGER», la cabecera de todas las demás «SISTEMA INTEGRAL», la pestaña
+# del navegador «Sistema Gestión», los correos «Sistema de Gestión» y el
+# clausulado «Sistema de Gestión de Informes». Nadie lo había juntado nunca en
+# la misma frase, así que nadie lo había visto.
+#
+# Configurable a propósito: un cliente que lo instala en su casa puede querer su
+# propio nombre, y obligarle a tocar el código para eso convertiría una decisión
+# de negocio en una modificación del programa.
+NOMBRE_PRODUCTO = os.getenv("NOMBRE_PRODUCTO", "SIGER").strip() or "SIGER"
+NOMBRE_LARGO = os.getenv(
+    "NOMBRE_LARGO", "Sistema Integral de Gestión de Informes").strip()
+
+
 # --- Perfil de despliegue -----------------------------------------------------
 # cloud     : SaaS que hospedamos nosotros (PostgreSQL, con internet).
 # onprem    : el cliente lo corre en su propio servidor/LAN (su PostgreSQL, sin

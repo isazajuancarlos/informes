@@ -1,4 +1,4 @@
-# Datos de Demostración - Sistema de Gestión de Informes
+# Datos de Demostración — SIGER
 
 **Fecha:** 8 de Enero, 2026
 **Versión del Sistema:** 3.0

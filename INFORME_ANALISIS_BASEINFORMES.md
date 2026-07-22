@@ -3,7 +3,7 @@
 **Fecha de Análisis:** 8 de Enero, 2026
 **Analista:** Claude Code (Anthropic)
 **Archivo Analizado:** `/mnt/data/informes/baseInformes.xlsx`
-**Sistema Actual:** Sistema de Gestión de Informes v2.0
+**Sistema Actual:** SIGER v2.0
 
 ---
 

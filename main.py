@@ -183,7 +183,7 @@ def health_check():
     return {"status": "healthy" if db_status == "ok" else "degraded", "db": db_status, "service": "informes"}
 
 if __name__ in {"__main__", "__mp_main__"}:
-    from app.core.config import STORAGE_SECRET
+    from app.core.config import NOMBRE_PRODUCTO, STORAGE_SECRET
     # reload por defecto en dev; se apaga en contenedores (RELOAD=false).
     _reload = os.getenv("RELOAD", "true").strip().lower() == "true"
     # El puerto estaba fijo en 8003. Configurarlo permite levantar una segunda
@@ -191,4 +191,4 @@ if __name__ in {"__main__", "__mp_main__"}:
     # pruebas visuales para medir la pantalla en un navegador de verdad— y hace
     # falta igualmente para desplegar detrás de un proxy.
     _puerto = int(os.getenv("PORT", "8003"))
-    ui.run(title="Sistema Gestión", language="es", favicon="📊", host="0.0.0.0", port=_puerto, storage_secret=STORAGE_SECRET, reload=_reload, show=False)
+    ui.run(title=NOMBRE_PRODUCTO, language="es", favicon="📊", host="0.0.0.0", port=_puerto, storage_secret=STORAGE_SECRET, reload=_reload, show=False)

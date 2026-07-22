@@ -11,6 +11,7 @@ Cumple con:
 
 from nicegui import ui, app
 from datetime import date
+from app.core.config import NOMBRE_PRODUCTO, NOMBRE_LARGO
 
 
 def page_terminos():
@@ -40,8 +41,8 @@ def page_terminos():
         # ─── 1. RESPONSABLE DEL TRATAMIENTO ───────────────────────────────
         with ui.card().classes('w-full p-4'):
             ui.label('1. Responsable del Tratamiento de Datos').classes('text-lg font-bold text-slate-700 mb-2')
-            ui.markdown("""
-El **Sistema de Gestión de Informes** es operado por la organización que lo ha implementado
+            ui.markdown(f"""
+El **{NOMBRE_LARGO}** ({NOMBRE_PRODUCTO}) es operado por la organización que lo ha implementado
 ("el Responsable"). El Responsable es quien determina los fines y medios del tratamiento de sus
 datos personales, de conformidad con el **Artículo 3(e) de la Ley 1581/2012**.
 
@@ -159,5 +160,5 @@ El uso continuado del sistema después de la notificación constituye aceptació
         # ─── PIE ─────────────────────────────────────────────────────────
         ui.separator()
         with ui.row().classes('w-full justify-between items-center text-xs text-slate-400'):
-            ui.label('Sistema de Gestión de Informes — Política de Privacidad')
+            ui.label(f'{NOMBRE_LARGO} — Política de Privacidad')
             ui.label('Ley 1581/2012 · Decreto 1377/2013 · SIC Colombia')
