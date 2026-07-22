@@ -1,7 +1,16 @@
 from nicegui import ui
 from app.core.database import get_db_session
-from app.models.meta_tables import MetaVariable, Informe, MetaRegla
+from app.models.meta_tables import (MetaVariable, Informe, MetaRegla,
+                                    AMBITO_CONTENIDO, AMBITO_FICHA, AMBITOS)
 from app.ui.ui_helpers import estado_vacio, ayuda
+
+#: Cómo se le dice a cada ámbito en pantalla. La clave es del motor; esto es
+#: para personas, y describe QUÉ HACE el campo, no cómo se llama por dentro.
+ETIQUETA_AMBITO = {
+    AMBITO_FICHA: 'Describe el informe (ficha)',
+    AMBITO_CONTENIDO: 'Es un dato de la entrega',
+}
+
 
 def page_variables():
     # Estado para controlar si estamos editando o creando
@@ -18,6 +27,10 @@ def page_variables():
                     "nombre_interno": v.nombre_interno,
                     "etiqueta_visual": v.etiqueta_visual,
                     "tipo_dato": v.tipo_dato,
+                    "ambito": v.ambito or AMBITO_CONTENIDO,
+                    "ambito_txt": ETIQUETA_AMBITO.get(v.ambito or AMBITO_CONTENIDO,
+                                                      v.ambito or ""),
+                    "opciones": v.opciones or "",
                     "es_obligatorio": v.es_obligatorio,
                     "obligatorio_txt": "Sí" if v.es_obligatorio else "No"
                 })
@@ -30,18 +43,22 @@ def page_variables():
         nombre.value = ''
         etiqueta.value = ''
         tipo.value = 'TEXTO'
+        ambito.value = AMBITO_FICHA
+        opciones.value = ''
         obligatorio.value = True
         estado['id_edicion'] = None
-        label_titulo.text = 'Nueva Variable'
+        label_titulo.text = 'Nuevo campo'
 
     def abrir_modal_edicion(fila):
         estado['id_edicion'] = fila['id']
         nombre.value = fila['nombre_interno']
         etiqueta.value = fila['etiqueta_visual']
         tipo.value = fila['tipo_dato']
+        ambito.value = fila.get('ambito') or AMBITO_CONTENIDO
+        opciones.value = fila.get('opciones') or ''
         obligatorio.value = fila['es_obligatorio']
-        
-        label_titulo.text = f'Editar Variable (ID: {fila["id"]})'
+
+        label_titulo.text = f'Editar campo (ID: {fila["id"]})'
         dialogo.open()
 
     def validar_dependencias(db, id_var):
@@ -88,6 +105,8 @@ def page_variables():
                     var_obj.nombre_interno = nombre.value
                     var_obj.etiqueta_visual = etiqueta.value
                     var_obj.tipo_dato = tipo.value
+                    var_obj.ambito = ambito.value
+                    var_obj.opciones = opciones.value or None
                     var_obj.es_obligatorio = obligatorio.value
                     db.commit()
                     ui.notify('Variable actualizada', type='positive')
@@ -104,6 +123,8 @@ def page_variables():
                     nombre_interno=nombre.value,
                     etiqueta_visual=etiqueta.value,
                     tipo_dato=tipo.value,
+                    ambito=ambito.value,
+                    opciones=opciones.value or None,
                     es_obligatorio=obligatorio.value
                 ))
                 db.commit()
@@ -114,11 +135,12 @@ def page_variables():
         limpiar_form()
 
     # --- INTERFAZ UI ---
-    ui.label('Gestión de Variables (Inputs)').classes('text-2xl font-bold mb-4 text-slate-800')
+    ui.label('Campos de los informes').classes('text-2xl font-bold mb-4 text-slate-800')
     
     cols = [
         {'name': 'nombre_interno', 'label': 'ID Interno', 'field': 'nombre_interno', 'align': 'left'},
         {'name': 'etiqueta_visual', 'label': 'Pregunta Visual', 'field': 'etiqueta_visual', 'align': 'left'},
+        {'name': 'ambito_txt', 'label': 'Para qué sirve', 'field': 'ambito_txt', 'align': 'left'},
         {'name': 'tipo_dato', 'label': 'Tipo', 'field': 'tipo_dato', 'align': 'left'},
         {'name': 'obligatorio_txt', 'label': 'Obligatorio', 'field': 'obligatorio_txt', 'align': 'center'},
         {'name': 'acciones', 'label': 'Acciones', 'field': 'acciones', 'align': 'center'},
@@ -148,10 +170,12 @@ def page_variables():
     # Panel de estado vacío (se muestra solo cuando no hay variables).
     vacio = estado_vacio(
         'category',
-        'Aún no tienes variables',
-        'Las variables son los datos que capturan tus informes: fechas, montos, '
-        'responsables. Son la materia prima de todo lo demás. Crea la primera para empezar.',
-        'Crear primera variable',
+        'Aún no tienes campos',
+        'Los campos los define usted, no el programa. Unos describen el INFORME '
+        '—subsistema, aplicativo de origen, la norma que lo exige— y se contestan '
+        'al crearlo; otros son datos que la ENTREGA lleva dentro y se validan al '
+        'entregarla. Ninguna lista viene impuesta.',
+        'Crear el primer campo',
         lambda: [limpiar_form(), dialogo.open()],
     )
 
@@ -178,6 +202,23 @@ def page_variables():
                   'TEXTO_ALFANUM: texto y números sin caracteres especiales. '
                   'LISTA: opciones predefinidas.')
         tipo = ui.select(['TEXTO', 'NUMERO', 'FECHA', 'BOOLEANO', 'LISTA', 'HORA_MILITAR', 'MONEDA', 'TEXTO_ALFANUM'], value='TEXTO', label='Tipo').classes('w-full')
+        with ui.row().classes('w-full items-center gap-0 no-wrap mt-2'):
+            ui.label('Para qué sirve').classes('text-xs text-slate-500')
+            ayuda('FICHA: describe el INFORME —subsistema, aplicativo de origen, '
+                  'cargo que autoriza, norma que lo exige—. Se contesta al crear '
+                  'el informe.\n\n'
+                  'CONTENIDO: es un dato que la ENTREGA lleva dentro —monto, hora '
+                  'de corte, número de radicado— y que se valida cuando alguien '
+                  'entrega.\n\n'
+                  'Son preguntas distintas sobre el mismo informe, y por eso se '
+                  'muestran en sitios distintos.')
+        ambito = ui.select({a: ETIQUETA_AMBITO[a] for a in AMBITOS},
+                           value=AMBITO_FICHA, label='Para qué sirve') \
+            .props('outlined').classes('w-full').mark('ambito-campo')
+        opciones = ui.textarea(
+            'Opciones (una por línea)',
+            placeholder='Vigilancia\nAseguramiento\nMorbilidad').classes('w-full')
+        opciones.bind_visibility_from(tipo, 'value', backward=lambda v: v == 'LISTA')
         obligatorio = ui.switch('Obligatorio', value=True)
         
         with ui.row().classes('w-full justify-end mt-4'):

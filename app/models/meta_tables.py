@@ -162,15 +162,59 @@ class SolicitudNuevoInforme(Base):
 # 3. CATÁLOGO DE VARIABLES Y REGLAS
 # =====================================================
 
+#: Para qué sirve un campo. Son dos preguntas distintas sobre el mismo informe.
+#:
+#:   FICHA     — CÓMO SE CLASIFICA la obligación: subsistema, aplicativo de
+#:               origen, cargo que autoriza, norma que la exige. Metadatos del
+#:               informe, que responde el administrador al crearlo.
+#:   CONTENIDO — QUÉ DATOS LLEVA la entrega: monto, hora de corte, número de
+#:               radicado. Se validan contra `MetaRegla` cuando alguien entrega.
+#:
+#: Es UN solo mecanismo con dos ámbitos, y no dos mecanismos. Un campo es un
+#: nombre, un tipo y un valor por informe; construir una segunda tabla idéntica
+#: para los metadatos habría garantizado que una de las dos se quedara atrás.
+AMBITO_FICHA = "FICHA"
+AMBITO_CONTENIDO = "CONTENIDO"
+AMBITOS = (AMBITO_FICHA, AMBITO_CONTENIDO)
+
+
 class MetaVariable(Base):
+    """Un campo definido por el administrador, no por el programa.
+
+    Los metadatos del informe eran NUEVE COLUMNAS fijas —subsistema, cargo
+    autorizador, URL de plantilla…— copiadas del Excel de un cliente concreto.
+    Eso convertía el ejemplo en la especificación: cualquier entidad con otra
+    manera de clasificar sus informes tenía que conformarse con la de aquel, y
+    añadir un campo exigía tocar el modelo, la migración y la pantalla.
+
+    Ahora los campos son datos. Se crean desde la interfaz y se rellenan al
+    crear el informe.
+    """
     __tablename__ = "meta_variables"
     id = Column(Integer, primary_key=True, index=True)
     nombre_interno = Column(String(50), unique=True, nullable=False)
     etiqueta_visual = Column(String(150), nullable=False)
-    tipo_dato = Column(String(20), nullable=False) 
+    tipo_dato = Column(String(20), nullable=False)
     es_obligatorio = Column(Boolean, default=True)
     descripcion = Column(String(255))
+    #: `FICHA` o `CONTENIDO`. Por defecto CONTENIDO, que es lo que había antes
+    #: de que existiera la distinción: así una base anterior sigue significando
+    #: lo mismo tras migrar.
+    ambito = Column(String(20), default=AMBITO_CONTENIDO, index=True)
+    #: Opciones de una lista desplegable, una por línea. Vacío = campo libre.
+    opciones = Column(Text, nullable=True)
+    #: En qué orden se muestra. Empatados, mandan el ámbito y el id.
+    orden = Column(Integer, default=0)
+    activo = Column(Boolean, default=True)
     reglas_base = relationship("MetaRegla", back_populates="variable", cascade="all, delete-orphan")
+
+    @property
+    def lista_de_opciones(self) -> list:
+        """Las opciones, ya partidas. Vacío si el campo es libre."""
+        if not self.opciones:
+            return []
+        return [linea.strip() for linea in str(self.opciones).splitlines()
+                if linea.strip()]
 
 class MetaRegla(Base):
     __tablename__ = "meta_reglas_negocio"

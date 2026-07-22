@@ -47,6 +47,13 @@ COLUMNAS = [
     ("entregas_esperadas", "firma", "TEXT"),
     ("entregas_esperadas", "fecha_vencimiento_nominal", "TIMESTAMP"),
     ("entregas_esperadas", "tipo_ajuste", "VARCHAR(20)"),
+    # Los campos del informe dejaron de ser columnas fijas y pasaron a ser
+    # datos. `ambito` distingue el metadato del informe (FICHA) del dato que la
+    # entrega lleva y se valida (CONTENIDO).
+    ("meta_variables", "ambito", "VARCHAR(20)"),
+    ("meta_variables", "opciones", "TEXT"),
+    ("meta_variables", "orden", "INTEGER"),
+    ("meta_variables", "activo", "BOOLEAN"),
 ]
 
 
@@ -111,6 +118,53 @@ def main() -> int:
         return 1
 
     print(f"\nVERIFICADO contra el esquema: las {len(COLUMNAS)} columnas existen.")
+    return rellenar_valores()
+
+
+#: Columnas nuevas que NO pueden quedarse en NULL, con lo que deben valer en las
+#: filas que ya existían.
+#:
+#: Un `default=` del modelo solo actúa al insertar por el ORM: las filas
+#: anteriores a la columna se quedan en NULL, y un `ambito` nulo no es ninguno de
+#: los dos ámbitos — el campo no aparecería en ninguna de las dos secciones y
+#: nadie sabría por qué. Añadir la columna sin rellenarla es dejar el trabajo a
+#: medias de la manera que no se nota.
+RELLENOS = [
+    ("meta_variables", "ambito", "'CONTENIDO'"),
+    ("meta_variables", "activo", "1"),
+    ("meta_variables", "orden", "0"),
+]
+
+
+def rellenar_valores() -> int:
+    from sqlalchemy import text as _text
+
+    hechos = 0
+    for tabla, columna, valor in RELLENOS:
+        sql = f"UPDATE {tabla} SET {columna} = {valor} WHERE {columna} IS NULL"
+        try:
+            with engine.begin() as conn:
+                resultado = conn.execute(_text(sql))
+            if resultado.rowcount:
+                print(f"  RELLENADAS {resultado.rowcount} fila(s): "
+                      f"{tabla}.{columna} = {valor}")
+                hechos += resultado.rowcount
+        except Exception as e:  # noqa: BLE001
+            print(f"  FALLA      {sql}\n             {e}")
+            return 1
+
+    # Se VERIFICA que no quede ningún nulo, por la misma razón que se releen las
+    # columnas: que el UPDATE no lanzara excepción no prueba que no quede nada.
+    for tabla, columna, _ in RELLENOS:
+        with engine.begin() as conn:
+            quedan = conn.execute(_text(
+                f"SELECT COUNT(*) FROM {tabla} WHERE {columna} IS NULL")).scalar()
+        if quedan:
+            print(f"\nERROR: quedan {quedan} fila(s) con {tabla}.{columna} en nulo.")
+            return 1
+
+    print(f"VERIFICADO contra los datos: sin valores nulos"
+          + (f" ({hechos} fila(s) rellenadas)." if hechos else "."))
     return 0
 
 

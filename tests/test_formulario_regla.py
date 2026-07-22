@@ -359,3 +359,65 @@ def test_una_parte_INTERNA_basta_para_cumplir_el_requisito():
 
     assert faltan_partes({'solicitantes': ['u:1'],
                           'destinatarios': ['u:2']}) == []
+
+
+# --------------------------------------------------------------------------
+# Los campos los define el administrador, no el programa
+# --------------------------------------------------------------------------
+
+def test_el_nombre_interno_se_DERIVA_del_visible():
+    """Pedir dos nombres para lo mismo obliga a inventarse un identificador a
+    quien solo quería añadir un campo, y garantiza que con el tiempo digan
+    cosas distintas."""
+    from app.ui.reports_manager import _nombre_interno
+
+    assert _nombre_interno('Aplicativo de Origen') == 'aplicativo_de_origen'
+    assert _nombre_interno('Justificación / Normatividad') == 'justificacion_normatividad'
+    assert _nombre_interno('  ¿Requiere acuerdo?  ') == 'requiere_acuerdo'
+    assert _nombre_interno('') == 'campo'
+    assert len(_nombre_interno('x' * 200)) <= 50
+
+
+def test_un_campo_OBLIGATORIO_en_blanco_bloquea_el_guardado():
+    """`es_obligatorio` estaba declarado desde el principio y no lo miraba
+    nadie: quien marcaba un campo obligatorio creía haber acotado algo y no
+    había acotado nada. Una bandera que no bloquea promete un control que no
+    existe."""
+    from app.ui.reports_manager import faltan_campos
+
+    definiciones = [
+        {'id': 1, 'etiqueta': 'Subsistema', 'obligatorio': True},
+        {'id': 2, 'etiqueta': 'Observación', 'obligatorio': False},
+    ]
+    assert faltan_campos(definiciones, {}) == ['Subsistema']
+    assert faltan_campos(definiciones, {'1': '   '}) == ['Subsistema']
+    assert faltan_campos(definiciones, {'1': 'Vigilancia'}) == []
+    # Y el opcional en blanco no molesta: un validador que se queja de todo
+    # entrena a ignorar los avisos.
+    assert faltan_campos(definiciones, {'1': 'Vigilancia', '2': ''}) == []
+
+
+def test_un_NO_no_es_lo_mismo_que_no_contestado():
+    """Al mover los campos viejos, `False` en una casilla es un dato —«no»— y
+    no un hueco. Tratarlo como vacío perdería la diferencia entre «no requiere
+    acuerdo» y «nadie lo ha contestado»."""
+    from migrar_campos_ficha import _texto
+
+    assert _texto(False) == 'No'
+    assert _texto(True) == 'Sí'
+    assert _texto(None) is None
+    assert _texto('   ') is None
+    assert _texto('Vigilancia') == 'Vigilancia'
+
+
+def test_los_campos_de_ficha_MIGRADOS_conservan_su_etiqueta():
+    """Quien abra un informe migrado tiene que reconocer sus campos, no
+    encontrarse unos nombres nuevos."""
+    from migrar_campos_ficha import CAMPOS
+
+    etiquetas = {etiqueta for _, _, etiqueta, _, _ in CAMPOS}
+    assert 'Subsistema' in etiquetas
+    assert 'Cargo Autorizador' in etiquetas
+    assert 'Justificación / Normatividad' in etiquetas
+    # Y ninguna columna se queda fuera de la mudanza.
+    assert len(CAMPOS) == 7

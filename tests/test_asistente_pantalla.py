@@ -159,7 +159,7 @@ async def test_el_gestor_de_informes_ofrece_el_asistente(user: User):
 
     await user.open("/")
     await user.should_see("Gestor de Informes")
-    user.find("Nuevo").click()
+    user.find(marker="nuevo-informe").click()
     await user.should_see("Cronograma")
     await user.should_see("Definir con el calendario")
 
@@ -193,11 +193,12 @@ async def test_el_formulario_de_NUEVO_INFORME_se_dibuja_entero(user: User):
         page_reports_manager()
 
     await user.open("/")
-    user.find("Nuevo").click()
+    user.find(marker="nuevo-informe").click()
     await user.should_see("Datos Básicos")
     await user.should_see("Fecha Inicio")
     await user.should_see("Próximos vencimientos con esta regla")
-    await user.should_see("Variables")          # el último bloque de la página
+    await user.should_see("Ficha del informe")
+    await user.should_see("Datos que lleva la entrega")   # el último bloque
     await user.should_see("Guardar")
 
 
@@ -211,7 +212,7 @@ async def test_con_un_cronograma_del_asistente_las_pestanas_NO_se_muestran(user:
         rm.page_reports_manager()
 
     await user.open("/")
-    user.find("Nuevo").click()
+    user.find(marker="nuevo-informe").click()
     await user.should_see("Definir con el calendario")
 
     # Sin cronograma del asistente, el modo manual está a la vista.
@@ -282,7 +283,7 @@ async def test_el_formulario_EXIGE_las_partes_del_flujo(user: User):
         page_reports_manager()
 
     await user.open("/")
-    user.find("Nuevo").click()
+    user.find(marker="nuevo-informe").click()
     await user.should_see("Partes del flujo")
     await user.should_see("Solicitado por *")
     await user.should_see("Destinatarios (envío) *")
@@ -313,7 +314,7 @@ async def test_se_puede_CREAR_una_parte_sin_salir_del_formulario(user: User):
         page_reports_manager()
 
     await user.open("/")
-    user.find("Nuevo").click()
+    user.find(marker="nuevo-informe").click()
     await user.should_see("Todavía no hay partes registradas")
 
     user.find(marker="alta-parte-solicitantes").click()

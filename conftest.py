@@ -18,5 +18,15 @@ pytest_plugins = ["nicegui.testing.user_plugin"]
 # Las pruebas nunca deben tocar la base de datos de nadie. Se fija antes de que
 # se importe cualquier módulo de la aplicación, porque `app.core.database` lee
 # esto al importarse y después ya es tarde.
-os.environ.setdefault("DATABASE_URL", "sqlite:///./test_informes.db")
+#
+# EN MEMORIA, que es exactamente lo que usa el CI. Con un fichero, la base
+# sobrevive entre corridas y se queda con el esquema de ayer: al añadir una
+# columna, las pruebas fallaban con «no such column» —un fallo real de
+# actualización, pero disfrazado de fallo del código nuevo, y que en el CI no
+# aparecía—. Que el entorno de aquí y el del CI no coincidan ya costó una
+# corrida entera hoy.
+#
+# La actualización de una base ANTIGUA sí se comprueba, y donde corresponde: el
+# trabajo `migracion` del CI aplica `migrar_esquema.py` sobre una base vieja.
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
 os.environ.setdefault("DEPLOYMENT_PROFILE", "standalone")
