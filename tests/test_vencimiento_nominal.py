@@ -215,3 +215,110 @@ def test_el_calendario_real_SI_conoce_los_festivos_de_anios_lejanos():
     for anio in (2026, 2050, 2099):
         assert not motor._es_habil(date(anio, 1, 1)), \
             f"el 1 de enero de {anio} debería ser festivo"
+
+
+# --------------------------------------------------------------------------
+# El día HÁBIL n-ésimo: «dentro de los primeros cinco días hábiles»
+# --------------------------------------------------------------------------
+#
+# Es la forma más frecuente de fijar un plazo en la norma colombiana y NO se
+# puede expresar moviendo una fecha. Medido sobre 399 informes reales de una
+# entidad que opera: 41 de los 318 con periodicidad codificada —uno de cada
+# ocho— la usan. Era el único hueco grande del motor.
+
+
+def habil(n, anio):
+    return {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+            "dia_habil": n, "fecha_inicio": f"{anio}-01-01"}
+
+
+def del_anio(config, anio):
+    salida, dia = [], date(anio, 1, 1)
+    while dia <= date(anio, 12, 31):
+        salida += G.obtener_vencimientos_para_fecha(dia, config)
+        dia = date.fromordinal(dia.toordinal() + 1)
+    return salida
+
+
+@pytest.mark.parametrize("n", [1, 3, 5, 10, 15])
+def test_el_dia_habil_n_esimo_cae_SIEMPRE_en_dia_habil(n):
+    """Por construcción ya es hábil, así que no hay ajuste que aplicarle."""
+    from app.services.calendar_engine import MotorReglasDinamicas
+
+    motor = MotorReglasDinamicas()
+    for anio in ANIOS:
+        for v in del_anio(habil(n, anio), anio):
+            assert motor._es_habil(v.nominal), f"{anio}: {v.nominal} no es hábil"
+            assert v.ajuste == AJUSTE_NINGUNO
+            assert not v.se_movio
+
+
+@pytest.mark.parametrize("n", [1, 3, 5, 10, 15])
+def test_hay_UNO_por_mes_en_cualquier_anio(n):
+    for anio in ANIOS:
+        venc = del_anio(habil(n, anio), anio)
+        assert len(venc) == 12, f"{anio}: {len(venc)} de 12"
+        assert sorted({v.nominal.month for v in venc}) == list(range(1, 13))
+
+
+def test_NO_es_lo_mismo_que_el_dia_N_ajustado_a_habil():
+    """La distinción entera. Si diera igual, la dimensión sobraría.
+
+    El 5º día hábil de enero de 2026 es el 8, porque el 1 es festivo. «Día 5
+    ajustado» da el 5, que es lunes hábil. Tres días de diferencia, y esos tres
+    días son un incumplimiento.
+    """
+    por_habiles = del_anio(habil(5, 2026), 2026)
+    corridos = del_anio({"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                         "dia_corte": 5, "ajuste_habil": True,
+                         "fecha_inicio": "2026-01-01"}, 2026)
+    assert [v.nominal for v in por_habiles] != [v.limite for v in corridos]
+    assert por_habiles[0].nominal == date(2026, 1, 8), por_habiles[0].nominal
+
+
+def test_el_primer_dia_habil_no_es_necesariamente_el_dia_1():
+    """Enero empieza en festivo todos los años en Colombia."""
+    for anio in ANIOS:
+        primero = del_anio(habil(1, anio), anio)[0]
+        assert primero.nominal.day > 1, f"{anio}: {primero.nominal}"
+
+
+def test_si_el_mes_tiene_menos_habiles_se_usa_el_ULTIMO_y_no_desaparece():
+    """Un mes tiene entre 18 y 23 días hábiles. Pedir el 23 en un mes de 18 no
+    puede hacer que el vencimiento se esfume: eso sería una obligación que nadie
+    ve. Se usa el último hábil, igual que el día 31 en un mes de 30."""
+    from app.services.calendar_engine import MotorReglasDinamicas
+
+    motor = MotorReglasDinamicas()
+    for anio in ANIOS:
+        venc = del_anio(habil(23, anio), anio)
+        assert len(venc) == 12, f"{anio}: {len(venc)} de 12"
+        for v in venc:
+            assert motor._es_habil(v.nominal)
+
+
+def test_el_dia_habil_manda_sobre_el_dia_de_corte():
+    """Los dos puestos: gana el hábil, y el validador lo advierte."""
+    from app.services.validar_regla import validar
+
+    cfg = {"modo": "ESPECIFICO", "meses": [1], "dia_habil": 5, "dia_corte": 20,
+           "fecha_inicio": "2026-01-01"}
+    v = G.obtener_vencimientos_para_fecha(date(2026, 1, 8), cfg)
+    assert v and v[0].nominal == date(2026, 1, 8)
+    assert not G.obtener_vencimientos_para_fecha(date(2026, 1, 20), cfg)
+
+    r = validar(cfg)
+    assert r.se_puede_guardar
+    assert any("no se usarán" in a for a in r.advertencias), r.advertencias
+
+
+@pytest.mark.parametrize("n,valido", [(0, True), (1, True), (23, True), (24, False), (99, False)])
+def test_el_validador_acota_el_dia_habil(n, valido):
+    from app.services.validar_regla import validar
+
+    cfg = {"modo": "ESPECIFICO", "meses": [1], "fecha_inicio": "2026-01-01"}
+    if n:
+        cfg["dia_habil"] = n
+    else:
+        cfg["dia_corte"] = 5
+    assert validar(cfg).se_puede_guardar is valido, n

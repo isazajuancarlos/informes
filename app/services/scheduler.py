@@ -111,6 +111,37 @@ class GeneradorTareas:
         return _get_motor()._ajustar_fecha(fecha, 'PREV_WORKDAY')
 
     @staticmethod
+    def _n_esimo_habil(year, month, n):
+        """El n-ésimo día HÁBIL del mes. No es «el día n ajustado a hábil».
+
+        «Dentro de los primeros cinco días hábiles del mes siguiente» es una de
+        las formas más frecuentes de fijar un plazo en la norma colombiana, y no
+        se puede expresar moviendo una fecha: si el mes empieza con un festivo,
+        el 5º día hábil es el 8, no el 5 corrido al 8.
+
+        Medido sobre la base de 399 informes reales de una entidad que opera:
+        41 de los 318 con periodicidad codificada —uno de cada ocho— usan esta
+        forma. Era el único hueco grande del motor.
+
+        Si el mes tiene menos días hábiles que `n`, se usa el último hábil, por
+        el mismo criterio que el día de corte 31 en un mes de 30: descartar el
+        vencimiento lo haría desaparecer sin avisar. El rango real es de 18 a 23
+        días hábiles al mes (comprobado sobre 2020-2040), y el validador avisa
+        por encima de 18.
+        """
+        ultimo_habil = None
+        vistos = 0
+        for dia in range(1, calendar.monthrange(year, month)[1] + 1):
+            fecha = datetime(year, month, dia).date()
+            if not _get_motor()._es_habil(fecha):
+                continue
+            vistos += 1
+            ultimo_habil = fecha
+            if vistos == n:
+                return fecha
+        return ultimo_habil
+
+    @staticmethod
     def _nominal_del_mes(year, month, config):
         """Día NOMINAL que corresponde a ese mes. Sin ajustar a hábil.
 
@@ -119,6 +150,15 @@ class GeneradorTareas:
         función devolvía la fecha ya ajustada, el mes al que «pertenecía» un
         vencimiento dependía del calendario de festivos.
         """
+        # El n-ésimo día hábil YA es hábil por construcción, así que el ajuste
+        # no tiene nada que hacer. Se resuelve primero por eso.
+        if config.get('dia_habil'):
+            try:
+                n = int(config['dia_habil'])
+            except (ValueError, TypeError):
+                n = 1
+            return GeneradorTareas._n_esimo_habil(year, month, max(1, n))
+
         if config.get('es_ultimo_dia'):
             return datetime(year, month, calendar.monthrange(year, month)[1]).date()
         try:

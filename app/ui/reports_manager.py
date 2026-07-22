@@ -71,6 +71,7 @@ def _construir_regla(datos):
         return {"modo": "ESPECIFICO",
                 "meses": datos['tiempo_especifico']['meses_seleccionados'],
                 "dia_corte": int(datos['tiempo_especifico']['dia_corte'] or 1),
+                "dia_habil": int(datos['tiempo_especifico'].get('dia_habil') or 0),
                 "es_ultimo_dia": datos['tiempo_especifico']['es_ultimo_dia'],
                 **_banderas_desde_ajuste(datos['tiempo_especifico']['ajuste'],
                                          "ajuste_habil", "ajuste_habil_anterior"),
@@ -127,7 +128,7 @@ def page_reports_manager():
         'modo_tiempo': 'CICLICO',
         'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
         'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
-        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
+        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
         'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
         'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
         'variables_config': {}
@@ -175,7 +176,7 @@ def page_reports_manager():
             'modo_tiempo': 'CICLICO',
             'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
             'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
-            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
+            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
             'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
             'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
             'variables_config': {}
@@ -578,6 +579,18 @@ def page_reports_manager():
                             with ui.row().classes('w-full gap-4 items-center'):
                                 ui.number('Día de corte', min=1, max=31, format='%.0f', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'dia_corte').classes('w-1/3')
                                 ui.checkbox('Último día del mes', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'es_ultimo_dia')
+                            # «Dentro de los primeros cinco días HÁBILES del mes
+                            # siguiente» es de las formas más frecuentes de fijar
+                            # un plazo en la norma, y no se puede expresar
+                            # moviendo una fecha: si el mes empieza en festivo,
+                            # el 5º hábil es el 8, no el 5 corrido al 8.
+                            ui.number('… o día HÁBIL del mes (0 = no usar)', min=0, max=23,
+                                      format='%.0f', on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_especifico'], 'dia_habil') \
+                                .classes('w-full') \
+                                .tooltip('Cuenta solo días hábiles: «el 5º día hábil del mes». '
+                                         'Distinto de poner 5 en el día de corte, que cuenta '
+                                         'días corridos. Si lo usa, el día de corte se ignora.')
                             ui.select(AJUSTE_HABIL, label='Si cae en día no hábil',
                                       on_change=refrescar_vista_previa) \
                                 .bind_value(nuevo_informe['tiempo_especifico'], 'ajuste') \

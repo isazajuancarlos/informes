@@ -120,9 +120,33 @@ def _ciclico(config, r):
         r.errores.append("Una periodicidad cíclica necesita fecha de inicio.")
 
 
+#: Días hábiles que tiene un mes. Comprobado sobre 2020-2040 con el calendario
+#: colombiano: entre 18 y 23. Por encima de 23 no existe en ningún mes.
+HABILES_MINIMO_MES = 18
+HABILES_MAXIMO_MES = 23
+
+
 def _especifico(config, r):
     if not config.get("meses"):
         r.errores.append("Seleccione al menos un mes de entrega.")
+
+    if config.get("dia_habil"):
+        n = _entero(config.get("dia_habil"), 0)
+        if not 1 <= n <= HABILES_MAXIMO_MES:
+            r.errores.append(
+                f"El día hábil debe estar entre 1 y {HABILES_MAXIMO_MES}. "
+                f"Ningún mes tiene más días hábiles que eso.")
+        elif n > HABILES_MINIMO_MES:
+            # No es un error: se usa el último hábil, igual que el día 31 en un
+            # mes de 30. Pero quien pide el día 20 espera el 20.
+            r.advertencias.append(
+                f"Algunos meses tienen solo {HABILES_MINIMO_MES} días hábiles. "
+                f"En esos, el vencimiento será el último día hábil del mes.")
+        if config.get("dia_corte") or config.get("es_ultimo_dia"):
+            r.advertencias.append(
+                "Indicó un día hábil, así que el día de corte y «último día del "
+                "mes» no se usarán.")
+        return  # el resto de comprobaciones son sobre el día corrido
 
     dia = _entero(config.get("dia_corte"), 0)
     if not config.get("es_ultimo_dia"):
