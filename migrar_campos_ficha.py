@@ -31,8 +31,16 @@ from __future__ import annotations
 import os
 import sys
 
-os.environ.setdefault("DATABASE_URL", "sqlite:///./informes.db")
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+# NO se fija aquí ningún `DATABASE_URL` por defecto. Lo hacía, y con eso se
+# apuntaba a `./informes.db` mientras la instalación real usaba la ruta del
+# `.env`: el script encontraba una base vacía —o la creaba— y reventaba. El
+# mismo defecto del valor de relleno que este producto existe para evitar,
+# cometido en el script que mueve los datos.
+#
+# La base la decide `app.core.config`, que es quien lee el `.env`. Igual que
+# `migrar_esquema.py`.
 from app.core.database import get_db_session  # noqa: E402
 from app.models.meta_tables import (  # noqa: E402
     AMBITO_FICHA, ConfiguracionInformeVariable, Informe, MetaVariable)

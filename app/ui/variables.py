@@ -1,6 +1,7 @@
 from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import (MetaVariable, Informe, MetaRegla,
+                                    ConfiguracionInformeVariable,
                                     AMBITO_CONTENIDO, AMBITO_FICHA, AMBITOS)
 from app.ui.ui_helpers import estado_vacio, ayuda
 
@@ -10,6 +11,45 @@ ETIQUETA_AMBITO = {
     AMBITO_FICHA: 'Describe el informe (ficha)',
     AMBITO_CONTENIDO: 'Es un dato de la entrega',
 }
+
+
+def puede_borrarse(db, id_var):
+    """¿Se puede borrar este campo? (puede, motivo).
+
+    Vive fuera de la página a propósito: dentro era un cierre que
+    ninguna prueba podía alcanzar, y por eso nadie vio que consultaba
+    un atributo inexistente.
+    """
+    # 1. Revisar REGLAS
+    regla_uso = db.query(MetaRegla).filter_by(variable_id=id_var).first()
+    if regla_uso:
+        return False, f"No se puede eliminar: Se usa en la regla '{regla_uso.nombre_regla}'"
+
+    # 2. Revisar INFORMES.
+    #
+    # Aquí se consultaba `inf.variables_ids`, un atributo que NO EXISTE:
+    # borrar un campo con cualquier informe en la base reventaba con
+    # AttributeError. La guarda parecía estar y no protegía nada, que es
+    # peor que no tenerla — a nadie se le ocurre comprobar un guardián que
+    # ya está escrito.
+    #
+    # El vínculo real es `ConfiguracionInformeVariable`: una fila por
+    # (informe, campo, valor).
+    en_uso = db.query(ConfiguracionInformeVariable).filter_by(
+        variable_id=id_var).first()
+    if en_uso:
+        cuantos = db.query(ConfiguracionInformeVariable).filter_by(
+            variable_id=id_var).count()
+        informe = db.query(Informe).get(en_uso.informe_id)
+        nombre = informe.nombre if informe else f"#{en_uso.informe_id}"
+        return False, (
+            f"No se puede eliminar: {cuantos} informe(s) lo tienen "
+            f"contestado, por ejemplo «{nombre}». Borrarlo perdería esos "
+            f"valores sin dejar rastro. Quítelo primero de esos informes.")
+
+    return True, "OK"
+
+
 
 
 def page_variables():
@@ -61,23 +101,9 @@ def page_variables():
         label_titulo.text = f'Editar campo (ID: {fila["id"]})'
         dialogo.open()
 
-    def validar_dependencias(db, id_var):
-        # 1. Revisar REGLAS
-        regla_uso = db.query(MetaRegla).filter_by(variable_id=id_var).first()
-        if regla_uso:
-            return False, f"No se puede eliminar: Se usa en la regla '{regla_uso.nombre_regla}'"
-
-        # 2. Revisar INFORMES (Búsqueda en JSON)
-        informes = db.query(Informe).all()
-        for inf in informes:
-            if inf.variables_ids and id_var in inf.variables_ids:
-                return False, f"No se puede eliminar: Se usa en el informe '{inf.id}'"
-
-        return True, "OK"
-
     def eliminar(id_var):
         with get_db_session() as db:
-            puede_borrar, mensaje = validar_dependencias(db, id_var)
+            puede_borrar, mensaje = puede_borrarse(db, id_var)
             
             if not puede_borrar:
                 ui.notify(mensaje, type='negative', close_button=True, multi_line=True)

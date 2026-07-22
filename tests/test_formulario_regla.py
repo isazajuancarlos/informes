@@ -421,3 +421,52 @@ def test_los_campos_de_ficha_MIGRADOS_conservan_su_etiqueta():
     assert 'Justificación / Normatividad' in etiquetas
     # Y ninguna columna se queda fuera de la mudanza.
     assert len(CAMPOS) == 7
+
+
+def test_borrar_un_campo_EN_USO_se_impide_y_se_dice_cuantos():
+    """La guarda consultaba `Informe.variables_ids`, un atributo que NO EXISTE:
+    borrar un campo con cualquier informe en la base reventaba con
+    AttributeError. Una guarda que parece estar y no protege es peor que
+    ninguna — a nadie se le ocurre comprobar un guardián ya escrito.
+
+    Vivía dentro de la página como un cierre, así que ninguna prueba podía
+    alcanzarla. Por eso ahora está fuera.
+    """
+    from app.core.database import Base, engine, get_db_session
+    from app.models.meta_tables import (AMBITO_FICHA, ConfiguracionInformeVariable,
+                                        Informe, MetaVariable)
+    from app.ui.variables import puede_borrarse
+
+    Base.metadata.create_all(engine)
+    with get_db_session() as db:
+        usado = MetaVariable(nombre_interno='campo_en_uso', etiqueta_visual='En uso',
+                             tipo_dato='TEXTO', ambito=AMBITO_FICHA)
+        libre = MetaVariable(nombre_interno='campo_libre', etiqueta_visual='Libre',
+                             tipo_dato='TEXTO', ambito=AMBITO_FICHA)
+        # El informe necesita un creador de verdad: `creador_id` es clave
+        # foránea, y en una base recién creada no hay ningún usuario.
+        from app.models.meta_tables import Usuario
+        autor = db.query(Usuario).first()
+        if autor is None:
+            autor = Usuario(nombre='Prueba', email='prueba@local',
+                            password_hash='x', es_admin=True)
+            db.add(autor)
+            db.flush()
+        inf = Informe(nombre='Informe que usa el campo', creador_id=autor.id)
+        db.add_all([usado, libre, inf])
+        db.flush()
+        db.add(ConfiguracionInformeVariable(informe_id=inf.id, variable_id=usado.id,
+                                            valor_parametro='Vigilancia'))
+        db.commit()
+        id_usado, id_libre = usado.id, libre.id
+
+    with get_db_session() as db:
+        puede, motivo = puede_borrarse(db, id_usado)
+        assert puede is False, motivo
+        # Y se dice CUÁNTOS y CUÁL: «no se puede» sin más obliga a buscarlo a ojo.
+        assert '1 informe' in motivo, motivo
+        assert 'Informe que usa el campo' in motivo, motivo
+
+        # El contrapunto, para que la prueba no pase por prohibirlo todo.
+        puede, motivo = puede_borrarse(db, id_libre)
+        assert puede is True, motivo
