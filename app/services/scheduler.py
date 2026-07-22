@@ -142,6 +142,31 @@ class GeneradorTareas:
         return ultimo_habil
 
     @staticmethod
+    def _nominales_del_mes(year, month, config):
+        """TODOS los días nominales que la regla fija en ese mes.
+
+        `dia_corte` era un escalar, así que una obligación de los días 7 y 20 —o
+        una quincenal, que es de las más comunes que existen— no se podía
+        expresar. No es un caso exótico: era un límite arbitrario de lo que el
+        sistema admitía que una obligación fuera.
+
+        Se acepta `dias_corte` como lista y se conserva `dia_corte` escalar, que
+        es lo que hay guardado en las reglas ya creadas.
+        """
+        dias = config.get('dias_corte')
+        if not dias:
+            return [GeneradorTareas._nominal_del_mes(year, month, config)]
+
+        salida = []
+        for dia in dias:
+            sencilla = {**config, 'dia_corte': dia,
+                        'es_ultimo_dia': False, 'dia_habil': None}
+            nominal = GeneradorTareas._nominal_del_mes(year, month, sencilla)
+            if nominal and nominal not in salida:
+                salida.append(nominal)
+        return sorted(salida)
+
+    @staticmethod
     def _nominal_del_mes(year, month, config):
         """Día NOMINAL que corresponde a ese mes. Sin ajustar a hábil.
 
@@ -232,10 +257,28 @@ class GeneradorTareas:
         # ESPECÍFICO
         elif modo == 'ESPECIFICO':
             if fecha_evaluar.month in config.get('meses', []):
-                nominal = GeneradorTareas._nominal_del_mes(
-                    fecha_evaluar.year, fecha_evaluar.month, config)
+                for nominal in GeneradorTareas._nominales_del_mes(
+                        fecha_evaluar.year, fecha_evaluar.month, config):
+                    if nominal == fecha_evaluar:
+                        vencimientos.append(
+                            GeneradorTareas._con_ajuste(nominal, config))
+                        break  # un vencimiento por día, aunque dos días coincidan
+
+        # FECHAS EXPLÍCITAS
+        elif modo == 'FECHAS':
+            # La salida de emergencia del diseño: una obligación que no sigue
+            # ningún patrón se enumera. Sin esto, «el sistema puede crear
+            # cualquier informe» sería cierto solo para las formas que se nos
+            # ocurrieron, y quien tuviera una distinta se quedaría fuera sin
+            # alternativa.
+            for texto in config.get('fechas', []):
+                try:
+                    nominal = datetime.strptime(str(texto).strip(), '%Y-%m-%d').date()
+                except (ValueError, TypeError):
+                    continue  # una fecha ilegible no invalida las demás
                 if nominal == fecha_evaluar:
                     vencimientos.append(GeneradorTareas._con_ajuste(nominal, config))
+                    break
 
         # SEMANAL
         elif modo == 'SEMANAL':

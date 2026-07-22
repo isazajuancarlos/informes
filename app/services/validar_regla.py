@@ -61,6 +61,8 @@ def validar(config: dict) -> Resultado:
         _ciclico(config, r)
     elif modo == "ESPECIFICO":
         _especifico(config, r)
+    elif modo == "FECHAS":
+        _fechas(config, r)
     elif modo == "SEMANAL":
         _semanal(config, r)
     elif modo == "HOURLY":
@@ -120,15 +122,80 @@ def _ciclico(config, r):
         r.errores.append("Una periodicidad cíclica necesita fecha de inicio.")
 
 
-#: Días hábiles que tiene un mes. Comprobado sobre 2020-2040 con el calendario
-#: colombiano: entre 18 y 23. Por encima de 23 no existe en ningún mes.
-HABILES_MINIMO_MES = 18
+#: Máximo de días hábiles que puede tener un mes: 23.
+#:
+#: Es MATEMÁTICO, no del calendario de ningún país — un mes de 31 días que
+#: empieza en lunes tiene 23 días de lunes a viernes, y los festivos solo pueden
+#: restar. Por eso sí puede ir escrito aquí.
 HABILES_MAXIMO_MES = 23
+
+
+def _habiles_minimos_del_mes(anios=5):
+    """El mes más flaco del calendario CONFIGURADO, no del colombiano.
+
+    Aquí había un 18 escrito a mano, medido sobre los festivos de Colombia. Es
+    justo el error contra el que existe la directiva de diseñar para lo
+    universal: el número correcto depende de cuántos festivos tenga el país del
+    cliente, y una entidad con otro calendario habría recibido un aviso falso.
+
+    El 23 de arriba sí puede ir fijo porque no depende de ningún calendario.
+    Este no, así que se cuenta.
+    """
+    import calendar
+    from datetime import date
+
+    from app.services.calendar_engine import MotorReglasDinamicas
+
+    motor = MotorReglasDinamicas()
+    hoy = date.today().year
+    return min(
+        sum(1 for d in range(1, calendar.monthrange(a, m)[1] + 1)
+            if motor._es_habil(date(a, m, d)))
+        for a in range(hoy, hoy + anios) for m in range(1, 13)
+    )
+
+
+def _fechas(config, r):
+    """Lista de fechas explícita: la salida de emergencia del diseño.
+
+    Una obligación que no sigue ningún patrón se enumera. Sin esto, «el sistema
+    puede crear cualquier informe» sería cierto solo para las formas que se nos
+    ocurrieron.
+    """
+    fechas = config.get("fechas") or []
+    if not fechas:
+        r.errores.append("Escriba al menos una fecha, en formato AAAA-MM-DD.")
+        return
+    from datetime import datetime
+
+    malas = []
+    for texto in fechas:
+        try:
+            datetime.strptime(str(texto).strip(), "%Y-%m-%d")
+        except (ValueError, TypeError):
+            malas.append(str(texto))
+    if malas:
+        # Se nombran. «Hay fechas mal escritas» obliga a buscarlas a ojo.
+        r.errores.append(
+            "Estas fechas no se entienden, use el formato AAAA-MM-DD: "
+            + ", ".join(malas[:5]) + ("…" if len(malas) > 5 else ""))
 
 
 def _especifico(config, r):
     if not config.get("meses"):
         r.errores.append("Seleccione al menos un mes de entrega.")
+
+    if config.get("dias_corte"):
+        fuera = [d for d in config["dias_corte"]
+                 if not (isinstance(d, int) or str(d).isdigit()) or not 1 <= int(d) <= 31]
+        if fuera:
+            r.errores.append(
+                f"Los días de corte deben estar entre 1 y 31: {fuera}")
+        elif len(set(int(d) for d in config["dias_corte"])) != len(config["dias_corte"]):
+            r.advertencias.append(
+                "Hay días de corte repetidos; solo se generará un vencimiento "
+                "por día.")
+        return  # manda la lista; el resto no aplica
 
     if config.get("dia_habil"):
         n = _entero(config.get("dia_habil"), 0)
@@ -136,12 +203,15 @@ def _especifico(config, r):
             r.errores.append(
                 f"El día hábil debe estar entre 1 y {HABILES_MAXIMO_MES}. "
                 f"Ningún mes tiene más días hábiles que eso.")
-        elif n > HABILES_MINIMO_MES:
-            # No es un error: se usa el último hábil, igual que el día 31 en un
-            # mes de 30. Pero quien pide el día 20 espera el 20.
-            r.advertencias.append(
-                f"Algunos meses tienen solo {HABILES_MINIMO_MES} días hábiles. "
-                f"En esos, el vencimiento será el último día hábil del mes.")
+        else:
+            minimo = _habiles_minimos_del_mes()
+            if n > minimo:
+                # No es un error: se usa el último hábil, igual que el día 31 en
+                # un mes de 30. Pero quien pide el día 20 espera el 20.
+                r.advertencias.append(
+                    f"Con este calendario, algunos meses tienen solo {minimo} "
+                    f"días hábiles. En esos, el vencimiento será el último día "
+                    f"hábil del mes.")
         if config.get("dia_corte") or config.get("es_ultimo_dia"):
             r.advertencias.append(
                 "Indicó un día hábil, así que el día de corte y «último día del "
