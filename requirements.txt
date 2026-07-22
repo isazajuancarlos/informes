@@ -4,6 +4,9 @@ sqlalchemy
 psycopg2-binary
 nicegui
 pydantic
+# Identidad: la cadena de esquemas de contraseña (Argon2id, con bcrypt heredado).
+# bcrypt sigue explícito porque las pruebas fabrican hashes heredados con él.
+tumbaga>=0.2
 bcrypt
 python-dotenv
 APScheduler

@@ -1,5 +1,7 @@
 from nicegui import ui, app
 from app.services.notification_service import NotificationService
+from app.core.tiempo import formatear_utc
+from app.services.license_service import estado as licencia_estado
 
 
 def _render_notification_bell(usuario_id):
@@ -33,7 +35,7 @@ def _render_notification_bell(usuario_id):
                             with ui.column().classes('gap-0 flex-grow'):
                                 ui.label(n.titulo).classes('font-medium text-sm')
                                 ui.label(n.mensaje[:100]).classes('text-xs text-slate-500')
-                                ui.label(n.fecha_creacion.strftime('%d/%m/%Y %H:%M')).classes('text-xs text-slate-400')
+                                ui.label(formatear_utc(n.fecha_creacion, '%d/%m/%Y %H:%M')).classes('text-xs text-slate-400')
 
             with ui.row().classes('w-full justify-between p-3 border-t'):
                 ui.button('Marcar todas leídas', on_click=lambda: _marcar_todo_y_cerrar(usuario_id, d)) \
@@ -54,6 +56,28 @@ def _marcar_todo_y_cerrar(usuario_id, dialog):
     ui.navigate.reload()
 
 
+def _aviso_de_licencia():
+    """Aviso de licencia en la cabecera. **Nunca bloquea nada.**
+
+    Es la aplicación del principio del modo degradado: la ausencia de una capa
+    opcional no puede impedirle al cliente cumplir una obligación con un
+    tercero. Si una licencia vencida impidiera registrar una entrega, Xiliux
+    pasaría a ser la causa del incumplimiento del cliente ante Supersalud.
+
+    Lo que aporta es VISIBILIDAD; el remedio ante el exceso es contractual.
+    Por eso distingue «no hay licencia» —normal en evaluación— de «la licencia
+    no cuadra», que es lo que sí merece color de alarma: si ambas se vieran
+    igual, el aviso de verdad se acabaría ignorando.
+    """
+    est = licencia_estado()
+    if not est.hay_que_avisar:
+        return
+    color, icono = ('bg-red-600', 'gpp_bad') if est.es_grave else ('bg-amber-600', 'info')
+    with ui.element('div').classes(f'{color} px-3 py-1 rounded flex items-center gap-2'):
+        ui.icon(icono).classes('text-base')
+        ui.label(est.mensaje).classes('text-xs')
+
+
 def menu_principal():
     usuario_id = app.storage.user.get('user_id')
 
@@ -61,6 +85,7 @@ def menu_principal():
         with ui.row().classes('items-center gap-3'):
             ui.icon('analytics').classes('text-3xl text-blue-400')
             ui.label('SISTEMA INTEGRAL').classes('text-lg font-bold')
+            _aviso_de_licencia()
 
         with ui.row().classes('items-center gap-3'):
             # Language selector

@@ -58,7 +58,7 @@ Recopilamos y tratamos los siguientes datos para operar el sistema:
 | Categoría | Datos | Base Legal |
 |-----------|-------|------------|
 | **Identificación** | Nombre completo, dirección de correo electrónico | Ejecución de contrato / relación laboral |
-| **Acceso** | Contraseña (almacenada con hash bcrypt, no legible) | Seguridad del sistema |
+| **Acceso** | Contraseña (almacenada con hash Argon2id, no legible ni reversible) | Seguridad del sistema |
 | **Actividad** | Fecha/hora de inicio y cierre de sesión, dirección IP | Seguridad y auditoría (Ley 1581/2012) |
 | **Operacional** | Registros de tareas asignadas, entregas y comentarios | Ejecución de obligaciones laborales/contractuales |
 
@@ -126,7 +126,9 @@ Una vez vencido el plazo, los datos serán suprimidos o anonimizados de forma ir
 Implementamos medidas técnicas y organizativas para proteger sus datos
 (**Artículo 4(f) Ley 1581/2012 — Principio de Seguridad**):
 
-- Contraseñas almacenadas con algoritmo **bcrypt** (12 rondas); nunca en texto claro.
+- Contraseñas almacenadas con **Argon2id** (19 MiB, 2 iteraciones), el algoritmo
+  recomendado por OWASP; nunca en texto claro y sin posibilidad de revertirlas.
+  Las cuentas creadas antes de esta medida se actualizan solas al iniciar sesión.
 - Sesiones con **tiempo de expiración** configurable (por defecto 60 minutos).
 - **Tokens de restablecimiento** de contraseña con validez de 1 hora y uso único.
 - Registro de intentos de acceso fallidos en base de datos.

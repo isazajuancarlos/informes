@@ -1,36 +1,82 @@
-import bcrypt
+from tumbaga import Argon2id, Bcrypt, EsquemaDesconocido, Tumbaga
 from app.core.database import get_db_session
 from app.models.meta_tables import Usuario, PasswordReset
+import logging
 import secrets
 from datetime import datetime, timedelta
 
-# Work factor para bcrypt (12 es recomendado para 2024+)
-BCRYPT_ROUNDS = 12
+logger = logging.getLogger(__name__)
+
+# La cadena de esquemas. Se ESCRIBE con Argon2id; bcrypt sigue en la lista solo
+# para no dejar fuera a los usuarios creados antes de esta migración, y se
+# retira cuando `AuthService.avance_migracion()` diga que ya no queda ninguno.
+CADENA = Tumbaga([
+    Argon2id(),
+    Bcrypt(rondas=12),  # solo verifica
+])
 
 class AuthService:
     @staticmethod
     def get_password_hash(password: str) -> str:
-        password_bytes = password.encode('utf-8')
-        salt = bcrypt.gensalt(rounds=BCRYPT_ROUNDS)
-        hashed = bcrypt.hashpw(password_bytes, salt)
-        return hashed.decode('utf-8')
+        return CADENA.cifrar(password)
 
     @staticmethod
     def verify_password(plain_password: str, hashed_password: str) -> bool:
+        """Verifica sin actualizar.
+
+        Para el inicio de sesión se usa `authenticate_user`, que además sube el
+        hash de esquema. Este método queda para las comprobaciones sueltas
+        (confirmar la contraseña actual antes de cambiarla, por ejemplo), donde
+        no hay a quién persistirle nada.
+        """
         try:
-            password_bytes = plain_password.encode('utf-8')
-            hashed_bytes = hashed_password.encode('utf-8')
-            return bcrypt.checkpw(password_bytes, hashed_bytes)
-        except Exception:
+            return CADENA.verificar(plain_password, hashed_password).valida
+        except (EsquemaDesconocido, ValueError):
             return False
 
     @staticmethod
     def authenticate_user(email: str, password: str):
+        """Autentica y, de paso, sube la contraseña al mejor esquema.
+
+        Este es el ÚNICO instante en que la contraseña existe en claro, así que
+        es el único momento en que se puede recifrar. Si no se persiste aquí, no
+        se migra nunca.
+        """
         with get_db_session() as db:
             user = db.query(Usuario).filter(Usuario.email == email).first()
             if not user or not user.activo: return None
-            if not AuthService.verify_password(password, user.password_hash): return None
+
+            try:
+                resultado = CADENA.verificar(password, user.password_hash)
+            except (EsquemaDesconocido, ValueError):
+                # Hash corrupto o de un esquema retirado: no se deja entrar, pero
+                # se registra, porque significa que alguien quedó fuera del sistema.
+                logger.error(
+                    "El hash del usuario %s no lo reconoce ningún esquema de la cadena", user.id
+                )
+                return None
+
+            if not resultado.valida: return None
+
+            if resultado.hash_nuevo:
+                user.password_hash = resultado.hash_nuevo
+                db.commit()
+                logger.info(
+                    "Contraseña del usuario %s migrada de %s a %s",
+                    user.id, resultado.esquema, CADENA.escritor.nombre,
+                )
             return user
+
+    @staticmethod
+    def avance_migracion():
+        """Cuántas contraseñas quedan en el esquema antiguo.
+
+        Es lo que autoriza a retirar `Bcrypt` de la cadena: mientras no esté
+        completo, retirarlo deja fuera a quien todavía no ha vuelto a entrar.
+        """
+        with get_db_session() as db:
+            hashes = [h for (h,) in db.query(Usuario.password_hash).all() if h]
+            return CADENA.avance(hashes)
 
     @staticmethod
     def generar_token_recuperacion(email: str):

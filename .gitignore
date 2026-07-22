@@ -53,3 +53,16 @@ conversaciones/
 # Entorno y artefactos de la demo local
 .venv/
 storage/demo_andina/
+
+# Copia de Quipu que se entrega al cliente bajo licencia comercial (Cláusula 9.2
+# del EULA). NO se versiona: se genera al empaquetar con
+# `python preparar_distribucion.py`. Meter la rueda en el repositorio ataría la
+# distribución a una plataforma y a una versión congelada.
+vendor/
+
+# Licencia del cliente. Cada instalación tiene la suya y ninguna va al repo.
+licencia.quipu
+
+# Descarga de SECOP II para el anclaje de precios. Se regenera con
+# `python analisis_precios_secop.py`; versionarla ataría el análisis a una foto.
+.cache_secop/
