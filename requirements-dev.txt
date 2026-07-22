@@ -1,7 +1,12 @@
 # Dependencias de desarrollo. Las de ejecución van en requirements.txt.
 #   pip install -r requirements.txt -r requirements-dev.txt
 -r requirements.txt
-pytest==8.3.4
+# El pin subió de 8.3.4 porque `pytest-asyncio` exige pytest>=8.4, y el CI se
+# cayó al resolver. En la máquina de aquí no se vio: instalar pytest-asyncio
+# ACTUALIZÓ pytest en silencio, así que la suite llevaba toda la sesión
+# corriendo sobre 9.1.1 mientras el fichero decía 8.3.4. Se fija lo que de
+# verdad se probó.
+pytest==9.1.1
 
 # El simulador de cliente de NiceGUI (`user`) es una fixture asíncrona. Sin esto
 # las pruebas de pantalla no salen en rojo: salen en ERROR de setup, que parece

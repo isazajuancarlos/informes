@@ -247,9 +247,18 @@ def test_el_modo_no_distingue_mayusculas_ni_espacios(monkeypatch):
     assert fs._modo() == "hsm"  # noqa: SLF001
 
 
+@CRIPTO
 def test_modo_hsm_sin_configurar_no_esta_disponible_y_LO_EXPLICA(monkeypatch):
     """Un HSM mal configurado NO puede parecer «firma desactivada»: en ese caso
-    alguien cree tener firma y no la tiene. El motivo tiene que ser explícito."""
+    alguien cree tener firma y no la tiene. El motivo tiene que ser explícito.
+
+    Le faltaba la marca `@CRIPTO` que llevan sus dieciocho hermanas, así que sin
+    `quipu-crypto` instalado fallaba diciendo «quipu-crypto no está instalado» —
+    que es cierto, y no es lo que la prueba comprueba. Una prueba que se pone
+    roja por el entorno enseña a mirar el rojo y seguir, y entonces deja de
+    servir la que se ponga roja de verdad. En el CI la cripto SÍ está y esto no
+    se salta nunca.
+    """
     monkeypatch.setenv("QUIPU_CUSTODIA", "hsm")
     for v in ("QUIPU_PKCS11_MODULE", "QUIPU_PKCS11_ED25519", "QUIPU_PKCS11_MLDSA"):
         monkeypatch.delenv(v, raising=False)
