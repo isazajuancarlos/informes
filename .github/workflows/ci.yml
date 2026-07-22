@@ -99,6 +99,61 @@ jobs:
             exit 1
           fi
 
+  instalacion:
+    name: el asistente instala de verdad, en una copia limpia
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Instalar como lo haría el cliente
+        run: |
+          # Copia limpia desde el árbol versionado: sin .venv, sin storage, sin
+          # base de datos y sin .env. Es lo que recibe el cliente.
+          #
+          # Este trabajo existe porque el asistente sembraba los datos SIN crear
+          # antes el esquema. Fallaba siempre en una instalación de verdad, lo
+          # decía como un aviso de pasada, devolvía 0 y a continuación anunciaba
+          # unas credenciales que no existían. A mano funcionaba —quien lo probó
+          # creó el esquema antes sin darse cuenta—, así que solo instalando de
+          # cero se ve.
+          mkdir -p /tmp/limpia
+          git archive HEAD | tar -x -C /tmp/limpia
+          cd /tmp/limpia
+          python instalar.py --perfil standalone --modo nativo --si
+
+      - name: Entrar con las credenciales que el asistente promete
+        run: |
+          # Que el asistente devuelva 0 no prueba que se pueda entrar. Se
+          # comprueba el camino real de acceso, y que RECHACE una contraseña
+          # equivocada: si aceptara cualquiera, esta comprobación no mediría nada.
+          cd /tmp/limpia
+          DEPLOYMENT_PROFILE=standalone .venv/bin/python - <<'PY'
+          import sys
+          sys.path.insert(0, ".")
+          from app.services.auth import AuthService
+          assert AuthService.authenticate_user("admin@co.co", "123456"), \
+              "el asistente terminó bien pero no se puede entrar"
+          assert not AuthService.authenticate_user("admin@co.co", "no-es"), \
+              "acepta cualquier contraseña: la comprobación no mide nada"
+          print("OK: se entra con las credenciales prometidas, y solo con ellas.")
+          PY
+
+      - name: La aplicación arranca y responde
+        run: |
+          cd /tmp/limpia
+          DEPLOYMENT_PROFILE=standalone .venv/bin/python main.py &
+          for i in $(seq 1 30); do
+            sleep 2
+            if curl -sf -o /dev/null http://127.0.0.1:8003/; then
+              echo "OK: responde en el puerto 8003."; exit 0
+            fi
+          done
+          echo "La aplicación no respondió en 60 s"; exit 1
+
   clausulado:
     name: EULA y modelo de licencia coinciden
     runs-on: ubuntu-latest
