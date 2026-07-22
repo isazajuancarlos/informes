@@ -41,21 +41,49 @@ MAPA_TIPO_FLUJO = {
     'BI': 'BIDIRECCIONAL',
 }
 
+TODOS_LOS_MESES = list(range(1, 13))
+
+#: Cada periodicidad, expresada como lo que ES.
+#:
+#: Aquí «Mensual» era `cada 30 días` y «Anual» era `cada 365`. No son lo mismo y
+#: la diferencia no es un matiz:
+#:
+#:   cada 30 días  → 12,17 al año, y el día del mes SE DESPLAZA. Un informe que
+#:                   vence el 5 de enero vence el 4 de febrero, el 6 de marzo…
+#:   cada 365 días → se corre un día en cada bisiesto, para siempre.
+#:   cada 15 días  → 24,3 al año; una quincena son dos días FIJOS del mes.
+#:
+#: Un informe mensual no vence «cada 30 días»: vence un día del mes, y el motor
+#: ya sabe expresarlo. Dejar el mapeo viejo hacía que la demostración enseñara
+#: el sistema que el producto DEJÓ de ser — y una demo que miente sobre el
+#: producto es peor que no tener demo.
+#:
+#: `A_DEMANDA` tampoco existía: el motor conoce `INMEDIATO`. La cadena mal
+#: escrita no daba error, simplemente no generaba nada nunca.
 MAPA_PERIODICIDAD = {
     'Diaria': ('CICLICO', 1),
-    'Semanal': ('SEMANAL', [0, 1, 2, 3, 4]),
-    'Quincenal': ('CICLICO', 15),
-    'Bimestral': ('CICLICO', 60),
-    'Mensual': ('CICLICO', 30),
-    'Trimestral': ('CICLICO', 90),
-    'Semestral': ('CICLICO', 180),
-    'Anual': ('CICLICO', 365),
-    '2 veces por semana': ('SEMANAL', [0, 3]),  # Lunes y Jueves
-    'Inmediatamente sea requerido': ('A_DEMANDA', None),
-    'Por solicitud': ('A_DEMANDA', None),
-    'Cuando lleguen requerimientos eventuales': ('A_DEMANDA', None),
-    'Dependiendo del corte definido': ('A_DEMANDA', None),
-    'Trimestral o cuando es requerido': ('A_DEMANDA', None),
+    # Semanal es UN día a la semana. Marcar de lunes a viernes son 260 al año:
+    # eso es un informe diario en días laborales, no uno semanal.
+    'Semanal': ('SEMANAL', [0]),
+    '2 veces por semana': ('SEMANAL', [0, 3]),
+    # Quincenal: dos días FIJOS de cada mes — 24 al año. Se eligen el 1 y el 15
+    # porque existen en los doce meses; el 30 no existe en febrero y el
+    # validador lo rechaza, que es exactamente lo que debe hacer.
+    'Quincenal': ('ESPECIFICO', {'meses': TODOS_LOS_MESES, 'dias_corte': [1, 15]}),
+    # «Dentro de los primeros cinco días hábiles» es de las formas más
+    # frecuentes de fijar un plazo en la norma colombiana, y no se puede
+    # expresar con días corridos: si el mes empieza en festivo, el 5º hábil es
+    # el 8. Uno de cada ocho informes de la base real la usa.
+    'Mensual': ('ESPECIFICO', {'meses': TODOS_LOS_MESES, 'dia_habil': 5}),
+    'Bimestral': ('ESPECIFICO', {'meses': [1, 3, 5, 7, 9, 11], 'dia_corte': 10}),
+    'Trimestral': ('ESPECIFICO', {'meses': [1, 4, 7, 10], 'dia_corte': 15}),
+    'Semestral': ('ESPECIFICO', {'meses': [1, 7], 'dia_corte': 15}),
+    'Anual': ('ESPECIFICO', {'meses': [1], 'dia_corte': 31}),
+    'Inmediatamente sea requerido': ('INMEDIATO', None),
+    'Por solicitud': ('INMEDIATO', None),
+    'Cuando lleguen requerimientos eventuales': ('INMEDIATO', None),
+    'Dependiendo del corte definido': ('INMEDIATO', None),
+    'Trimestral o cuando es requerido': ('INMEDIATO', None),
 }
 
 MAPA_FORMATOS = {
@@ -148,38 +176,33 @@ class ImportadorDatosDemo:
         return conjunto
 
     def parsear_periodicidad(self, periodicidad_str):
-        """Convierte periodicidad a formato recurrencia_json"""
-        if not periodicidad_str:
-            return {"modo": "CICLICO", "intervalo": 30, "frecuencia": "DAILY"}
+        """Convierte la periodicidad del origen en una regla del motor.
 
-        periodicidad_str = str(periodicidad_str).strip()
+        Una periodicidad que no se reconoce se queda como `INMEDIATO` —a
+        demanda— y NO se le inventa un «cada 30 días». Rellenar el hueco produce
+        un informe que parece configurado y vence cuando nadie dijo: es peor que
+        uno sin cronograma, porque el que no lo tiene se ve a simple vista.
+        """
+        inicio = datetime.now().strftime('%Y-%m-%d')
+        texto = str(periodicidad_str or '').strip()
 
-        # Buscar en mapa directo
-        if periodicidad_str in MAPA_PERIODICIDAD:
-            modo, valor = MAPA_PERIODICIDAD[periodicidad_str]
+        modo, valor = MAPA_PERIODICIDAD.get(texto, ('INMEDIATO', None))
 
-            if modo == 'CICLICO':
-                return {
-                    "modo": "CICLICO",
-                    "intervalo": valor,
-                    "frecuencia": "DAILY",
-                    "fecha_inicio": datetime.now().strftime('%Y-%m-%d'),
-                    "mover_habil": True
-                }
-            elif modo == 'SEMANAL':
-                return {
-                    "modo": "SEMANAL",
-                    "dias_semana": valor,
-                    "fecha_inicio": datetime.now().strftime('%Y-%m-%d')
-                }
-            elif modo == 'A_DEMANDA':
-                return {
-                    "modo": "A_DEMANDA",
-                    "descripcion": periodicidad_str
-                }
-
-        # Fallback: mensual
-        return {"modo": "CICLICO", "intervalo": 30, "frecuencia": "DAILY"}
+        if modo == 'CICLICO':
+            return {"modo": "CICLICO", "intervalo": valor,
+                    "frecuencia": "DAILY", "fecha_inicio": inicio}
+        if modo == 'SEMANAL':
+            return {"modo": "SEMANAL", "dias_semana": valor,
+                    "fecha_inicio": inicio}
+        if modo == 'ESPECIFICO':
+            # Entrega adelantada al hábil anterior: el vencimiento NO se mueve
+            # —lo fija la norma— y adelantar nunca llega tarde, que es la
+            # opción segura para un plazo legal.
+            return {"modo": "ESPECIFICO", **valor,
+                    "ajuste_habil_anterior": True, "fecha_inicio": inicio}
+        return {"modo": "INMEDIATO",
+                "descripcion": texto or "Sin periodicidad declarada",
+                "fecha_inicio": inicio}
 
     def parsear_extensiones(self, presentacion):
         """Extrae extensiones permitidas desde el formato de presentación"""

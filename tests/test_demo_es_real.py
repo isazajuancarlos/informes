@@ -133,3 +133,74 @@ def test_el_segundo_motor_de_calendario_NO_ha_vuelto():
     assert not hasattr(MotorReglasDinamicas, "generar_calendario"), (
         "volvió el segundo motor de calendario: las fechas deben salir de "
         "GeneradorTareas.obtener_vencimientos_para_fecha")
+
+
+# --------------------------------------------------------------------------
+# Los datos de demostración importados: cada periodicidad ES lo que dice
+# --------------------------------------------------------------------------
+
+#: Cuántos vencimientos al año promete cada nombre. `None` = a demanda.
+PROMESA = {
+    'Diaria': 365,
+    'Semanal': 52,
+    '2 veces por semana': 104,
+    'Quincenal': 24,
+    'Mensual': 12,
+    'Bimestral': 6,
+    'Trimestral': 4,
+    'Semestral': 2,
+    'Anual': 1,
+}
+
+
+def _al_anio(regla, anio=2027):
+    from app.services.scheduler import GeneradorTareas
+
+    total, dia = 0, date(anio, 1, 1)
+    while dia <= date(anio, 12, 31):
+        total += len(GeneradorTareas.obtener_vencimientos_para_fecha(dia, regla))
+        dia += timedelta(days=1)
+    return total
+
+
+@pytest.mark.parametrize("nombre,esperado", sorted(PROMESA.items()))
+def test_la_periodicidad_de_la_demo_genera_lo_que_su_nombre_PROMETE(nombre, esperado):
+    """«Mensual» era `cada 30 días`, que son 12,17 al año y con el día del mes
+    desplazándose: el informe que vence el 5 de enero vence el 4 de febrero y el
+    6 de marzo. «Anual» era `cada 365 días`, que se corre un día en cada
+    bisiesto, para siempre.
+
+    Una demostración que modela así enseña el sistema que el producto DEJÓ de
+    ser, y es lo primero que ve un cliente.
+    """
+    from importar_datos_demo import ImportadorDatosDemo
+
+    imp = ImportadorDatosDemo.__new__(ImportadorDatosDemo)
+    regla = {**imp.parsear_periodicidad(nombre), 'fecha_inicio': '2027-01-01'}
+
+    revision = validar(regla)
+    assert revision.se_puede_guardar, (nombre, revision.errores)
+    assert _al_anio(regla) == esperado, nombre
+
+
+def test_una_periodicidad_DESCONOCIDA_queda_a_demanda_y_no_se_inventa():
+    """Rellenar el hueco con «cada 30 días» produce un informe que parece
+    configurado y vence cuando nadie dijo. Es peor que uno sin cronograma:
+    el que no lo tiene se ve a simple vista."""
+    from importar_datos_demo import ImportadorDatosDemo
+
+    imp = ImportadorDatosDemo.__new__(ImportadorDatosDemo)
+    for texto in ('', None, 'Trimestral o cuando es requerido', 'lo que sea'):
+        regla = imp.parsear_periodicidad(texto)
+        assert regla['modo'] == 'INMEDIATO', (texto, regla)
+
+
+def test_el_modo_a_demanda_se_llama_como_el_MOTOR_lo_llama():
+    """Decía `A_DEMANDA`, y el motor solo conoce `INMEDIATO`. La cadena mal
+    escrita no daba error: simplemente no generaba nada, nunca."""
+    from app.services.periodicidad import CAMPOS_QUE_USA
+    from importar_datos_demo import MAPA_PERIODICIDAD
+
+    modos_del_motor = set(CAMPOS_QUE_USA) | {'INMEDIATO'}
+    usados = {modo for modo, _ in MAPA_PERIODICIDAD.values()}
+    assert usados <= modos_del_motor, usados - modos_del_motor
