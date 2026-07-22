@@ -526,18 +526,38 @@ def _coincide_con_su_nombre(config, clave, r):
     if p is None or p.al_anio is None:
         return  # su número depende de lo que se conteste; no hay nada que exigir
 
-    # Se cuenta sobre un año completo empezando en la vigencia, no sobre el año
-    # natural: una regla que arranca en julio tendría la mitad de vencimientos
-    # en su primer año natural y saldría marcada por una razón falsa.
+    # Se cuenta sobre un año NATURAL COMPLETO, y el primero que la regla vive
+    # entero: si la vigencia no es el 1 de enero, el año siguiente.
+    #
+    # Antes se contaban los 365 días posteriores a la vigencia, y eso medía otra
+    # cosa. Con vigencia el 6 de julio, «el 1er lunes de cada mes» daba TRECE:
+    # el primer lunes de julio de 2026 es el 6 —dentro— y el de julio de 2027 es
+    # el 5 —también dentro—. La regla es impecablemente mensual; lo que fallaba
+    # era la ventana. Y el efecto era el peor posible: el sistema ofrecía «el 1er
+    # lunes de cada mes» y se negaba a guardarlo diciendo que no era mensual.
+    #
+    # «Doce al año» significa doce por año natural. Se mide eso.
     try:
         desde = date.fromisoformat(str(config.get("fecha_inicio")))
     except (ValueError, TypeError):
         return
-    hasta = date(desde.year + 1, desde.month, desde.day) - timedelta(days=1)
+    anio = desde.year if (desde.month, desde.day) == (1, 1) else desde.year + 1
+    desde, hasta = date(anio, 1, 1), date(anio, 12, 31)
+
+    # Se cuenta SIN `omitir_festivos`, y esa es la diferencia entre comprobar el
+    # nombre y romper una obligación legítima. «Mensual» promete doce días
+    # nominales al año, y los fija la periodicidad; que alguno no produzca
+    # entrega por caer en festivo es una decisión APARTE, que el usuario tomó
+    # explícitamente en otra pregunta.
+    #
+    # Contando con la omisión puesta, un informe mensual del día 1 en Colombia
+    # genera 10 —el 1 de enero y el 1 de mayo son festivos— y esto lo rechazaba
+    # diciendo que no era mensual. Lo era: lo que no era es doce entregas.
+    sin_omitir = {k: v for k, v in config.items() if k != "omitir_festivos"}
 
     total, dia = 0, desde
     while dia <= hasta:
-        total += len(GeneradorTareas.obtener_vencimientos_para_fecha(dia, config))
+        total += len(GeneradorTareas.obtener_vencimientos_para_fecha(dia, sin_omitir))
         dia += timedelta(days=1)
 
     if total == p.al_anio:

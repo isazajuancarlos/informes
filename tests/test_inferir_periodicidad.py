@@ -43,7 +43,12 @@ REGLAS = [
     ("el último martes", "MENSUAL", "último martes",
      {"modo": "ESPECIFICO", "meses": TODOS, "dia_semana_mes": 1,
       "semana_del_mes": -1, **I}),
-    ("los días 7 y 20", "MENSUAL", "7, 20",
+    # Dos días en cada mes son 24 al año, y eso no es «mensual» — es quincenal,
+    # que es literalmente «dos veces al mes» y cuyo ejemplo en el catálogo es
+    # justamente «el 7 y el 20». Esta línea decía MENSUAL y con ella el sistema
+    # ofrecía una lectura que después rechazaba por generar el doble de lo que
+    # su nombre prometía.
+    ("los días 7 y 20", "QUINCENAL", "7, 20",
      {"modo": "ESPECIFICO", "meses": TODOS, "dias_corte": [7, 20], **I}),
     ("trimestral el 15", "TRIMESTRAL", "el día 15",
      {"modo": "ESPECIFICO", "meses": [3, 6, 9, 12], "dia_corte": 15, **I}),
@@ -262,7 +267,12 @@ def test_una_lectura_IMPOSIBLE_no_se_ofrece():
 
 
 @pytest.mark.parametrize("seleccion,esperada", [
-    ([date(2026, 7, 6), date(2026, 8, 6)], "ANUAL"),        # julio y agosto
+    # Julio y agosto NO son anuales: son dos entregas al año, y no hay nombre en
+    # el catálogo que lo diga. Esta línea esperaba «ANUAL» y estaba mal — la
+    # etiqueta prometía una entrega donde la regla genera dos, y la comprobación
+    # de que el nombre no miente rechazaba al guardar una lectura que el propio
+    # sistema acababa de ofrecer. Ver `test_todo_lo_que_se_ofrece_se_puede_guardar`.
+    ([date(2026, 7, 6), date(2026, 8, 6)], None),           # sin nombre: irregular
     ([date(2026, 1, 6), date(2026, 7, 6)], "SEMESTRAL"),    # a seis meses
     ([date(2026, m, 15) for m in (3, 6, 9, 12)], "TRIMESTRAL"),
     ([date(2026, m, 15) for m in (1, 3, 5, 7, 9, 11)], "BIMESTRAL"),
@@ -275,6 +285,50 @@ def test_la_PERIODICIDAD_de_la_lectura_tambien_es_correcta(seleccion, esperada):
 
     claves = {L.periodicidad for L in interpretaciones(seleccion)}
     assert esperada in claves, (esperada, claves)
+
+
+def test_una_periodicidad_SIN_NOMBRE_se_dice_con_todas_sus_letras():
+    """Sin clave de catálogo, la lectura sigue teniendo que decir qué es.
+
+    Un `None` en pantalla sería peor que un nombre impreciso: la obligación
+    existe, está bien definida, y lo único que le falta es una palabra del
+    catálogo.
+    """
+    from app.services.inferir_periodicidad import (NOMBRE_SIN_CATALOGO,
+                                                   interpretaciones)
+
+    sin_nombre = [L for L in interpretaciones([date(2026, 7, 6), date(2026, 8, 6)])
+                  if L.periodicidad is None]
+    assert sin_nombre, "la lectura de julio y agosto debería ofrecerse"
+    for L in sin_nombre:
+        assert L.nombre == NOMBRE_SIN_CATALOGO
+        assert "julio" in L.dice and "agosto" in L.dice, L.dice
+
+
+@pytest.mark.parametrize("seleccion", [
+    [date(2026, 7, 6)],
+    [date(2026, 7, 6), date(2026, 8, 6)],           # meses irregulares
+    [date(2026, 1, 6), date(2026, 7, 6)],
+    [date(2026, m, 15) for m in (3, 6, 9, 12)],
+    [date(2026, 7, 6), date(2026, 7, 20)],
+    [date(2026, 2, 1), date(2026, 5, 1), date(2026, 8, 1)],
+])
+def test_todo_lo_que_se_ofrece_se_puede_guardar(seleccion):
+    """La invariante de fondo: el sistema no ofrece lo que después rechaza.
+
+    Es la peor forma de cerrarle la puerta a alguien — le enseñas una lectura de
+    lo que acaba de marcar, la elige, y el validador le dice que no. Pasó de
+    verdad: «en enero y junio, el día 15» se ofrecía etiquetada como ANUAL, y al
+    guardar se rechazaba por generar dos entregas donde «anual» promete una.
+    """
+    from app.services.inferir_periodicidad import interpretaciones
+    from app.services.validar_regla import validar
+
+    lecturas = interpretaciones(seleccion)
+    assert lecturas, seleccion
+    for L in lecturas:
+        r = validar(dict(L.regla), periodicidad=L.periodicidad)
+        assert r.se_puede_guardar, (L.nombre, L.dice, r.errores)
 
 
 def test_el_NOMBRE_mostrado_corresponde_a_la_periodicidad():

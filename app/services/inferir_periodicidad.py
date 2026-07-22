@@ -39,8 +39,9 @@ from datetime import date, timedelta
 class Inferencia:
     #: La regla lista para guardar.
     regla: dict
-    #: Clave del catálogo de periodicidades.
-    periodicidad: str
+    #: Clave del catálogo de periodicidades, o `None` si ninguna la nombra sin
+    #: mentir — ver `NOMBRE_SIN_CATALOGO`.
+    periodicidad: str | None
     #: Cómo se le dice al usuario lo que acaba de definir.
     explicacion: str
     #: Si la regla reproduce EXACTAMENTE las fechas marcadas. Solo se devuelve
@@ -128,7 +129,7 @@ def _candidatos(fechas):
     habiles = {_n_esimo_habil_del_mes(f) for f in fechas}
     if suficientes and len(habiles) == 1 and None not in habiles:
         n = habiles.pop()
-        salida.append((_por_meses(meses),
+        salida.append((_periodicidad_de(meses),
                        {"modo": "ESPECIFICO", "meses": meses, "dia_habil": n, **base},
                        f"el {n}º día hábil de cada mes"))
 
@@ -136,31 +137,31 @@ def _candidatos(fechas):
     desde_el_final = {_ordinal_en_el_mes(f)[1] for f in fechas}
     if suficientes and len(semanas) == 1 and len(desde_el_final) == 1 \
             and desde_el_final == {-1}:
-        salida.append((_por_meses(meses),
+        salida.append((_periodicidad_de(meses),
                        {"modo": "ESPECIFICO", "meses": meses,
                         "dia_semana_mes": semanas[0], "semana_del_mes": -1, **base},
                        f"el último {_dias_es(semanas)} de cada mes"))
     elif suficientes and len(semanas) == 1 and len(ordinales) == 1:
         n = ordinales.pop()
-        salida.append((_por_meses(meses),
+        salida.append((_periodicidad_de(meses),
                        {"modo": "ESPECIFICO", "meses": meses,
                         "dia_semana_mes": semanas[0], "semana_del_mes": n, **base},
                        f"el {n}º {_dias_es(semanas)} de cada mes"))
 
     if suficientes and all(f.day == calendar.monthrange(f.year, f.month)[1]
                            for f in fechas):
-        salida.append((_por_meses(meses),
+        salida.append((_periodicidad_de(meses),
                        {"modo": "ESPECIFICO", "meses": meses,
                         "es_ultimo_dia": True, **base},
                        "el último día de cada mes"))
 
     if len(dias) == 1:
-        salida.append((_por_meses(meses),
+        salida.append((_periodicidad_de(meses),
                        {"modo": "ESPECIFICO", "meses": meses,
                         "dia_corte": dias[0], **base},
                        f"el día {dias[0]}"))
     elif len(dias) <= 4:
-        salida.append((_por_meses(meses),
+        salida.append((_periodicidad_de(meses, len(dias)),
                        {"modo": "ESPECIFICO", "meses": meses,
                         "dias_corte": dias, **base},
                        f"los días {', '.join(str(d) for d in dias)}"))
@@ -180,6 +181,21 @@ def _candidatos(fechas):
 _MESES_ES = (None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
              "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
 
+#: Cómo se llama una periodicidad que el catálogo no nombra.
+#:
+#: No es un error ni un hueco: «en enero y junio, el día 15» es una obligación
+#: perfectamente definida a la que ningún nombre del catálogo le queda bien. El
+#: sistema la guarda igual —la regla es el significado, el nombre solo es cómo
+#: se dice— y lo único que se pierde es la comprobación de que el nombre no
+#: miente, que no tiene nada que comprobar cuando no hay nombre.
+NOMBRE_SIN_CATALOGO = "Periodicidad propia"
+
+
+def _nombre_de(clave) -> str:
+    from app.services.periodicidad import CATALOGO
+
+    return CATALOGO[clave].nombre if clave in CATALOGO else NOMBRE_SIN_CATALOGO
+
 
 def _separacion_regular(meses):
     """Cada cuántos meses se repite, si es regular. None si no lo es.
@@ -194,13 +210,38 @@ def _separacion_regular(meses):
     return saltos.pop() if len(saltos) == 1 else None
 
 
-def _periodicidad_de(meses):
+def _periodicidad_de(meses, dias_por_mes: int = 1):
+    """La clave del catálogo, o `None` si ninguna dice la verdad.
+
+    `dias_por_mes` importa tanto como los meses. «Mensual» promete doce entregas
+    al año, así que dos días en cada mes NO es mensual: son veinticuatro, y eso
+    tiene su propio nombre —quincenal, que es literalmente «dos veces al mes»—.
+    Etiquetarlo «Mensual» hacía que el sistema ofreciera «los días 6 y 20 de cada
+    mes» y después se negara a guardarlo por generar el doble de lo prometido.
+
+    Con tres o más días al mes no hay nombre, y no pasa nada: la obligación se
+    guarda igual y se dice con sus propias palabras.
+
+    Devolver `None` es una respuesta, no un fallo. Enero y junio son dos meses
+    que no guardan separación regular: no son un semestre ni son anuales, y no
+    hay nombre en el catálogo que los describa. Antes esto caía a «ANUAL» por
+    defecto, y el efecto era peor que un nombre feo — el sistema OFRECÍA la
+    lectura «en enero y junio, el día 15» y luego se negaba a guardarla, porque
+    la comprobación de que el nombre no miente veía dos entregas donde «anual»
+    prometía una. Ofrecer algo y rechazarlo después es la peor forma de cerrar.
+
+    Sin nombre de catálogo la obligación se guarda igual: lo que se pierde es la
+    comprobación del número de entregas, que solo tiene sentido cuando hay un
+    nombre que pueda mentir.
+    """
+    if dias_por_mes > 1:
+        return "QUINCENAL" if len(meses) == 12 and dias_por_mes == 2 else None
     if len(meses) == 12:
         return "MENSUAL"
     if len(meses) == 1:
         return "ANUAL"
     return {6: "SEMESTRAL", 3: "TRIMESTRAL", 2: "BIMESTRAL",
-            1: "MENSUAL"}.get(_separacion_regular(meses) or 0, "ANUAL")
+            1: "MENSUAL"}.get(_separacion_regular(meses))
 
 
 def _como_se_lee(meses, dias):
@@ -222,12 +263,16 @@ def _como_se_lee(meses, dias):
     return f"en {lista}, {que_dia}"
 
 
-def _por_meses(meses):
-    return {12: "MENSUAL", 6: "BIMESTRAL", 4: "TRIMESTRAL",
-            2: "SEMESTRAL", 1: "ANUAL"}.get(len(meses), "MENSUAL")
+# Aquí vivía `_por_meses`, que deducía la periodicidad del NÚMERO de meses:
+# dos meses eran «semestral». Es el mismo error que ya se había corregido en
+# `_como_se_lee` —julio y agosto son dos meses y no son un semestre— y seguía
+# vivo en la función de al lado, donde nadie lo miró. Lo que hace semestral a
+# una obligación es que sus meses estén a SEIS de distancia, y de eso se
+# encarga `_separacion_regular`. Dos funciones para lo mismo garantizan que una
+# esté mal.
 
 
-_DIAS = ("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
+_DIAS =("lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo")
 
 
 def _dias_es(indices):
@@ -255,11 +300,9 @@ def inferir(fechas) -> Inferencia:
 
     for clave, regla, texto in _candidatos(fechas):
         if _nominales(regla, inicio, fin) == marcadas:
-            from app.services.periodicidad import CATALOGO
-
-            nombre = CATALOGO[clave].nombre if clave in CATALOGO else clave
             return Inferencia(regla, clave,
-                              f"{nombre}: {texto}", descartados=descartados)
+                              f"{_nombre_de(clave)}: {texto}",
+                              descartados=descartados)
         descartados.append(texto)
 
     return Inferencia(
@@ -291,7 +334,9 @@ def inferir(fechas) -> Inferencia:
 @dataclass
 class Lectura:
     """Una interpretación posible de lo que se marcó."""
-    periodicidad: str
+    #: Clave del catálogo, o `None` cuando ninguna la nombra sin mentir. Ver
+    #: `NOMBRE_SIN_CATALOGO`.
+    periodicidad: str | None
     nombre: str
     #: Qué significa, en los términos de quien crea la obligación.
     dice: str
@@ -320,8 +365,6 @@ def interpretaciones(seleccion) -> list[Lectura]:
     interpretación no generase alguna de las fechas marcadas, no es una lectura
     de lo que se marcó, es otra cosa. Comprobado ejecutando, no razonado.
     """
-    from app.services.periodicidad import CATALOGO
-
     fechas = sorted(set(seleccion))
     if not fechas:
         return []
@@ -346,7 +389,7 @@ def interpretaciones(seleccion) -> list[Lectura]:
                            {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
                             "dia_corte": dias[0], **base}))
     else:
-        candidatas.append(("MENSUAL",
+        candidatas.append((_periodicidad_de(list(range(1, 13)), len(dias)),
                            f"los días {', '.join(map(str, dias))} de cada mes",
                            {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
                             "dias_corte": dias, **base}))
@@ -371,7 +414,7 @@ def interpretaciones(seleccion) -> list[Lectura]:
                                 "dia_habil": habil, **base}))
 
     if len(meses) < 12:
-        candidatas.append((_periodicidad_de(meses),
+        candidatas.append((_periodicidad_de(meses, len(dias)),
                            _como_se_lee(meses, dias),
                            {"modo": "ESPECIFICO", "meses": meses,
                             **({"dia_corte": dias[0]} if len(dias) == 1
@@ -393,7 +436,6 @@ def interpretaciones(seleccion) -> list[Lectura]:
             continue
         vistas.add(dice)
         lecturas.append(Lectura(
-            periodicidad=clave,
-            nombre=CATALOGO[clave].nombre if clave in CATALOGO else clave,
+            periodicidad=clave, nombre=_nombre_de(clave),
             dice=dice, regla=regla, proximas=_proximas(regla, inicio)))
     return lecturas
