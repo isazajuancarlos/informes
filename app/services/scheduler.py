@@ -58,11 +58,13 @@ class GeneradorTareas:
     @staticmethod
     def obtener_deadlines_para_fecha(fecha_evaluar, config):
         str_inicio = config.get('fecha_inicio')
+        inicio_dt = None
         if str_inicio:
             try:
                 inicio_dt = datetime.strptime(str_inicio, '%Y-%m-%d').date()
                 if fecha_evaluar < inicio_dt: return [] # Antes de vigencia
-            except: pass
+            except (ValueError, TypeError):
+                inicio_dt = None
         
         modo = config.get('modo', 'CICLICO')
         deadlines = []
@@ -112,10 +114,37 @@ class GeneradorTareas:
         # SEMANAL
         elif modo == 'SEMANAL':
             dias = config.get('dias_semana', [])
-            if fecha_evaluar.weekday() in dias:
-                lim = fecha_evaluar
-                if config.get('mover_habil'): lim = GeneradorTareas.mover_a_habil_siguiente(fecha_evaluar)
-                deadlines.append(datetime.combine(lim, fin_dia))
+            # Mismo criterio que ESPECÍFICO: el vencimiento se emite el día en
+            # que CAE, no el día que lo origina.
+            #
+            # Antes se emitía al evaluar el día de origen, con la fecha ya
+            # ajustada. Eso traía dos defectos:
+            #
+            #   1. DUPLICADOS. Con lunes y martes marcados y ajuste, un lunes
+            #      festivo se movía al martes —que ya estaba— y ese día recibía
+            #      DOS vencimientos de la misma obligación. Medido: 12 días al
+            #      año.
+            #   2. El ajuste al hábil ANTERIOR no se aplicaba nunca: el bloque
+            #      solo leía `mover_habil`. Quien lo pedía —la opción segura
+            #      para plazos legales— no obtenía ninguno.
+            #
+            # Al invertir la pregunta («¿soy yo el destino de algún día
+            # marcado?») los dos desaparecen: un día es destino o no lo es, y el
+            # ajuste hacia atrás cabe igual que hacia adelante.
+            for delta in range(-7, 8):
+                origen = fecha_evaluar + timedelta(days=delta)
+                if origen.weekday() not in dias:
+                    continue
+                if inicio_dt and origen < inicio_dt:
+                    continue  # el ORIGEN debe estar dentro de vigencia, no solo el destino
+                destino = origen
+                if config.get('mover_habil'):
+                    destino = GeneradorTareas.mover_a_habil_siguiente(origen)
+                elif config.get('mover_habil_anterior'):
+                    destino = GeneradorTareas.mover_a_habil_anterior(origen)
+                if destino == fecha_evaluar:
+                    deadlines.append(datetime.combine(fecha_evaluar, fin_dia))
+                    break  # un solo vencimiento por día, aunque dos orígenes coincidan
 
         # HORAS
         elif modo == 'HOURLY':

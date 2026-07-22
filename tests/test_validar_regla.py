@@ -136,20 +136,32 @@ def test_ultimo_dia_mas_dia_de_corte_avisa_de_cual_gana():
     assert any("no se usará" in a for a in r.advertencias)
 
 
-def test_semanal_con_varios_dias_y_ajuste_avisa_del_duplicado():
-    """Medido: lunes+martes con ajuste da 12 días duplicados en un año."""
+def test_semanal_con_varios_dias_y_ajuste_YA_NO_avisa():
+    """Estas dos advertencias existieron y se retiraron a propósito.
+
+    Advertían de vencimientos duplicados y de que el ajuste «anterior» no se
+    aplicaba en modo semanal. Las dos eran parches sobre una asimetría del
+    motor —SEMANAL emitía el vencimiento el día que lo ORIGINABA en vez del día
+    en que CAE—. Corregida la causa, advertir de algo que ya no ocurre entrena a
+    ignorar los avisos.
+
+    Si alguien revierte el arreglo del motor, las pruebas de
+    `test_calendario_reglas.py` se caen; esta vigila que no vuelva la
+    advertencia sin la causa.
+    """
     r = validar({"modo": "SEMANAL", "dias_semana": [0, 1], "mover_habil": True,
                  "fecha_inicio": "2026-01-01"})
     assert r.se_puede_guardar
-    assert any("misma fecha" in a for a in r.advertencias)
+    assert r.advertencias == [], r.advertencias
 
 
-def test_semanal_avisa_de_que_el_ajuste_ANTERIOR_no_se_aplica():
-    """Callarlo dejaría creer que se eligió el comportamiento seguro."""
+def test_semanal_con_ajuste_anterior_YA_NO_avisa():
+    """El ajuste al hábil anterior ya se aplica en modo semanal, igual que en
+    los demás. Era la única dirección no disponible, y justo la segura."""
     r = validar({"modo": "SEMANAL", "dias_semana": [0],
                  "mover_habil_anterior": True, "fecha_inicio": "2026-01-01"})
     assert r.se_puede_guardar
-    assert any("no se aplica" in a for a in r.advertencias)
+    assert r.advertencias == [], r.advertencias
 
 
 def test_una_regla_impecable_no_genera_ruido():

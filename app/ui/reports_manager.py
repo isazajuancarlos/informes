@@ -65,7 +65,8 @@ def _construir_regla(datos):
     if modo == 'SEMANAL':
         return {"modo": "SEMANAL",
                 "dias_semana": datos['tiempo_semanal']['dias_seleccionados'],
-                "mover_habil": datos['tiempo_semanal']['mover_habil'],
+                **_banderas_desde_ajuste(datos['tiempo_semanal']['ajuste'],
+                                         "mover_habil", "mover_habil_anterior"),
                 "fecha_inicio": f_inicio}
     if modo == 'HOURLY':
         return {"modo": "HOURLY",
@@ -114,7 +115,7 @@ def page_reports_manager():
         'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
         'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
         'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
-        'tiempo_semanal': {'dias_seleccionados': [], 'mover_habil': False},
+        'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
         'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
         'variables_config': {}
     }
@@ -162,7 +163,7 @@ def page_reports_manager():
             'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
             'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
             'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
-            'tiempo_semanal': {'dias_seleccionados': [], 'mover_habil': False},
+            'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
             'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
             'variables_config': {}
         })
@@ -207,7 +208,7 @@ def page_reports_manager():
             elif modo == 'ESPECIFICO':
                 nuevo_informe['tiempo_especifico'].update({'meses_seleccionados': rec.get('meses', []), 'dia_corte': rec.get('dia_corte', 1), 'es_ultimo_dia': rec.get('es_ultimo_dia', False), 'ajuste': _ajuste_desde_banderas(rec.get('ajuste_habil'), rec.get('ajuste_habil_anterior'))})
             elif modo == 'SEMANAL':
-                nuevo_informe['tiempo_semanal'].update({'dias_seleccionados': rec.get('dias_semana', []), 'mover_habil': rec.get('mover_habil', False)})
+                nuevo_informe['tiempo_semanal'].update({'dias_seleccionados': rec.get('dias_semana', []), 'ajuste': _ajuste_desde_banderas(rec.get('mover_habil'), rec.get('mover_habil_anterior'))})
             elif modo == 'HOURLY':
                 nuevo_informe['tiempo_horas'].update({'hora_inicio': rec.get('hora_inicio', 8), 'hora_fin': rec.get('hora_fin', 18), 'intervalo': rec.get('intervalo_horas', 1)})
         render_ui()
@@ -581,7 +582,14 @@ def page_reports_manager():
                                     checked = num in nuevo_informe['tiempo_semanal']['dias_seleccionados']
                                     ui.checkbox(nombre, value=checked, on_change=toggle_dia).props('dense')
                             ui.separator().classes('my-2')
-                            ui.checkbox('Ajustar a día hábil').bind_value(nuevo_informe['tiempo_semanal'], 'mover_habil').props('color=purple')
+                            # El mismo selector que los otros modos. Tener aquí
+                            # solo «siguiente» era una asimetría difícil de
+                            # defender: es justo la dirección INSEGURA para un
+                            # plazo legal, y era la única disponible.
+                            ui.select(AJUSTE_HABIL, label='Si cae en día no hábil',
+                                      on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_semanal'], 'ajuste') \
+                                .classes('w-full').tooltip(AYUDA_AJUSTE)
 
                         with ui.tab_panel(t_hor):
                             with ui.row().classes('w-full gap-4'):

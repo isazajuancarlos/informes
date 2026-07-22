@@ -147,21 +147,14 @@ def _semanal(config, r):
     dias = config.get("dias_semana") or []
     if not dias:
         r.errores.append("Seleccione al menos un día de la semana.")
-    if len(dias) > 1 and (config.get("mover_habil") or config.get("mover_habil_anterior")):
-        # Medido: lunes+martes con ajuste da 12 días con vencimiento duplicado
-        # en un año, porque el lunes festivo se mueve al martes, que ya estaba.
-        r.advertencias.append(
-            "Con varios días de la semana y ajuste a día hábil, dos vencimientos "
-            "pueden caer en la misma fecha cuando uno de los días sea festivo."
-        )
-    if config.get("mover_habil_anterior") and not config.get("mover_habil"):
-        # Sinceridad sobre un límite del motor: en modo semanal solo se aplica
-        # el ajuste hacia adelante. Callarlo dejaría creer que se eligió el
-        # comportamiento seguro cuando no se aplicó ninguno.
-        r.advertencias.append(
-            "En periodicidad semanal el ajuste al día hábil ANTERIOR no se "
-            "aplica: solo está disponible el siguiente día hábil."
-        )
+    # Aquí hubo dos advertencias que ya NO corresponden, y conviene decir por
+    # qué desaparecieron: se advertía de vencimientos duplicados con varios días
+    # y ajuste, y de que el ajuste «anterior» no se aplicaba en este modo.
+    #
+    # Las dos eran parches sobre una asimetría del motor —SEMANAL emitía el
+    # vencimiento el día que lo ORIGINABA en vez del día en que CAE—. Al
+    # alinearlo con el modo ESPECÍFICO ambas causas desaparecieron, y advertir
+    # de algo que ya no ocurre entrena a ignorar los avisos.
 
 
 def _horas(config, r):

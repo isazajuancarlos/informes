@@ -145,6 +145,50 @@ def test_semanal_genera_los_dias_pedidos():
     assert len(fechas) == 4
 
 
+def test_semanal_con_varios_dias_y_ajuste_NO_duplica():
+    """Con lunes y martes marcados, un lunes festivo se movía al martes —que ya
+    estaba— y ese día recibía DOS vencimientos de la misma obligación. Doce días
+    al año. La causa era que SEMANAL emitía el vencimiento el día que lo
+    ORIGINABA en vez del día en que CAE."""
+    cfg = {"modo": "SEMANAL", "dias_semana": [0, 1], "mover_habil": True,
+           "fecha_inicio": "2026-01-01"}
+    fechas = barrer(cfg, date(2026, 1, 1), date(2026, 12, 31))
+    assert len(fechas) == len(set(fechas)), "un día no puede tener dos vencimientos"
+
+
+def test_semanal_SI_aplica_el_ajuste_anterior():
+    """El motor solo leía `mover_habil`: quien pedía «anterior» —la dirección
+    segura para un plazo legal— no obtenía ningún ajuste."""
+    con = barrer({"modo": "SEMANAL", "dias_semana": [0],
+                  "mover_habil_anterior": True, "fecha_inicio": "2026-01-01"},
+                 date(2026, 1, 1), date(2026, 12, 31))
+    sin = barrer({"modo": "SEMANAL", "dias_semana": [0],
+                  "fecha_inicio": "2026-01-01"},
+                 date(2026, 1, 1), date(2026, 12, 31))
+    assert con != sin, "el ajuste anterior debe cambiar algo"
+
+
+def test_semanal_las_dos_direcciones_son_simetricas():
+    """El 12 de enero de 2026 es lunes festivo. «Anterior» debe caer ANTES y
+    «siguiente» DESPUÉS: si las dos movieran en el mismo sentido, elegir no
+    serviría de nada."""
+    base = {"modo": "SEMANAL", "dias_semana": [0], "fecha_inicio": "2026-01-01"}
+    ventana = (date(2026, 1, 8), date(2026, 1, 16))
+    atras = barrer({**base, "mover_habil_anterior": True}, *ventana)
+    alante = barrer({**base, "mover_habil": True}, *ventana)
+    assert atras and alante
+    assert max(atras) < date(2026, 1, 12) < min(alante)
+
+
+def test_semanal_respeta_la_fecha_de_inicio_del_ORIGEN():
+    """Con ajuste hacia atrás, el destino puede caer antes de la vigencia
+    aunque el día que lo origina esté dentro. Se exige que AMBOS lo estén."""
+    cfg = {"modo": "SEMANAL", "dias_semana": [0], "mover_habil_anterior": True,
+           "fecha_inicio": "2026-01-12"}
+    fechas = barrer(cfg, date(2026, 1, 1), date(2026, 1, 31))
+    assert all(f >= date(2026, 1, 12) for f in fechas), fechas
+
+
 # --------------------------------------------------------------------------
 # La vista previa: debe coincidir con lo que el motor genera de verdad
 # --------------------------------------------------------------------------
