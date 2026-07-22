@@ -11,14 +11,47 @@ DIAS_SEMANA = {
 }
 
 class MotorReglasDinamicas:
-    def __init__(self, pais_iso: str = None):
+    """Calcula fechas hábiles contra el calendario de festivos del país.
+
+    Los festivos NO son una tabla: la librería `holidays` los deriva de la ley
+    —incluida la Ley Emiliani, que corre varios al lunes siguiente— así que el
+    motor funciona igual en 2027 que en 2099 sin tocar nada. Eso es lo que
+    permite que una regla escrita una vez siga siendo correcta año tras año.
+
+    Lo que sí caduca es la LEY. Si el Congreso añade o quita un festivo, hace
+    falta una versión nueva de la librería: es exactamente el valor que paga la
+    cuota anual de «mantenimiento y actualizaciones normativas», y no un detalle
+    de implementación.
+    """
+
+    def __init__(self, pais_iso: str = None, sin_festivos: bool = False):
         from app.core.config import PAIS_ISO as CONFIG_PAIS_ISO
         effective_pais = pais_iso or CONFIG_PAIS_ISO
+
+        if sin_festivos:
+            # Camino permisivo, y hay que PEDIRLO. Existe para pruebas y para
+            # una entidad que de verdad opere sin calendario de festivos.
+            self.festivos = {}
+            return
+
         try:
             self.festivos = holidays.country_holidays(effective_pais)
-        except Exception:
-            print(f"[CalendarEngine] País '{effective_pais}' no soportado. Usando calendario sin festivos.")
-            self.festivos = {}
+        except Exception as e:
+            # Antes esto caía a un calendario SIN FESTIVOS y seguía adelante
+            # imprimiendo un aviso. El resultado era un sistema que parecía
+            # funcionar: cada festivo contaba como día hábil, así que ningún
+            # vencimiento se ajustaba nunca y todas las fechas salían plausibles
+            # y equivocadas. Un sistema de cumplimiento que calcula mal los
+            # plazos y no lo dice es peor que uno que no arranca: la caída se
+            # nota en un minuto, la fecha falsa no se nota nunca.
+            #
+            # Un `print` no es fallar. Se levanta la excepción.
+            raise ValueError(
+                f"No hay calendario de festivos para el país '{effective_pais}'. "
+                f"Revise PAIS_ISO en la configuración: debe ser un código ISO de "
+                f"dos letras soportado por la librería `holidays`. Si la entidad "
+                f"opera sin festivos, constrúyalo con sin_festivos=True."
+            ) from e
 
     def _es_habil(self, fecha: date) -> bool:
         """Verifica si es hábil (Lunes-Viernes y No Festivo)"""

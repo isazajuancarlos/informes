@@ -172,49 +172,40 @@ def test_una_regla_impecable_no_genera_ruido():
 
 
 # --------------------------------------------------------------------------
-# El primer periodo que se pierde por el ajuste hacia atrás
+# El primer periodo YA NO se pierde
 # --------------------------------------------------------------------------
 
-def test_avisa_cuando_el_primer_vencimiento_cae_antes_de_la_vigencia():
-    """«Día 1 + hábil anterior» desde el 1 de enero: el vencimiento de enero
-    caería el 31 de diciembre, cuando la obligación aún no existía.
+def test_el_primer_vencimiento_NO_desaparece_aunque_su_entrega_caiga_antes():
+    """«Día 1 + hábil anterior» desde el 1 de enero.
 
-    El motor lo descarta —y hace bien—, pero callarlo deja a quien creó la regla
-    contando doce y viendo once.
+    El vencimiento de enero es el 1 de enero —dentro de vigencia— y su entrega
+    se adelanta al 31 de diciembre anterior. Antes la obligación se identificaba
+    por la fecha ya ajustada, así que caía fuera de vigencia y **desaparecía sin
+    dejar rastro**: sin tarea, sin alerta y sin nada que preguntar.
+
+    Aquí vivió una advertencia que anunciaba esa pérdida. Se retiró: corregido el
+    motor, no hay nada que advertir.
     """
-    r = validar({"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES, "dia_corte": 1,
-                 "ajuste_habil_anterior": True, "fecha_inicio": "2020-01-01"})
-    assert r.se_puede_guardar, "es una regla legítima: se avisa, no se bloquea"
-    assert any("antes del inicio de vigencia" in a for a in r.advertencias), r.advertencias
-    assert any("31 de diciembre de 2019" in a for a in r.advertencias), r.advertencias
+    from datetime import date
 
+    from app.services.preview_calendario import proximos
 
-@pytest.mark.parametrize("caso,extra", [
-    ("el ajuste no saca el vencimiento del mes", {"dia_corte": 15, "ajuste_habil_anterior": True}),
-    ("el ajuste va hacia delante",               {"es_ultimo_dia": True, "ajuste_habil": True}),
-    ("sin ajuste no hay nada que perder",        {"dia_corte": 1}),
-])
-def test_NO_avisa_cuando_no_se_pierde_ningun_vencimiento(caso, extra):
-    """Un aviso que sale siempre entrena a ignorar los avisos."""
-    r = validar({"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES,
-                 "fecha_inicio": "2020-01-01", **extra})
-    assert r.advertencias == [], f"{caso}: {r.advertencias}"
+    config = {"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES, "dia_corte": 1,
+              "ajuste_habil_anterior": True, "fecha_inicio": "2020-01-01"}
 
-
-def test_NO_avisa_si_el_mes_de_inicio_no_es_de_entrega():
-    """Regla anual de marzo que empieza en enero: no se pierde nada, marzo llega."""
-    r = validar({"modo": "ESPECIFICO", "meses": [3], "dia_corte": 1,
-                 "ajuste_habil_anterior": True, "fecha_inicio": "2020-01-01"})
+    r = validar(config)
+    assert r.se_puede_guardar, r.errores
     assert r.advertencias == [], r.advertencias
 
+    venc, _ = proximos(config, cuantos=1, desde=date(2020, 1, 1))
+    assert venc, "el vencimiento de enero se perdió"
+    assert venc[0].nominal == date(2020, 1, 1), venc[0].nominal
+    assert venc[0].limite < venc[0].nominal, "la entrega debe adelantarse"
 
-def test_el_aviso_no_promete_el_MES_siguiente_en_una_regla_anual():
-    """Con periodicidad anual el siguiente vencimiento llega dentro de un año.
 
-    La primera redacción decía «el primero será el del mes siguiente», que en una
-    regla anual es sencillamente falso.
-    """
-    r = validar({"modo": "ESPECIFICO", "meses": [3], "dia_corte": 1,
-                 "ajuste_habil_anterior": True, "fecha_inicio": "2020-03-01"})
-    assert r.advertencias, "aquí sí se pierde el primero"
-    assert not any("mes siguiente" in a for a in r.advertencias), r.advertencias
+def test_una_regla_impecable_sigue_sin_generar_ruido():
+    """Un validador que avisa de todo entrena a ignorar los avisos."""
+    r = validar({"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES,
+                 "es_ultimo_dia": True, "ajuste_habil": True,
+                 "fecha_inicio": "2020-01-01"})
+    assert r.advertencias == [], r.advertencias

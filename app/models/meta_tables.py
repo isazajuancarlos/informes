@@ -413,7 +413,30 @@ class EntregaEsperada(Base):
     informe_id = Column(Integer, ForeignKey("cat_informes.id"))
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
     fecha_programada = Column(DateTime, default=datetime.utcnow)
+
+    # Las DOS fechas de un vencimiento. Confundirlas es el defecto que este par
+    # de columnas existe para impedir:
+    #
+    #   `fecha_vencimiento_nominal` — el día que fija la norma o el contrato.
+    #       No se mueve aunque sea festivo. Es la IDENTIDAD de la entrega: el
+    #       informe anual de 2026 vence el 1 de enero, se entregue cuando se
+    #       entregue. Es la clave por la que el planificador decide si una
+    #       entrega ya existe.
+    #
+    #   `fecha_limite_teorica` — el día contra el que se mide el cumplimiento,
+    #       ya resuelto el ajuste a día hábil. Es lo que compara toda la interfaz
+    #       para pintar una tarea en rojo. El nombre es histórico: contiene el
+    #       límite EFECTIVO, no el teórico.
+    #
+    # NULL en `fecha_vencimiento_nominal` significa «entrega anterior al cambio»
+    # o «creada a mano»: no se rellena con la otra fecha, porque un valor
+    # inventado haría creer que la distinción se aplicó cuando no se aplicó.
+    fecha_vencimiento_nominal = Column(DateTime, nullable=True, index=True)
     fecha_limite_teorica = Column(DateTime)
+
+    # 'NINGUNO' | 'ANTICIPADO' | 'GRACIA'. Sin esto no se puede saber si entregar
+    # el día límite era el plazo concedido o ya iba tarde.
+    tipo_ajuste = Column(String(20), nullable=True)
     fecha_entrega_real = Column(DateTime, nullable=True)
     estado = Column(String(20), default="PENDIENTE")
     ruta_archivo = Column(String(500), nullable=True)

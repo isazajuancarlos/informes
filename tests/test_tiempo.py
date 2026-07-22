@@ -77,3 +77,64 @@ def test_el_desfase_que_habia_era_de_cinco_horas(monkeypatch):
     assert crudo != corregido
     diferencia = utc - tiempo.utc_a_local(utc).replace(tzinfo=None)
     assert diferencia == timedelta(hours=5)
+
+
+# --------------------------------------------------------------------------
+# Las dos fechas de una entrega, en una línea
+# --------------------------------------------------------------------------
+
+class _Entrega:
+    """Doble mínimo. Se usa uno propio en vez de un objeto de SQLAlchemy porque
+    lo que se prueba es el TEXTO, y montar la base para eso ocultaría el fallo
+    entre otros diez pasos."""
+
+    def __init__(self, limite, nominal=None, ajuste=None):
+        self.fecha_limite_teorica = limite
+        self.fecha_vencimiento_nominal = nominal
+        self.tipo_ajuste = ajuste
+
+
+def test_la_gracia_y_la_anticipacion_NO_se_describen_igual():
+    """Si el texto fuera el mismo, quien lo lee no puede saber si entregar el día
+    que ve en pantalla es cumplir o llegar tarde."""
+    from datetime import datetime
+
+    from app.core.tiempo import describir_vencimiento
+
+    gracia = describir_vencimiento(_Entrega(
+        datetime(2026, 1, 2, 23, 59), datetime(2026, 1, 1, 23, 59), "GRACIA"))
+    antic = describir_vencimiento(_Entrega(
+        datetime(2025, 12, 31, 23, 59), datetime(2026, 1, 1, 23, 59), "ANTICIPADO"))
+
+    assert "Vence 2026-01-01" in gracia and "plazo hasta 2026-01-02" in gracia, gracia
+    assert "Vence 2026-01-01" in antic and "entregar antes de 2025-12-31" in antic, antic
+    assert gracia != antic
+
+
+def test_sin_ajuste_no_se_repite_la_fecha_dos_veces():
+    """Decir «vence el 15 · límite el 15» es ruido."""
+    from datetime import datetime
+
+    from app.core.tiempo import describir_vencimiento
+
+    txt = describir_vencimiento(_Entrega(
+        datetime(2026, 1, 15, 23, 59), datetime(2026, 1, 15, 23, 59), "NINGUNO"))
+    assert txt == "2026-01-15 23:59", txt
+
+
+def test_una_entrega_ANTERIOR_a_la_distincion_no_se_inventa_el_dia_nominal():
+    """Las filas viejas tienen el día nominal en NULL. Rellenarlo con el límite
+    haría creer que la distinción se aplicó a esas entregas. No se aplicó."""
+    from datetime import datetime
+
+    from app.core.tiempo import describir_vencimiento
+
+    txt = describir_vencimiento(_Entrega(datetime(2025, 6, 30, 23, 59)))
+    assert txt == "2025-06-30 23:59", txt
+    assert "Vence" not in txt
+
+
+def test_sin_limite_lo_dice():
+    from app.core.tiempo import describir_vencimiento
+
+    assert describir_vencimiento(_Entrega(None)) == "Sin límite"

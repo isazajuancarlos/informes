@@ -4,6 +4,7 @@ from app.models.meta_tables import EntregaEsperada, Informe, Delegacion, Usuario
 from app.services.scheduler import GeneradorTareas
 from app.services.file_manager import GestorArchivos
 from app.services.signing_service import firmar_entrega
+from app.core.tiempo import describir_vencimiento
 import os
 import time
 import inspect
@@ -146,7 +147,10 @@ def page_my_tasks():
                     if delegante:
                         delegante_nombre = delegante.nombre
 
-                fecha_venc = t.fecha_limite_teorica.strftime('%Y-%m-%d %H:%M') if t.fecha_limite_teorica else "Sin límite"
+                # Las DOS fechas: el día que vence y hasta cuándo hay para
+                # entregarlo. Mostrar solo el límite dejaba al responsable sin
+                # saber si entregar ese día era cumplir o llegar tarde.
+                fecha_venc = describir_vencimiento(t)
                 dat = t.informe.datos_generales or {}
 
                 filas.append({

@@ -93,8 +93,6 @@ def validar(config: dict) -> Resultado:
                 "periodicidad, los meses seleccionados y la fecha de inicio."
                 + (f" ({aviso})" if aviso else "")
             )
-        elif venc and desde:
-            _aviso_primer_periodo_perdido(config, desde, r)
 
     return r
 
@@ -175,38 +173,16 @@ def _horas(config, r):
         r.errores.append("El intervalo en horas debe ser de al menos 1.")
 
 
-def _aviso_primer_periodo_perdido(config, desde, r):
-    """Avisa cuando el primer periodo se queda sin vencimiento por el ajuste.
-
-    Con «día 1» y ajuste al hábil ANTERIOR, el vencimiento de enero cae el 31 de
-    diciembre — antes de que la obligación exista. El motor lo descarta, y hace
-    bien: un plazo anterior al nacimiento de la obligación no se puede cumplir, y
-    fabricarle una fecha de relleno sería inventarse un dato.
-
-    Pero descartarlo **en silencio** deja a quien creó la regla contando doce
-    vencimientos y viendo once, sin saber por qué. Esto no bloquea nada; solo lo
-    dice, que es la diferencia entre un sistema correcto y uno que además se
-    entiende.
-    """
-    if config.get("modo") != "ESPECIFICO":
-        return
-    meses = config.get("meses") or []
-    if desde.month not in meses:
-        return  # el primer mes de vigencia no era de entrega; nada que perder
-
-    from app.services.scheduler import GeneradorTareas
-
-    objetivo = GeneradorTareas._objetivo_del_mes(desde.year, desde.month, config)
-    if objetivo is None or objetivo >= desde:
-        return
-
-    r.advertencias.append(
-        f"El vencimiento correspondiente a {_MES[desde.month]} caería el "
-        f"{objetivo.day} de {_MES[objetivo.month]} de {objetivo.year}, antes del "
-        "inicio de vigencia, así que no se generará. El primero será el "
-        "siguiente que produzca la regla."
-    )
-
-
-_MES = (None, "enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
-        "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+# El aviso «el primer vencimiento cae antes de la vigencia» vivió aquí unas
+# horas y se retiró al corregir el motor.
+#
+# Decía que con «día 1 + hábil anterior» desde el 1 de enero, el vencimiento de
+# enero no se generaría porque su fecha caía el 31 de diciembre. Era cierto, y
+# era un parche sobre una confusión de fondo: el motor identificaba la
+# obligación por la fecha YA AJUSTADA, así que el vencimiento de enero
+# «pertenecía» a diciembre y quedaba fuera de vigencia.
+#
+# Separando el día NOMINAL del día LÍMITE la obligación ya no se pierde: nace el
+# 1 de enero, dentro de vigencia, y su entrega se adelanta al 31 de diciembre.
+# No hay nada que advertir. Mantener el aviso habría entrenado a ignorar los
+# avisos, que es el modo en que un validador deja de servir.

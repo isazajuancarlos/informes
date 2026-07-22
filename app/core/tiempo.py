@@ -70,3 +70,37 @@ def formatear_utc(momento: datetime | None, formato: str = _FORMATO) -> str:
     """`momento` (UTC) formateado en hora local. Cadena vacía si es None."""
     local = utc_a_local(momento)
     return local.strftime(formato) if local else ""
+
+
+def describir_vencimiento(entrega) -> str:
+    """Las dos fechas de una entrega, en una línea.
+
+    El día de vencimiento y el día de entrega son cosas distintas, y mostrar
+    solo una deja al responsable sin saber lo único que necesita: si entregar el
+    día que ve en pantalla es cumplir o llegar tarde.
+
+        Vence 2026-01-01 · plazo hasta 2026-01-02     (el 2 NO es tarde)
+        Vence 2026-01-01 · entregar antes de 2025-12-31 (el 1 ya es tarde)
+
+    Las entregas anteriores a la distinción no tienen día nominal guardado. Se
+    muestra solo el límite, sin inventarle uno: un valor de relleno haría creer
+    que la distinción se aplicó cuando no se aplicó.
+    """
+    if entrega.fecha_limite_teorica is None:
+        return "Sin límite"
+
+    limite = entrega.fecha_limite_teorica.strftime("%Y-%m-%d %H:%M")
+    nominal_dt = getattr(entrega, "fecha_vencimiento_nominal", None)
+    if nominal_dt is None:
+        return limite
+
+    nominal = nominal_dt.strftime("%Y-%m-%d")
+    if nominal_dt.date() == entrega.fecha_limite_teorica.date():
+        return limite
+
+    ajuste = getattr(entrega, "tipo_ajuste", None)
+    if ajuste == "GRACIA":
+        return f"Vence {nominal} · plazo hasta {limite}"
+    if ajuste == "ANTICIPADO":
+        return f"Vence {nominal} · entregar antes de {limite}"
+    return f"Vence {nominal} · límite {limite}"

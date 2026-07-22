@@ -13,14 +13,27 @@ from app.services.validar_regla import validar as _validar_regla
 #: Las tres únicas respuestas posibles a «¿y si cae en día no hábil?». Ser un
 #: selector y no dos casillas es lo que impide el estado ambiguo por
 #: construcción, en vez de tener que validarlo después.
+#: Qué hacer cuando el día de vencimiento no es hábil.
+#:
+#: Las tres opciones NO mueven el vencimiento. El día de vencimiento es el que
+#: fija la norma —el 1 de enero de un informe anual sigue venciendo el 1 de
+#: enero, sea festivo o no—; lo que se elige aquí es **qué día se entrega**.
+#: Redactarlas como «mover la fecha» era lo que hacía creer que la obligación
+#: cambiaba de sitio, y con ella el período al que pertenece.
 AJUSTE_HABIL = {
-    'ninguno': 'Dejar la fecha como está',
-    'siguiente': 'Mover al siguiente día hábil',
-    'anterior': 'Mover al día hábil anterior (seguro para plazos legales)',
+    'ninguno': 'Se entrega ese mismo día, sea hábil o no',
+    'anterior': 'Se entrega el día hábil anterior (el vencimiento no cambia)',
+    'siguiente': 'Hay plazo de gracia hasta el siguiente día hábil',
 }
-AYUDA_AJUSTE = ("Si el vencimiento cae en fin de semana o festivo. «Anterior» es "
-                "la opción segura para plazos legales: adelantar nunca llega tarde, "
-                "aplazar sí.")
+AYUDA_AJUSTE = ("El día de vencimiento no cambia nunca: es el que fija la norma. "
+                "Lo que se elige es hasta cuándo hay para entregarlo si ese día "
+                "no es hábil.\n\n"
+                "«Día hábil anterior» es la opción segura para plazos legales —"
+                "adelantar nunca llega tarde, aplazar sí— y no concede plazo "
+                "extra: es una regla de control interno.\n\n"
+                "«Plazo de gracia» sí amplía el plazo: entregar ese día NO cuenta "
+                "como incumplimiento. Úselo solo si la norma o el contrato lo "
+                "conceden.")
 
 
 def _ajuste_desde_banderas(siguiente, anterior):

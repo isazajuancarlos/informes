@@ -30,13 +30,18 @@ from app.services.scheduler import GeneradorTareas as G  # noqa: E402
 TODOS_LOS_MESES = list(range(1, 13))
 
 
-def barrer(config, desde, hasta):
-    """Todas las fechas de vencimiento que el motor genera en el rango."""
-    fechas, dia = [], desde
+def vencimientos(config, desde, hasta):
+    """Los vencimientos que el motor genera en el rango, por día NOMINAL."""
+    salida, dia = [], desde
     while dia <= hasta:
-        fechas += [v.date() for v in G.obtener_deadlines_para_fecha(dia, config)]
+        salida += G.obtener_vencimientos_para_fecha(dia, config)
         dia += timedelta(days=1)
-    return fechas
+    return salida
+
+
+def barrer(config, desde, hasta):
+    """Solo los días LÍMITE, para las pruebas que preguntan por ellos."""
+    return [v.limite for v in vencimientos(config, desde, hasta)]
 
 
 def mensual(**extra):
@@ -76,14 +81,15 @@ ANIOS = range(2020, 2041)
 
 
 def origen(v):
-    """El día que ORIGINA el vencimiento, antes de mover a hábil.
+    """El día NOMINAL del vencimiento — el que fija la regla.
 
-    Contar vencimientos por año natural no funciona: con «último día +
-    siguiente», el de diciembre cae en enero del año siguiente y el año parece
-    tener once. El mes de origen es la unidad estable, y además es la que
-    importa jurídicamente: el plazo pertenece al periodo que lo genera.
+    Contar por año natural no funciona: con «plazo de gracia» sobre el último
+    día del mes, la entrega de diciembre se admite hasta enero del año siguiente
+    y el año parece tener once. El día nominal es la unidad estable, y es la que
+    importa jurídicamente: la obligación pertenece al periodo que la origina, no
+    al día en que se alcanza a entregar.
     """
-    return v.sin_ajustar or v.fecha
+    return v.nominal
 
 
 @pytest.mark.parametrize("nombre,extra", CONFIGS_MENSUALES)
@@ -259,15 +265,28 @@ def test_semanal_genera_los_dias_pedidos():
     assert len(fechas) == 4
 
 
-def test_semanal_con_varios_dias_y_ajuste_NO_duplica():
-    """Con lunes y martes marcados, un lunes festivo se movía al martes —que ya
-    estaba— y ese día recibía DOS vencimientos de la misma obligación. Doce días
-    al año. La causa era que SEMANAL emitía el vencimiento el día que lo
-    ORIGINABA en vez del día en que CAE."""
+def test_semanal_con_varios_dias_y_ajuste_NO_duplica_la_OBLIGACION():
+    """Con lunes y martes marcados y plazo de gracia, un lunes festivo se
+    entrega el martes — y ese martes ya tenía el suyo.
+
+    Son DOS obligaciones distintas que comparten día de entrega, no una
+    duplicada: la del lunes y la del martes. Lo que no puede repetirse es el día
+    NOMINAL, que es lo que identifica cada obligación.
+
+    Antes esto sí era un duplicado real —doce días al año— porque la obligación
+    se identificaba por la fecha ya ajustada y las dos se volvían indistinguibles.
+    """
     cfg = {"modo": "SEMANAL", "dias_semana": [0, 1], "mover_habil": True,
            "fecha_inicio": "2026-01-01"}
-    fechas = barrer(cfg, date(2026, 1, 1), date(2026, 12, 31))
-    assert len(fechas) == len(set(fechas)), "un día no puede tener dos vencimientos"
+    venc = vencimientos(cfg, date(2026, 1, 1), date(2026, 12, 31))
+    nominales = [v.nominal for v in venc]
+    assert len(nominales) == len(set(nominales)), "una obligación aparece dos veces"
+
+    # Y que el caso existe de verdad: si nunca coincidieran, la prueba no
+    # estaría comprobando nada.
+    limites = [v.limite for v in venc]
+    assert len(limites) > len(set(limites)), (
+        "ningún festivo hizo coincidir dos entregas; la prueba no mide nada")
 
 
 def test_semanal_SI_aplica_el_ajuste_anterior():
@@ -294,13 +313,20 @@ def test_semanal_las_dos_direcciones_son_simetricas():
     assert max(atras) < date(2026, 1, 12) < min(alante)
 
 
-def test_semanal_respeta_la_fecha_de_inicio_del_ORIGEN():
-    """Con ajuste hacia atrás, el destino puede caer antes de la vigencia
-    aunque el día que lo origina esté dentro. Se exige que AMBOS lo estén."""
+def test_semanal_la_vigencia_se_mide_contra_el_dia_NOMINAL():
+    """La obligación nace el día que fija la regla, no el día en que se entrega.
+
+    Con entrega anticipada, el día de entrega PUEDE caer antes del inicio de
+    vigencia — y eso no borra la obligación: significa que hay que entregarla
+    antes. Exigir que ambas fechas estuvieran dentro de vigencia era lo que hacía
+    desaparecer obligaciones reales.
+    """
     cfg = {"modo": "SEMANAL", "dias_semana": [0], "mover_habil_anterior": True,
            "fecha_inicio": "2026-01-12"}
-    fechas = barrer(cfg, date(2026, 1, 1), date(2026, 1, 31))
-    assert all(f >= date(2026, 1, 12) for f in fechas), fechas
+    venc = vencimientos(cfg, date(2026, 1, 1), date(2026, 1, 31))
+    assert venc, "no generó nada"
+    assert all(v.nominal >= date(2026, 1, 12) for v in venc), \
+        [v.nominal for v in venc]
 
 
 # --------------------------------------------------------------------------
@@ -320,18 +346,48 @@ def test_la_vista_previa_coincide_con_el_motor():
     assert [v.fecha for v in vista] == reales
 
 
-def test_la_vista_previa_dice_desde_donde_se_movio_la_fecha():
-    """Un vencimiento que aparece un viernes cuando la regla decía «día 1» no se
-    entiende solo. Con el origen al lado, sí."""
+def test_la_vista_previa_dice_LAS_DOS_fechas():
+    """«Vence el 1 de enero» y «hay que entregarlo antes del 31 de diciembre» son
+    dos datos, y quien crea la obligación necesita los dos.
+
+    Antes solo existía la fecha ajustada, así que la vista previa mostraba un
+    31 de diciembre suelto para una regla que decía «día 1» — y había que
+    deducir el resto.
+    """
     from app.services.preview_calendario import proximos
 
     vista, _ = proximos(mensual(dia_corte=1, ajuste_habil_anterior=True),
                         cuantos=6, desde=date(2026, 1, 1))
     movidos = [v for v in vista if v.se_ajusto]
-    assert movidos, "con día 1 y ajuste, alguno debe haberse movido"
+    assert movidos, "con día 1 y entrega anticipada, alguno debe adelantarse"
     for v in movidos:
-        assert v.sin_ajustar.day == 1
-        assert "movido desde" in v.describir()
+        assert v.nominal.day == 1, "el día NOMINAL siempre es el que fija la regla"
+        assert v.limite < v.nominal, "anticipada es hacia atrás"
+        texto = v.describir()
+        assert "Vence" in texto and "entregar antes de" in texto, texto
+
+
+def test_la_vista_previa_distingue_gracia_de_anticipacion():
+    """Las dos mueven la fecha de entrega, pero solo una amplía el plazo.
+
+    Si el texto fuera el mismo —«movido a»— quien lee no puede saber si entregar
+    ese día es cumplir o llegar tarde.
+    """
+    from app.services.preview_calendario import proximos
+
+    gracia, _ = proximos(mensual(dia_corte=1, ajuste_habil=True),
+                         cuantos=6, desde=date(2026, 1, 1))
+    antic, _ = proximos(mensual(dia_corte=1, ajuste_habil_anterior=True),
+                        cuantos=6, desde=date(2026, 1, 1))
+
+    textos_gracia = [v.describir() for v in gracia if v.se_ajusto]
+    textos_antic = [v.describir() for v in antic if v.se_ajusto]
+    assert textos_gracia and textos_antic
+
+    assert all("plazo hasta" in t for t in textos_gracia), textos_gracia
+    assert all("entregar antes de" in t for t in textos_antic), textos_antic
+    assert not any("plazo hasta" in t for t in textos_antic), (
+        "la anticipación NO concede plazo: decirlo así sería falso")
 
 
 def test_una_regla_que_no_genera_nada_LO_DICE():

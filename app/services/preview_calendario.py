@@ -21,6 +21,15 @@ nadie sabría cuál de las dos está mal.
 
 Este módulo NO calcula fechas. Solo barre el calendario y recoge lo que el motor
 devuelve.
+
+# Dos fechas, no una
+
+Cada vencimiento trae su día NOMINAL —el que fija la regla— y su día LÍMITE —el
+que resulta de ajustar a hábil—. La vista previa muestra los dos, porque son la
+pregunta que de verdad se hace quien crea la obligación: «¿qué día vence?» y
+«¿hasta cuándo tengo?». Antes solo existía la segunda fecha y este módulo tenía
+que reconstruir la primera buscando ±6 días con la configuración desactivada.
+Ese apaño desapareció con la distinción.
 """
 from __future__ import annotations
 
@@ -39,38 +48,44 @@ MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
             "agosto", "septiembre", "octubre", "noviembre", "diciembre")
 
 
+def _dia_largo(d: date) -> str:
+    return f"{DIAS_ES[d.weekday()]} {d.day} de {MESES_ES[d.month-1]} de {d.year}"
+
+
 @dataclass(frozen=True)
 class Vencimiento:
-    fecha: date
-    #: Fecha que habría tocado sin el ajuste a día hábil, si difiere.
-    sin_ajustar: date | None = None
+    """Lo que se enseña en el formulario, derivado del vencimiento del motor."""
+    #: Día que fija la regla. No se mueve aunque sea festivo.
+    nominal: date
+    #: Día contra el que se mide el cumplimiento.
+    limite: date
+    #: 'NINGUNO' | 'ANTICIPADO' | 'GRACIA'
+    ajuste: str = "NINGUNO"
+
+    #: Compatibilidad con el código que preguntaba por una sola fecha. Es el
+    #: LÍMITE, que es contra el que se mide.
+    @property
+    def fecha(self) -> date:
+        return self.limite
 
     @property
     def se_ajusto(self) -> bool:
-        return self.sin_ajustar is not None and self.sin_ajustar != self.fecha
+        return self.limite != self.nominal
+
+    @property
+    def sin_ajustar(self) -> date:
+        return self.nominal
 
     def describir(self) -> str:
-        d = self.fecha
-        txt = f"{DIAS_ES[d.weekday()]} {d.day} de {MESES_ES[d.month-1]} de {d.year}"
-        if self.se_ajusto:
-            o = self.sin_ajustar
-            txt += (f"  (movido desde {DIAS_ES[o.weekday()]} "
-                    f"{o.day} de {MESES_ES[o.month-1]})")
-        return txt
-
-
-def _sin_ajuste(config: dict) -> dict:
-    """La misma configuración, pero sin mover a día hábil.
-
-    Sirve para poder DECIRLE al usuario que una fecha se movió y desde dónde.
-    Un vencimiento que aparece un viernes cuando la regla decía «día 1» no se
-    entiende solo; con el origen al lado, sí.
-    """
-    limpia = dict(config)
-    for bandera in ("mover_habil", "mover_habil_anterior",
-                    "ajuste_habil", "ajuste_habil_anterior"):
-        limpia.pop(bandera, None)
-    return limpia
+        """Una línea que dice las dos cosas sin obligar a deducir ninguna."""
+        txt = f"Vence {_dia_largo(self.nominal)}"
+        if not self.se_ajusto:
+            return txt
+        if self.ajuste == "GRACIA":
+            # El plazo se amplía: entregar ese día NO es tarde.
+            return txt + f" · plazo hasta {_dia_largo(self.limite)}"
+        # Anticipado: el día nominal no es hábil, así que se entrega antes.
+        return txt + f" · entregar antes de {_dia_largo(self.limite)}"
 
 
 def proximos(config: dict, cuantos: int = 6, desde: date | None = None
@@ -98,30 +113,21 @@ def proximos(config: dict, cuantos: int = 6, desde: date | None = None
         return ([], "La periodicidad por horas genera varios vencimientos cada "
                     "día; la vista previa por fechas no aplica.")
 
-    limpia = _sin_ajuste(config)
     encontrados: list[Vencimiento] = []
     dia = desde
     for _ in range(DIAS_MAXIMOS):
         if len(encontrados) >= cuantos:
             break
         try:
-            hay = GeneradorTareas.obtener_deadlines_para_fecha(dia, config)
+            hay = GeneradorTareas.obtener_vencimientos_para_fecha(dia, config)
         except Exception as e:  # noqa: BLE001
             # Se informa en vez de devolver una lista vacía: «no genera nada» y
             # «la regla revienta» son cosas distintas y confundirlas dejaría al
             # usuario creyendo que configuró algo inofensivo.
             return (encontrados, f"La regla no se pudo evaluar el {dia}: {e}")
-        if hay:
-            sin = None
-            if limpia != config:
-                # ¿Qué día habría tocado sin ajuste? Se busca en la ventana
-                # cercana, que es donde puede estar tras mover a hábil.
-                for delta in range(-6, 7):
-                    cand = dia + timedelta(days=delta)
-                    if GeneradorTareas.obtener_deadlines_para_fecha(cand, limpia):
-                        sin = cand
-                        break
-            encontrados.append(Vencimiento(fecha=dia, sin_ajustar=sin))
+        for v in hay:
+            encontrados.append(Vencimiento(nominal=v.nominal, limite=v.limite,
+                                           ajuste=v.ajuste))
         dia += timedelta(days=1)
 
     if not encontrados:
