@@ -270,3 +270,60 @@ async def test_la_ultima_pagina_BLOQUEA_una_regla_que_no_generaria_nada(user: Us
 
     user.find("Usar este cronograma").click()
     assert recogido == {}, "no puede entregarse una regla que no genera nada"
+
+
+async def test_el_formulario_EXIGE_las_partes_del_flujo(user: User):
+    """No se puede guardar un informe que nadie pide y que no se entrega a
+    nadie, y se dice qué falta en vez de quedarse callado."""
+    from app.ui.reports_manager import page_reports_manager
+
+    @ui.page("/")
+    def _():
+        page_reports_manager()
+
+    await user.open("/")
+    user.find("Nuevo").click()
+    await user.should_see("Partes del flujo")
+    await user.should_see("Solicitado por *")
+    await user.should_see("Destinatarios (envío) *")
+
+    # Con nombre y formatos puestos, lo único que falta son las partes.
+    _solo(user, "nombre-informe").set_value("Informe de prueba")
+    _solo(user, "formatos-informe").set_value(["pdf"])
+    user.find("Guardar").click()
+    # Los avisos salen por `ui.notify`, que no es un elemento de la página.
+    assert user.notify.contains("Falta quién solicita"), user.notify.messages
+    assert user.notify.contains("Falta a quién se entrega"), user.notify.messages
+
+    from app.core.database import get_db_session
+    from app.models.meta_tables import Informe
+    with get_db_session() as db:
+        assert not db.query(Informe).filter_by(nombre="Informe de prueba").first(), \
+            "no puede haberse guardado"
+
+
+async def test_se_puede_CREAR_una_parte_sin_salir_del_formulario(user: User):
+    """Si las partes son obligatorias y no hay ninguna registrada, el primer
+    informe de una instalación recién hecha sería imposible de guardar. Mandar
+    a otra pantalla a mitad de un formulario largo pierde lo ya escrito."""
+    from app.ui.reports_manager import page_reports_manager
+
+    @ui.page("/")
+    def _():
+        page_reports_manager()
+
+    await user.open("/")
+    user.find("Nuevo").click()
+    await user.should_see("Todavía no hay partes registradas")
+
+    user.find(marker="alta-parte-solicitantes").click()
+    await user.should_see("Nueva parte del flujo")
+    _solo(user, "nombre-parte").set_value("Ministerio de Salud")
+    user.find("Crear y añadir").click()
+    assert user.notify.contains("creada"), user.notify.messages
+
+    # Y queda seleccionada, que es el punto: se creó PARA este informe.
+    from app.core.database import get_db_session
+    from app.models.meta_tables import Stakeholder
+    with get_db_session() as db:
+        assert db.query(Stakeholder).filter_by(nombre="Ministerio de Salud").first()

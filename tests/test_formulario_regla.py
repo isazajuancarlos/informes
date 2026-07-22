@@ -271,3 +271,91 @@ def test_describir_una_regla_guardada_usa_el_VOCABULARIO_del_asistente():
     texto = _describir_regla({'modo': 'SEMANAL', 'dias_semana': [0],
                               'fecha_inicio': '2026-01-01'})
     assert "lunes" in texto, texto
+
+
+# --------------------------------------------------------------------------
+# Las partes del flujo: obligatorias, y pueden ser internas
+# --------------------------------------------------------------------------
+
+class _Parte:
+    """Lo mínimo de una `Participacion` para el códec del selector."""
+    def __init__(self, usuario_id=None, stakeholder_id=None):
+        self.usuario_id, self.stakeholder_id = usuario_id, stakeholder_id
+
+
+class _Con:
+    def __init__(self, ident, nombre, tipo=None):
+        self.id, self.nombre, self.tipo = ident, nombre, tipo
+
+
+def test_una_parte_INTERNA_y_una_externa_no_se_confunden():
+    """El id no basta para identificar una parte: el usuario 3 y el tercero 3
+    son personas distintas. Sin prefijo, guardar el informe crearía la
+    participación de quien no era, y eso no se ve nunca."""
+    from app.ui.reports_manager import clave_de_parte, descomponer_parte
+
+    assert clave_de_parte(_Parte(usuario_id=3)) == "u:3"
+    assert clave_de_parte(_Parte(stakeholder_id=3)) == "s:3"
+    assert descomponer_parte("u:3") == ("u", 3)
+    assert descomponer_parte("s:3") == ("s", 3)
+
+
+@pytest.mark.parametrize("basura", ["", "3", "x:3", "u:", "u:abc", None, "::"])
+def test_una_clave_ILEGIBLE_no_se_adivina(basura):
+    """Interpretarla como interna crearía la participación de la persona
+    equivocada. Se devuelve None y quien llama decide."""
+    from app.ui.reports_manager import descomponer_parte
+
+    assert descomponer_parte(basura) is None
+
+
+def test_el_selector_DICE_cual_es_interna_y_cual_externa():
+    """De eso depende el tipo de flujo del informe, así que quien elige tiene
+    que verlo sin abrir otra pantalla."""
+    from app.ui.reports_manager import opciones_de_partes
+
+    opciones = opciones_de_partes([_Con(1, "Ana")],
+                                  [_Con(7, "Ministerio", "Entidad")])
+    assert opciones["u:1"] == "Ana · interno"
+    assert "externo" in opciones["s:7"] and "Entidad" in opciones["s:7"]
+
+
+@pytest.mark.parametrize("datos,esperado", [
+    ({}, 'ENVIO_INTERNO'),
+    ({'destinatarios': ['u:1', 'u:2']}, 'ENVIO_INTERNO'),
+    ({'destinatarios': ['s:7']}, 'ENVIO_EXTERNO'),
+    ({'destinatarios': ['u:1', 's:7']}, 'ENVIO_EXTERNO'),
+    ({'origen_externo': True}, 'RECEPCION_EXTERNA'),
+    ({'destinatarios': ['s:7'], 'origen_externo': True}, 'BIDIRECCIONAL'),
+])
+def test_el_tipo_de_flujo_lo_deciden_las_partes_EXTERNAS(datos, esperado):
+    """El matiz «externo» es todo. Aquí se miraba `bool(destinatarios)`, y en
+    cuanto el selector admitió partes internas un informe entregado a otra área
+    de la propia entidad se habría marcado «Envío Externo» — que es el dato del
+    que cuelga todo el análisis de qué información sale de la entidad.
+
+    Medido sobre la base real: 208 de 397 informes son de envío interno.
+    """
+    from app.ui.reports_manager import flujo_derivado
+
+    assert flujo_derivado(datos) == esperado
+
+
+def test_un_informe_SIN_PARTES_no_se_puede_guardar():
+    """Generaría entregas sin quien las reciba ni quien reclame si no llegan."""
+    from app.ui.reports_manager import faltan_partes
+
+    problemas = faltan_partes({})
+    assert len(problemas) == 2
+    assert any('solicita' in p for p in problemas)
+    assert any('entrega' in p for p in problemas)
+
+
+def test_una_parte_INTERNA_basta_para_cumplir_el_requisito():
+    """Exigir partes EXTERNAS haría que 208 de los 397 informes de la base real
+    —los de envío interno— no se pudieran registrar. Es la restricción bien
+    argumentada que cierra la puerta al caso legítimo."""
+    from app.ui.reports_manager import faltan_partes
+
+    assert faltan_partes({'solicitantes': ['u:1'],
+                          'destinatarios': ['u:2']}) == []

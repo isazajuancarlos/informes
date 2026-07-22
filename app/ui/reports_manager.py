@@ -52,6 +52,112 @@ def _ajuste_desde_banderas(siguiente, anterior):
     return 'ninguno'
 
 
+#: Una parte del flujo puede ser INTERNA o EXTERNA, y el selector tiene que
+#: admitir las dos. Antes solo ofrecía terceros externos, y eso tenía una
+#: consecuencia medida: de los 397 informes de la base real, **208 son de envío
+#: interno**. Con un selector que solo admite externos, exigir destinatario
+#: haría que más de la mitad de la base no se pudiera registrar — y de paso
+#: dejaría sin usar el tipo de flujo «Envío Interno», que el propio modelo
+#: deduce de que NINGÚN destino sea externo.
+#:
+#: El modelo ya lo soporta: `Participacion` lleva `usuario_id` o
+#: `stakeholder_id`. Lo que faltaba era la pantalla.
+PREFIJO_INTERNO = "u"
+PREFIJO_EXTERNO = "s"
+
+
+def clave_de_parte(participacion) -> str:
+    """`Participacion` → la clave que usa el selector («u:12», «s:5»)."""
+    if participacion.stakeholder_id:
+        return f"{PREFIJO_EXTERNO}:{participacion.stakeholder_id}"
+    return f"{PREFIJO_INTERNO}:{participacion.usuario_id}"
+
+
+def descomponer_parte(clave: str):
+    """«s:5» → («s», 5). Devuelve `None` si la clave no se entiende.
+
+    Se devuelve `None` en vez de suponer un tipo: una clave ilegible que se
+    interpretara como interna crearía una participación de la persona
+    equivocada, y eso no se ve nunca — el informe queda creado y con partes que
+    nadie eligió.
+    """
+    try:
+        prefijo, ident = str(clave).split(":", 1)
+    except (ValueError, AttributeError):
+        return None
+    if prefijo not in (PREFIJO_INTERNO, PREFIJO_EXTERNO) or not ident.isdigit():
+        return None
+    return (prefijo, int(ident))
+
+
+def opciones_de_partes(usuarios, stakeholders) -> dict:
+    """Las opciones del selector, internas y externas en una sola lista.
+
+    Se marca cuál es cuál en la etiqueta: de eso depende el tipo de flujo del
+    informe, así que quien elige tiene que poder verlo sin abrir otra pantalla.
+    """
+    opciones = {f"{PREFIJO_EXTERNO}:{s.id}": f"{s.nombre} · externo"
+                + (f" ({s.tipo})" if s.tipo else "")
+                for s in stakeholders}
+    opciones.update({f"{PREFIJO_INTERNO}:{u.id}": f"{u.nombre} · interno"
+                     for u in usuarios})
+    return opciones
+
+
+def flujo_derivado(datos: dict) -> str:
+    """El tipo de flujo, deducido de las partes. NUNCA se elige a mano.
+
+    Sale información si algún DESTINO es **externo**; entra si el origen lo es.
+    El matiz «externo» es todo: aquí se miraba `bool(destinatarios)`, y en
+    cuanto el selector empezó a admitir partes internas un informe entregado a
+    otra área de la propia entidad se habría marcado «Envío Externo». Es el
+    dato del que cuelga después todo el análisis de qué información sale de la
+    entidad.
+
+    Es la misma regla que `Informe.tipo_flujo` aplica sobre lo ya guardado; aquí
+    se aplica sobre lo que hay en pantalla, para que se vea antes de guardar.
+    """
+    sale = any(str(c).startswith(f"{PREFIJO_EXTERNO}:")
+               for c in datos.get('destinatarios') or [])
+    entra = bool(datos.get('origen_externo'))
+    if sale and entra:
+        return 'BIDIRECCIONAL'
+    if sale:
+        return 'ENVIO_EXTERNO'
+    if entra:
+        return 'RECEPCION_EXTERNA'
+    return 'ENVIO_INTERNO'
+
+
+def faltan_partes(datos: dict) -> list[str]:
+    """Qué le falta al flujo para que el informe pueda guardarse.
+
+    Un informe sin partes es un informe que no se le envía a nadie y que nadie
+    consume: el sistema lo programaría, generaría entregas, y no habría quien
+    las reciba ni quien reclame si no llegan. Se cae en cuanto alguien lo mira,
+    y por eso hay que impedirlo al crearlo, no descubrirlo después.
+
+    Se exigen las DOS —quién lo pide y quién lo recibe— porque son preguntas
+    distintas y la respuesta puede ser la misma entidad: el Ministerio que lo
+    exige suele ser también el que lo recibe, y entonces se marca en las dos.
+    Lo que no puede quedar es en blanco, porque en blanco no significa «no
+    aplica»: significa que nadie lo contestó.
+    """
+    faltan = []
+    if not datos.get('solicitantes'):
+        faltan.append(
+            "Falta quién solicita el informe. Si es una obligación de norma, "
+            "la parte que la exige suele ser también la que lo recibe: márquela "
+            "en las dos listas. Si no está en la lista, créela con «+ Nueva "
+            "parte».")
+    if not datos.get('destinatarios'):
+        faltan.append(
+            "Falta a quién se entrega el informe. Puede ser una parte interna "
+            "—un área de la propia entidad— o un tercero externo; de eso "
+            "depende que el flujo sea interno o externo.")
+    return faltan
+
+
 #: Campos de regla que las pestañas de esta pantalla NO saben representar.
 #:
 #: No es una lista de cosas pendientes: es el motivo por el que una regla creada
@@ -267,9 +373,14 @@ def page_reports_manager():
             nuevo_informe['nombre'] = inf.nombre
             nuevo_informe['descripcion'] = inf.descripcion
             nuevo_informe['responsables'] = [str(u.id) for u in inf.responsables]
-            # Cargar Stakeholders
-            nuevo_informe['solicitantes'] = [str(s.id) for s in inf.solicitantes]
-            nuevo_informe['destinatarios'] = [str(s.id) for s in inf.destinatarios]
+            # Las partes del flujo, internas Y externas. Cargarlas desde
+            # `inf.solicitantes` / `inf.destinatarios` perdía las internas: esas
+            # dos propiedades filtran `externas=True` a propósito, porque el
+            # portal de terceros las usa para otra cosa.
+            nuevo_informe['solicitantes'] = [clave_de_parte(p)
+                                             for p in inf.partes(ROL_USUARIO)]
+            nuevo_informe['destinatarios'] = [clave_de_parte(p)
+                                              for p in inf.partes(ROL_DESTINO)]
 
             # Cargar nuevos campos v3.0 + v4.0 (tipo_flujo es derivado)
             nuevo_informe['subsistema'] = inf.subsistema or ''
@@ -314,6 +425,13 @@ def page_reports_manager():
     def guardar():
         if not nuevo_informe['nombre']: ui.notify('Nombre obligatorio', type='warning'); return
         if not nuevo_informe['extensiones']: ui.notify('Seleccione extensiones', type='warning'); return
+
+        problemas_de_partes = faltan_partes(nuevo_informe)
+        if problemas_de_partes:
+            for problema in problemas_de_partes:
+                ui.notify(problema, type='negative', multi_line=True,
+                          classes='w-[420px]', timeout=8000)
+            return
 
         # Aquí se leían `modo` y `f_inicio` sin usarlos para nada: quedaron de
         # cuando esta función armaba la regla a mano. Ahora la arma
@@ -393,21 +511,95 @@ def page_reports_manager():
                     db.add(Participacion(informe_id=inf.id, usuario_id=int(uid),
                                          rol=ROL_ORIGEN, orden=orden))
 
-            for orden, sid in enumerate(nuevo_informe['solicitantes']):
-                if db.query(Stakeholder).get(int(sid)):
-                    db.add(Participacion(informe_id=inf.id, stakeholder_id=int(sid),
-                                         rol=ROL_USUARIO, orden=orden))
-
-            for orden, did in enumerate(nuevo_informe['destinatarios']):
-                if db.query(Stakeholder).get(int(did)):
-                    db.add(Participacion(informe_id=inf.id, stakeholder_id=int(did),
-                                         rol=ROL_DESTINO, orden=orden))
+            for rol, clave_lista in ((ROL_USUARIO, 'solicitantes'),
+                                     (ROL_DESTINO, 'destinatarios')):
+                for orden, clave in enumerate(nuevo_informe[clave_lista]):
+                    parte = descomponer_parte(clave)
+                    if parte is None:
+                        continue  # clave ilegible: no se adivina de quién es
+                    prefijo, ident = parte
+                    if prefijo == PREFIJO_EXTERNO:
+                        if db.query(Stakeholder).get(ident):
+                            db.add(Participacion(informe_id=inf.id,
+                                                 stakeholder_id=ident,
+                                                 rol=rol, orden=orden))
+                    elif db.query(Usuario).get(ident):
+                        db.add(Participacion(informe_id=inf.id, usuario_id=ident,
+                                             rol=rol, orden=orden))
 
             for var_id, val in nuevo_informe['variables_config'].items():
                 if val: db.add(ConfiguracionInformeVariable(informe_id=inf.id, variable_id=int(var_id), valor_parametro=str(val)))
             db.commit()
         
         ui.notify(f'Informe {msg}', type='positive'); ir_a_lista()
+
+    # --- ALTA DE UNA PARTE SIN SALIR DEL FORMULARIO ---
+    #
+    # Si «Solicitado por» y «Destinatarios» son obligatorios, tiene que poder
+    # crearse una parte desde aquí. Mandar a alguien a otra pantalla a mitad de
+    # un formulario largo le hace perder lo que llevaba escrito — y en una
+    # instalación recién hecha no hay ninguna parte, así que el primer informe
+    # sería imposible de guardar.
+    nueva_parte = {'nombre': '', 'tipo': 'Entidad', 'contacto_nombre': '',
+                   'email': '', 'destino': 'solicitantes'}
+
+    #: Tipos sugeridos, no cerrados: el campo admite escribir otro. Un catálogo
+    #: fijo aquí decidiría por el cliente qué clase de partes puede tener.
+    TIPOS_DE_PARTE = ['Entidad', 'Ente de control', 'Contratista', 'Proveedor',
+                      'Ciudadano', 'Área interna', 'Otro']
+
+    def abrir_alta_parte(destino: str):
+        nueva_parte.update({'nombre': '', 'tipo': 'Entidad',
+                            'contacto_nombre': '', 'email': '',
+                            'destino': destino})
+        dialogo_parte.open()
+
+    def guardar_parte():
+        nombre = (nueva_parte['nombre'] or '').strip()
+        if not nombre:
+            ui.notify('El nombre de la parte es obligatorio', type='warning')
+            return
+        with get_db_session() as db:
+            ya = db.query(Stakeholder).filter(Stakeholder.nombre == nombre).first()
+            if ya:
+                # No se crea una segunda: se usa la que hay. Dos partes con el
+                # mismo nombre son indistinguibles en cualquier informe futuro.
+                ident = ya.id
+                ui.notify(f'«{nombre}» ya existía; se usa esa.', type='info')
+            else:
+                parte = Stakeholder(nombre=nombre,
+                                    tipo=(nueva_parte['tipo'] or '').strip() or None,
+                                    contacto_nombre=(nueva_parte['contacto_nombre']
+                                                     or '').strip() or None,
+                                    email=(nueva_parte['email'] or '').strip() or None)
+                db.add(parte)
+                db.commit()
+                ident = parte.id
+                ui.notify(f'Parte «{nombre}» creada', type='positive')
+        clave = f'{PREFIJO_EXTERNO}:{ident}'
+        lista = nuevo_informe[nueva_parte['destino']]
+        if clave not in lista:
+            lista.append(clave)
+        dialogo_parte.close()
+        render_ui()
+
+    with ui.dialog() as dialogo_parte, ui.card().classes('w-[460px] max-w-full'):
+        ui.label('Nueva parte del flujo').classes('text-lg font-bold text-slate-800')
+        ui.label('Un tercero externo: la entidad que exige el informe, la que lo '
+                 'recibe, un ente de control. Las partes internas son los '
+                 'usuarios del sistema y se crean en «Gestor de Usuarios».') \
+            .classes('text-xs text-slate-500')
+        ui.input('Nombre *').bind_value(nueva_parte, 'nombre').mark('nombre-parte').classes('w-full')
+        ui.select(TIPOS_DE_PARTE, label='Tipo', new_value_mode='add-unique',
+                  with_input=True).bind_value(nueva_parte, 'tipo').classes('w-full') \
+            .tooltip('Puede escribir uno que no esté en la lista.')
+        ui.input('Persona de contacto').bind_value(nueva_parte, 'contacto_nombre') \
+            .classes('w-full')
+        ui.input('Correo').bind_value(nueva_parte, 'email').classes('w-full')
+        with ui.row().classes('w-full justify-end mt-3 gap-2'):
+            ui.button('Cancelar', on_click=dialogo_parte.close).props('flat')
+            ui.button('Crear y añadir', icon='check', on_click=guardar_parte) \
+                .classes('bg-slate-900 text-white')
 
     # --- MODALES ---
     with ui.dialog() as dialogo_detalle, ui.card().classes('w-[700px] max-w-full p-0'):
@@ -543,29 +735,59 @@ def page_reports_manager():
                 sh_db = db.query(Stakeholder).all()
                 
                 opciones_users = {str(u.id): u.nombre for u in usuarios}
-                # --- CARGAR TERCEROS PARA SELECTOR ---
-                opciones_sh = {str(s.id): f"{s.nombre} ({s.tipo})" for s in sh_db}
+                # Las partes del flujo: internas y externas en la misma lista.
+                opciones_partes = opciones_de_partes(usuarios, sh_db)
 
             with ui.row().classes('w-full gap-6'):
                 # COL 1
                 with ui.card().classes('w-1/2 p-4'):
                     ui.label('Datos Básicos').classes('text-lg font-bold text-blue-800')
-                    ui.input('Nombre').bind_value(nuevo_informe, 'nombre').classes('w-full')
+                    ui.input('Nombre').bind_value(nuevo_informe, 'nombre').mark('nombre-informe').classes('w-full')
                     ui.textarea('Descripción').bind_value(nuevo_informe, 'descripcion').classes('w-full')
 
                     ui.label('Formatos').classes('mt-2 text-sm font-bold')
-                    ui.select(['pdf', 'xlsx', 'xls', 'docx', 'zip'], multiple=True).bind_value(nuevo_informe, 'extensiones').classes('w-full')
+                    ui.select(['pdf', 'xlsx', 'xls', 'docx', 'zip'], multiple=True).bind_value(nuevo_informe, 'extensiones').mark('formatos-informe').classes('w-full')
 
                     ui.label('Responsables (Usuarios)').classes('mt-2 text-sm font-bold')
                     ui.select(opciones_users, multiple=True).bind_value(nuevo_informe, 'responsables').classes('w-full')
 
-                    # --- NUEVO: STAKEHOLDERS ---
+                    # --- LAS PARTES DEL FLUJO ---
+                    # Obligatorias las dos: un informe que nadie pide y que no
+                    # se le entrega a nadie generaría entregas sin quien las
+                    # reciba ni quien reclame si no llegan.
                     ui.separator().classes('my-2')
-                    ui.label('Solicitado por:').classes('text-sm font-bold')
-                    ui.select(opciones_sh, multiple=True, label='Seleccione Entidades').bind_value(nuevo_informe, 'solicitantes').classes('w-full')
+                    with ui.row().classes('items-center gap-0 no-wrap'):
+                        ui.label('Partes del flujo').classes('text-sm font-bold')
+                        ayuda('Una parte puede ser INTERNA —un área o una persona '
+                              'de la propia entidad— o EXTERNA —un tercero que no '
+                              'entra al sistema—. De eso depende el tipo de flujo, '
+                              'y por eso el selector marca cuál es cuál.\n\n'
+                              'La misma entidad puede ser las dos cosas: el '
+                              'ministerio que exige el informe suele ser también '
+                              'el que lo recibe.')
 
-                    ui.label('Destinatarios (Envío):').classes('text-sm font-bold')
-                    ui.select(opciones_sh, multiple=True, label='Seleccione Entidades').bind_value(nuevo_informe, 'destinatarios').classes('w-full')
+                    for etiqueta, clave, pista in (
+                            ('Solicitado por *', 'solicitantes',
+                             'Quién pide el informe, o qué norma lo exige'),
+                            ('Destinatarios (envío) *', 'destinatarios',
+                             'A quién se entrega')):
+                        ui.label(etiqueta).classes('text-sm font-bold mt-2')
+                        with ui.row().classes('w-full items-center gap-2 no-wrap'):
+                            ui.select(opciones_partes, multiple=True, with_input=True,
+                                      label=pista) \
+                                .bind_value(nuevo_informe, clave).classes('flex-1')
+                            ui.button(icon='person_add',
+                                      on_click=lambda _, k=clave: abrir_alta_parte(k)) \
+                                .props('flat dense round color=primary') \
+                                .mark(f'alta-parte-{clave}') \
+                                .tooltip('Crear una parte nueva sin salir de aquí')
+                    if not opciones_partes:
+                        # Sin partes en el sistema, los dos campos obligatorios
+                        # son imposibles de contestar. Se dice aquí, no al
+                        # intentar guardar.
+                        ui.label('Todavía no hay partes registradas: cree la '
+                                 'primera con el botón de al lado.') \
+                            .classes('text-xs text-amber-700')
 
                 # COL 2 (Tiempo)
                 with ui.card().classes('w-1/2 p-0 overflow-hidden border-t-4 border-purple-600'):
@@ -810,25 +1032,16 @@ def page_reports_manager():
                         'BIDIRECCIONAL': 'Bidireccional',
                     }
 
-                    def _flujo_derivado() -> str:
-                        sale = bool(nuevo_informe['destinatarios'])
-                        entra = nuevo_informe.get('origen_externo') or False
-                        if sale and entra:
-                            return 'BIDIRECCIONAL'
-                        if sale:
-                            return 'ENVIO_EXTERNO'
-                        if entra:
-                            return 'RECEPCION_EXTERNA'
-                        return 'ENVIO_INTERNO'
-
                     with ui.row().classes('w-full items-center gap-2'):
                         ui.label('Tipo de Flujo:').classes('text-sm text-gray-600')
                         lbl_flujo = ui.label().classes('text-sm font-bold text-teal-700')
-                        ayuda('Se deduce de las partes: si hay destinatarios externos '
-                              'el informe sale; si el origen es un tercero, entra.')
+                        ayuda('Se deduce de las partes: si algún destinatario es '
+                              'EXTERNO el informe sale de la entidad; si el origen '
+                              'es un tercero, entra. Con todas las partes internas '
+                              'el flujo es interno.')
                     lbl_flujo.bind_text_from(
                         nuevo_informe, 'destinatarios',
-                        backward=lambda _: ETIQUETAS_FLUJO[_flujo_derivado()])
+                        backward=lambda _: ETIQUETAS_FLUJO[flujo_derivado(nuevo_informe)])
 
                     # Subsistema
                     ui.input('Subsistema').bind_value(nuevo_informe, 'subsistema').classes('w-full').props('outlined')
