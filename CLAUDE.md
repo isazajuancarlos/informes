@@ -39,6 +39,12 @@ python migrar_esquema.py   # Adds missing columns. Idempotent, verified, both di
 Run it after every upgrade, before starting the app. It adds `firma`,
 `fecha_vencimiento_nominal` and `tipo_ajuste` to `entregas_esperadas`.
 
+On a **fresh** install the tables do not exist yet, so create the schema first
+(`python -m app.init_db`) and then migrate. The migration says so if you get the
+order wrong.
+
+The app listens on **port 8003** (`main.py`), not 8080.
+
 **Do not use `migrate_firma.py`**: it uses PostgreSQL-only syntax
 (`ADD COLUMN IF NOT EXISTS`, `information_schema`) and silently did nothing on
 SQLite, which is the engine for the `standalone` and `cloud` profiles. It now

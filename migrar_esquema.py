@@ -66,7 +66,18 @@ def main() -> int:
         try:
             presentes[tabla] = columnas_existentes(tabla)
         except Exception as e:  # noqa: BLE001
-            print(f"ERROR: no se pudo leer el esquema de `{tabla}`: {e}")
+            # El caso frecuente es una instalación nueva, donde las tablas aún
+            # no existen. Decir «no se pudo leer el esquema: entregas_esperadas»
+            # no ayuda a nadie a las once de la noche en el servidor de un
+            # cliente; decir qué comando falta, sí.
+            if tabla not in inspect(engine).get_table_names():
+                print(f"ERROR: la tabla `{tabla}` no existe todavía.\n"
+                      f"       En una instalación nueva, cree primero el "
+                      f"esquema:\n\n"
+                      f"           python -m app.init_db\n\n"
+                      f"       y vuelva a ejecutar esta migración.")
+            else:
+                print(f"ERROR: no se pudo leer el esquema de `{tabla}`: {e}")
             return 1
 
     pendientes = [(t, c, tipo) for t, c, tipo in COLUMNAS
