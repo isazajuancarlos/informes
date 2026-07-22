@@ -264,3 +264,82 @@ def test_la_clave_de_verificacion_en_modo_entorno_sale_del_env(claves, monkeypat
     monkeypatch.delenv("QUIPU_CUSTODIA", raising=False)
     vk, _sk = claves
     assert fs.clave_de_verificacion() == bytes.fromhex(vk)
+
+
+# --------------------------------------------------------------------------
+# La firma dice a QUÉ OBLIGACIÓN pertenece, y las firmas viejas siguen valiendo
+# --------------------------------------------------------------------------
+
+def entrega_con_obligacion(**cambios):
+    datos = entrega_base(
+        fecha_vencimiento_nominal=datetime(2026, 1, 1, 23, 59),
+        tipo_ajuste="ANTICIPADO")
+    datos.update(cambios)
+    return datos
+
+
+def test_lo_firmado_incluye_la_obligacion_y_el_tipo_de_ajuste():
+    """Una firma con fecha límite 31 de diciembre no dice, por sí sola, si
+    acredita la obligación de diciembre entregada a tiempo o la de enero
+    entregada por adelantado. Con el día nominal dentro, sí."""
+    import json
+
+    datos = json.loads(fs.canonico(entrega_con_obligacion()).decode())
+    assert datos["v"] == 2
+    assert datos["fecha_vencimiento_nominal"] == "2026-01-01T23:59:00"
+    assert datos["tipo_ajuste"] == "ANTICIPADO"
+
+
+def test_el_contenido_v1_se_puede_reconstruir_tal_cual_se_firmo():
+    """Sin esto, añadir un campo convertiría todas las firmas anteriores en «la
+    entrega fue alterada»: una acusación falsa de manipulación, que es peor que
+    no firmar."""
+    import json
+
+    v1 = json.loads(fs.canonico(entrega_con_obligacion(), version=1).decode())
+    assert "v" not in v1
+    assert "fecha_vencimiento_nominal" not in v1
+    assert "tipo_ajuste" not in v1
+
+
+def test_una_firma_v1_SIGUE_verificando_tras_el_cambio_de_formato(claves):
+    """La prueba que de verdad importa: una entrega firmada con el formato
+    anterior tiene que seguir dando «verificada»."""
+    e = entrega_con_obligacion()
+    firma_v1 = fs.quipu.encode_signed(fs.canonico(e, version=1),
+                                      bytes.fromhex(fs._sk_hex()))
+    ok, motivo = fs.verificar_entrega(e, firma_v1)
+    assert ok, motivo
+
+
+def test_una_firma_v2_verifica(claves):
+    e = entrega_con_obligacion()
+    ok, motivo = fs.verificar_entrega(e, fs.firmar_entrega(e))
+    assert ok, motivo
+
+
+@pytest.mark.parametrize("campo,valor", [
+    ("fecha_vencimiento_nominal", datetime(2026, 2, 1, 23, 59)),
+    ("tipo_ajuste", "GRACIA"),
+])
+def test_alterar_la_obligacion_tras_firmar_se_DETECTA(claves, campo, valor):
+    """Si estos campos no estuvieran realmente firmados, las pruebas de arriba
+    serían decorativas: comprobarían un JSON que a nadie le consta."""
+    e = entrega_con_obligacion()
+    firma = fs.firmar_entrega(e)
+    e[campo] = valor
+    ok, motivo = fs.verificar_entrega(e, firma)
+    assert not ok and "alterada" in motivo, motivo
+
+
+def test_una_version_desconocida_no_se_llama_ALTERADA():
+    """Una firma hecha por una versión POSTERIOR del producto no es una entrega
+    manipulada. Confundirlas acusaría al cliente de algo que no hizo."""
+    import json
+
+    assert fs._version_firmada(json.dumps({"v": 1}).encode()) == 1
+    assert fs._version_firmada(json.dumps({"v": 2}).encode()) == 2
+    assert fs._version_firmada(json.dumps({"id": 1}).encode()) == 1, "sin `v` es v1"
+    assert fs._version_firmada(json.dumps({"v": 99}).encode()) is None
+    assert fs._version_firmada(b"no es json") is None
+    assert fs._version_firmada(json.dumps(["lista"]).encode()) is None

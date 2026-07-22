@@ -189,10 +189,28 @@ def _hash_archivo(ruta) -> str | None:
     return h.hexdigest()
 
 
-def canonico(entrega) -> bytes:
+#: Versión del contenido firmado. Viaja DENTRO de los bytes firmados, así que
+#: no se puede alterar sin romper la firma.
+#:
+#: v1 firmaba la fecha límite y no decía a qué obligación pertenecía. Con
+#: entrega anticipada eso deja una prueba ambigua: una firma con fecha límite
+#: 31 de diciembre no dice si acredita la obligación de diciembre entregada a
+#: tiempo o la de enero entregada por adelantado. Y sin el tipo de ajuste no se
+#: puede saber si entregar el día límite era el plazo concedido o ya era tarde
+#: — que es justo lo que un ente de control pregunta.
+VERSION_CANONICA = 2
+
+
+def canonico(entrega, version: int = VERSION_CANONICA) -> bytes:
     """Representación DETERMINISTA de los campos auditables de la entrega. Es lo
     que se firma; cualquier cambio posterior en estos campos invalida la
-    verificación. `sort_keys` + separadores fijos → mismos bytes para mismos datos."""
+    verificación. `sort_keys` + separadores fijos → mismos bytes para mismos datos.
+
+    `version` permite reconstruir el contenido tal como se firmó en su momento.
+    Sin esto, añadir un campo convertiría todas las firmas anteriores en «la
+    entrega fue alterada tras la firma»: una acusación falsa de manipulación, que
+    es peor que no firmar.
+    """
     def _iso(v):
         return v.isoformat() if isinstance(v, datetime) else v
     datos = {
@@ -204,8 +222,35 @@ def canonico(entrega) -> bytes:
         "estado": _valor(entrega, "estado"),
         "archivo_sha256": _hash_archivo(_valor(entrega, "ruta_archivo")),
     }
+    if version >= 2:
+        # Qué obligación es y bajo qué regla vencía. Sin esto la firma acredita
+        # una fecha suelta, no un cumplimiento.
+        datos["v"] = 2
+        datos["fecha_vencimiento_nominal"] = _iso(
+            _valor(entrega, "fecha_vencimiento_nominal"))
+        datos["tipo_ajuste"] = _valor(entrega, "tipo_ajuste")
     return json.dumps(datos, sort_keys=True, separators=(",", ":"),
                       ensure_ascii=False, default=str).encode("utf-8")
+
+
+def _version_firmada(firmado: bytes) -> int | None:
+    """La versión que declara el contenido ya verificado criptográficamente.
+
+    Se lee DESPUÉS de comprobar la firma, así que el número es tan de fiar como
+    la firma misma. Devuelve None si el contenido no es un JSON reconocible o
+    declara una versión que este código no sabe reconstruir — dos casos que hay
+    que distinguir de «alterada», porque no lo son.
+    """
+    try:
+        datos = json.loads(firmado.decode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(datos, dict):
+        return None
+    version = datos.get("v", 1)
+    if not isinstance(version, int) or not 1 <= version <= VERSION_CANONICA:
+        return None
+    return version
 
 
 def firmar_entrega(entrega) -> str | None:
@@ -237,6 +282,12 @@ def verificar_entrega(entrega, firma: str) -> tuple[bool, str]:
         firmado = quipu.decode_verified(firma, vk)
     except Exception:
         return (False, "firma inválida o forjada")
-    if firmado == canonico(entrega):
+    version = _version_firmada(firmado)
+    if version is None:
+        # Ni «válida» ni «alterada»: el contenido está firmado con esta clave
+        # pero no se puede reconstruir para compararlo. Decirlo tal cual evita
+        # acusar de manipulación a una firma hecha por una versión posterior.
+        return (False, "firmada con un formato que esta versión no reconoce")
+    if firmado == canonico(entrega, version):
         return (True, "verificada")
     return (False, "la entrega fue alterada tras la firma")
