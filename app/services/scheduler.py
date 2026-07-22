@@ -288,6 +288,21 @@ class GeneradorTareas:
 
         # ESPECÍFICO
         elif modo == 'ESPECIFICO':
+            # La dimensión AÑO. Sin esto, «cada dos años el 15 de marzo» no se
+            # podía expresar: `meses` fija en qué meses, pero no cada cuántos
+            # años, así que una obligación bienal, un plan quinquenal o un censo
+            # decenal salían TODOS los años. Con periodicidad cíclica tampoco:
+            # 730 días no son dos años, y el desfase se acumula.
+            cada = config.get('cada_n_anios')
+            if cada:
+                try:
+                    cada = int(cada)
+                except (ValueError, TypeError):
+                    cada = 1
+                base = inicio_dt.year if inicio_dt else fecha_evaluar.year
+                if cada > 1 and (fecha_evaluar.year - base) % cada != 0:
+                    return []
+
             if fecha_evaluar.month in config.get('meses', []):
                 for nominal in GeneradorTareas._nominales_del_mes(
                         fecha_evaluar.year, fecha_evaluar.month, config):

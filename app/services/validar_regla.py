@@ -78,7 +78,7 @@ class Resultado:
 #: exactamente las mismas. Dos juegos de reglas garantizan que uno esté mal.
 PASOS = [
     ("Periodicidad", {"modo"}),
-    ("Cuándo vence", {"meses", "dia_corte", "dias_corte", "dia_habil",
+    ("Cuándo vence", {"meses", "cada_n_anios", "dia_corte", "dias_corte", "dia_habil",
                       "es_ultimo_dia", "usar_ultimo_dia_en_meses_cortos",
                       "dia_semana_mes", "semana_del_mes", "intervalo",
                       "dias_semana", "fechas", "hora_inicio", "hora_fin",
@@ -119,6 +119,30 @@ def validar(config: dict, respondidos: set | None = None) -> Resultado:
         _semanal(config, r)
     elif modo == "HOURLY":
         _horas(config, r)
+
+    # Campos contestados que este modo NO va a mirar. Es el defecto en su forma
+    # más pura: el dato está puesto, quien lo puso cree que hace algo, y no hace
+    # nada. Nunca se descubre por su efecto, porque el efecto es que no pasa
+    # nada. En el asistente esto no debería llegar a ocurrir —cada paso pregunta
+    # solo lo suyo— pero una regla puede venir de una importación o de una
+    # versión anterior.
+    if respondidos is None:
+        from app.services.periodicidad import (campos_ignorados,
+                                               formas_del_dia_contestadas)
+
+        ignorados = campos_ignorados(config)
+        if ignorados:
+            r.advertencias.append(
+                f"Con esta periodicidad no se usarán: {', '.join(ignorados)}. "
+                f"Están puestos pero no cambian ninguna fecha.")
+
+        formas = formas_del_dia_contestadas(config)
+        if len(formas) > 1:
+            from app.services.periodicidad import FORMAS_DEL_DIA
+            r.advertencias.append(
+                "Hay varias formas de indicar el día contestadas a la vez ("
+                + ", ".join(FORMAS_DEL_DIA[f] for f in formas)
+                + "). Son excluyentes: solo se aplicará una.")
 
     # La comprobación que cubre lo que no se ha imaginado: ¿genera algo?
     # Se hace al final y solo si no hay errores ya explicados, para no repetir
@@ -241,6 +265,18 @@ def _fechas(config, r):
 def _especifico(config, r):
     if r.toca("meses") and not config.get("meses"):
         r.errores.append("Seleccione al menos un mes de entrega.")
+
+    if r.toca("cada_n_anios") and config.get("cada_n_anios"):
+        cada = _entero(config.get("cada_n_anios"), 0)
+        if cada < 1:
+            r.errores.append("«Cada cuántos años» debe ser 1 o más.")
+        elif cada > 1 and not config.get("fecha_inicio"):
+            # Sin fecha de inicio no hay desde dónde contar los años, y el motor
+            # tomaría el año que se esté evaluando: la obligación saldría todos
+            # los años sin que nadie entendiera por qué.
+            r.errores.append(
+                "Con una periodicidad de varios años hace falta la fecha de "
+                "inicio: es el año desde el que se cuenta.")
 
     if config.get("dias_corte"):
         fuera = [d for d in config["dias_corte"]
