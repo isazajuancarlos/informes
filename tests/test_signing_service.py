@@ -28,6 +28,27 @@ CRIPTO = pytest.mark.skipif(
 )
 
 
+def test_donde_la_cripto_DEBE_estar_su_ausencia_es_un_FALLO():
+    """Saltarse el banco entero es indistinguible de aprobarlo.
+
+    Sin `quipu-crypto` instalado, las pruebas de firma se marcan como omitidas y
+    la corrida sale VERDE sin haber ejercitado ni una línea de criptografía. En
+    la máquina de un desarrollador eso es razonable —la dependencia es opcional
+    por diseño—; en integración continua es un verificador que no puede ponerse
+    rojo.
+
+    De ahí `EXIGIR_CRIPTO=1`: donde la firma tiene que estar de verdad, su
+    ausencia se anuncia en vez de disolverse en un «omitida» que nadie lee.
+    """
+    if os.getenv("EXIGIR_CRIPTO") != "1":
+        pytest.skip("solo se exige donde la dependencia debe estar instalada")
+    assert fs._DISPONIBLE, (  # noqa: SLF001
+        "EXIGIR_CRIPTO=1 pero quipu-crypto no está instalado: el banco de firma "
+        "se habría saltado entero y la corrida habría salido verde. "
+        f"Motivo: {fs.por_que_no()}"
+    )
+
+
 def entrega_base(tmp_path=None, **cambios):
     """Una entrega como dict: `canonico` acepta dict u objeto ORM indistintamente,
     así el banco no necesita base de datos."""

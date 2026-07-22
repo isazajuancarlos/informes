@@ -1,0 +1,111 @@
+# Las pruebas corriendo solas, que hasta ahora no ocurría.
+#
+# `informes` tenía 221 pruebas y CERO integración continua: solo se ejecutaban
+# cuando alguien se acordaba. En un producto de cumplimiento eso es justo la
+# forma de fallo que el producto existe para evitar — algo que hay que recordar
+# hacer, y que un día no se hace.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pruebas:
+    name: pruebas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Poblar vendor/ e instalar la cripto
+        run: |
+          # Sin `quipu-crypto` las 36 pruebas de firma se marcan OMITIDAS y la
+          # corrida sale verde sin haber ejercitado una sola línea de
+          # criptografía. La dependencia es opcional por diseño en la máquina de
+          # un desarrollador; en integración continua, saltársela es tener un
+          # verificador que no puede ponerse rojo.
+          #
+          # Se instala por la misma vía que el cliente —vendor/, no PyPI—, así
+          # que este paso además comprueba que el empaquetado del artículo 13
+          # sigue funcionando.
+          python preparar_distribucion.py
+          pip install -r requirements-firma.txt
+
+      - name: Pruebas
+        env:
+          # SQLite en memoria: el perfil `standalone`, que es el que se entrega
+          # instalado. Probar solo contra PostgreSQL habría dejado pasar la
+          # migración rota, que fallaba únicamente en SQLite.
+          DATABASE_URL: "sqlite:///:memory:"
+          DEPLOYMENT_PROFILE: standalone
+          # Aquí la ausencia de la cripto es un FALLO, no una omisión.
+          EXIGIR_CRIPTO: "1"
+        run: pytest tests/ -q
+
+  migracion:
+    name: la migración aplica sobre una base ANTIGUA
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Aplicar sobre un esquema viejo, dos veces
+        run: |
+          # Que la migración no lance no prueba que haga algo. Se construye una
+          # base con el esquema ANTERIOR, se migra, y se exige que la segunda
+          # corrida también salga 0 (idempotencia). Sin la base vieja, la
+          # migración no tendría nada que hacer y pasaría en falso.
+          python - <<'PY'
+          import sqlite3
+          c = sqlite3.connect("ci_antigua.db")
+          c.execute("""CREATE TABLE entregas_esperadas (
+              id INTEGER PRIMARY KEY, informe_id INTEGER, usuario_id INTEGER,
+              fecha_programada TIMESTAMP, fecha_limite_teorica TIMESTAMP,
+              estado VARCHAR(20))""")
+          c.execute("INSERT INTO entregas_esperadas (id, estado) VALUES (1, 'PENDIENTE')")
+          c.commit()
+          PY
+          DATABASE_URL="sqlite:///ci_antigua.db" python migrar_esquema.py
+          DATABASE_URL="sqlite:///ci_antigua.db" python migrar_esquema.py
+
+      - name: La migración obsoleta sigue negándose a correr
+        run: |
+          # Si alguien la "arregla" quitando la guarda, esto se pone rojo: la
+          # sintaxis que usa no funciona en SQLite y volvería a no hacer nada
+          # en silencio.
+          if DATABASE_URL="sqlite:///ci_antigua.db" python migrate_firma.py; then
+            echo "migrate_firma.py devolvió 0: la guarda desapareció"
+            exit 1
+          fi
+
+  clausulado:
+    name: EULA y modelo de licencia coinciden
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Comparar los dos documentos
+        run: python verificar_clausulado.py
