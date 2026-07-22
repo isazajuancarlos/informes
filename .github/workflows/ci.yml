@@ -183,6 +183,35 @@ jobs:
           done
           echo "La aplicación no respondió en 60 s"; exit 1
 
+  visual:
+    name: la pantalla se dibuja entera
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+      - name: Instalar Chromium
+        run: python -m playwright install --with-deps chromium
+      - name: Medir las pantallas en un navegador de verdad
+        env:
+          DEPLOYMENT_PROFILE: standalone
+        # Existe porque `nicegui.testing` construye los elementos y los pulsa,
+        # pero NO calcula CSS: para él una columna con `display:none` existe
+        # igual. El login llevaba desde el primer commit dejando media pantalla
+        # en negro —el panel de marca no se dibujaba nunca— y ninguna de las 600
+        # pruebas podía verlo. Solo se manifiesta cuando alguien aplica las
+        # hojas de estilo.
+        #
+        # Va en su propio trabajo para no meterle 114 MB de navegador al de
+        # `pruebas`, que corre en cada empujón.
+        run: pytest tests/test_pantalla_visual.py -q
+
   patrones:
     name: los patrones de una base real se cumplen
     runs-on: ubuntu-latest
