@@ -47,14 +47,66 @@ class Resultado:
     errores: list[str] = field(default_factory=list)
     advertencias: list[str] = field(default_factory=list)
 
+    #: Campos que el usuario ya ha tenido ocasión de responder. `None` = todos.
+    _respondidos: set | None = None
+
     @property
     def se_puede_guardar(self) -> bool:
         return not self.errores
 
+    def toca(self, *campos) -> bool:
+        """¿Ya se preguntó por alguno de estos campos?
 
-def validar(config: dict) -> Resultado:
-    """Comprueba una regla de periodicidad. No toca la base de datos."""
+        Callar sobre lo que aún no se ha preguntado no es ser permisivo: es no
+        acusar a alguien de no haber contestado algo que nadie le ha preguntado.
+        """
+        if self._respondidos is None:
+            return True
+        return any(c in self._respondidos for c in campos)
+
+
+#: Los pasos en que se puede ir construyendo una regla, y qué decide cada uno.
+#:
+#: Existe para que un asistente pueda revisar CADA PÁGINA en vez de esperar al
+#: final: en el paso 1 no tiene sentido quejarse del día de corte, porque
+#: todavía no se ha preguntado. Sin esto, el asistente enseñaría errores de cosas
+#: que el usuario aún no ha tenido ocasión de responder, y eso entrena a pasar de
+#: los avisos antes incluso de terminar.
+#:
+#: Es una DECLARACIÓN, no una segunda implementación: las reglas siguen siendo
+#: las de abajo, y el asistente y el formulario de una sola página usan
+#: exactamente las mismas. Dos juegos de reglas garantizan que uno esté mal.
+PASOS = [
+    ("Periodicidad", {"modo"}),
+    ("Cuándo vence", {"meses", "dia_corte", "dias_corte", "dia_habil",
+                      "es_ultimo_dia", "usar_ultimo_dia_en_meses_cortos",
+                      "dia_semana_mes", "semana_del_mes", "intervalo",
+                      "dias_semana", "fechas", "hora_inicio", "hora_fin",
+                      "intervalo_horas"}),
+    ("Si cae en día no hábil", {"ajuste_habil", "ajuste_habil_anterior",
+                                "mover_habil", "mover_habil_anterior"}),
+    ("Desde cuándo rige", {"fecha_inicio"}),
+]
+
+
+def campos_hasta(paso: int) -> set:
+    """Los campos ya decididos al llegar a `paso` (0 = el primero)."""
+    decididos = set()
+    for _, campos in PASOS[:paso + 1]:
+        decididos |= campos
+    return decididos
+
+
+def validar(config: dict, respondidos: set | None = None) -> Resultado:
+    """Comprueba una regla de periodicidad. No toca la base de datos.
+
+    `respondidos` limita la revisión a los campos que el usuario ya ha tenido
+    ocasión de contestar. Se usa en el asistente para revisar página a página;
+    con `None` —el formulario de una sola página— se revisa todo, que es el
+    comportamiento de siempre.
+    """
     r = Resultado()
+    r._respondidos = respondidos  # noqa: SLF001 — lo consultan los _ de abajo
     modo = config.get("modo", "CICLICO")
 
     if modo == "CICLICO":
@@ -71,7 +123,8 @@ def validar(config: dict) -> Resultado:
     # La comprobación que cubre lo que no se ha imaginado: ¿genera algo?
     # Se hace al final y solo si no hay errores ya explicados, para no repetir
     # el mismo problema con dos redacciones distintas.
-    if not r.errores and modo not in ("HOURLY", "INMEDIATO"):
+    # La comprobación de que GENERA algo necesita la regla entera.
+    if not r.errores and respondidos is None and modo not in ("HOURLY", "INMEDIATO"):
         from datetime import date, datetime
 
         from app.services.preview_calendario import proximos
@@ -107,6 +160,8 @@ def _entero(valor, defecto=0):
 
 
 def _ciclico(config, r):
+    if not r.toca("intervalo"):
+        return
     intervalo = _entero(config.get("intervalo"), -1)
     if intervalo < 0:
         r.errores.append(
@@ -118,7 +173,7 @@ def _ciclico(config, r):
             "Con intervalo 0 la obligación ocurre UNA SOLA VEZ, en la fecha de "
             "inicio. Si esperaba que se repitiera, indique cada cuántos días."
         )
-    if not config.get("fecha_inicio"):
+    if r.toca("fecha_inicio") and not config.get("fecha_inicio"):
         r.errores.append("Una periodicidad cíclica necesita fecha de inicio.")
 
 
@@ -162,6 +217,8 @@ def _fechas(config, r):
     puede crear cualquier informe» sería cierto solo para las formas que se nos
     ocurrieron.
     """
+    if not r.toca("fechas"):
+        return
     fechas = config.get("fechas") or []
     if not fechas:
         r.errores.append("Escriba al menos una fecha, en formato AAAA-MM-DD.")
@@ -182,7 +239,7 @@ def _fechas(config, r):
 
 
 def _especifico(config, r):
-    if not config.get("meses"):
+    if r.toca("meses") and not config.get("meses"):
         r.errores.append("Seleccione al menos un mes de entrega.")
 
     if config.get("dias_corte"):
@@ -204,6 +261,10 @@ def _especifico(config, r):
                 if d in (29, 30, 31):
                     _dia_que_algunos_meses_no_tienen(config, d, r)
         return  # manda la lista; el resto no aplica
+
+    if not r.toca("dia_corte", "dias_corte", "dia_habil", "es_ultimo_dia",
+                  "dia_semana_mes", "semana_del_mes"):
+        return
 
     if config.get("dia_semana_mes") is not None and config.get("semana_del_mes"):
         dia = _entero(config.get("dia_semana_mes"), -1)
@@ -255,6 +316,8 @@ def _especifico(config, r):
 
 
 def _semanal(config, r):
+    if not r.toca("dias_semana"):
+        return
     dias = config.get("dias_semana") or []
     if not dias:
         r.errores.append("Seleccione al menos un día de la semana.")
@@ -269,6 +332,8 @@ def _semanal(config, r):
 
 
 def _horas(config, r):
+    if not r.toca("hora_inicio", "hora_fin", "intervalo_horas"):
+        return
     ini = _entero(config.get("hora_inicio"), -1)
     fin = _entero(config.get("hora_fin"), -1)
     intervalo = _entero(config.get("intervalo_horas"), 0)
@@ -334,10 +399,28 @@ def _dia_que_algunos_meses_no_tienen(config, dia, r):
         return  # ningún mes seleccionado se queda corto: nada que decidir
 
     if config.get("usar_ultimo_dia_en_meses_cortos"):
+        if dia == 31:
+            # «Día 31, y si el mes no lo tiene, el último» produce EXACTAMENTE
+            # las mismas fechas que «último día del mes» — comprobado, no
+            # supuesto. Son dos formas de escribir la misma obligación, y
+            # admitir las dos es sembrar el problema: dentro de un año nadie
+            # sabrá si la norma decía «el 31» o «el último día», que NO son la
+            # misma exigencia aunque coincidan en el calendario.
+            #
+            # Se rechaza la que no la nombra. No por imposible —funciona— sino
+            # porque el registro tiene que decir lo que la norma dice.
+            r.errores.append(
+                "«Día 31, y el último cuando no exista» es exactamente «último "
+                "día del mes», pero escrito de forma que no lo dice. Marque "
+                "«Último día del mes»: la obligación queda registrada con su "
+                "nombre, y dentro de un año se sabrá qué exigía la norma.")
+            return
         # Lo pidió explícitamente. Se confirma qué va a pasar y se sigue.
         r.advertencias.append(
             f"En {_lista(cortos)} no hay día {dia}: el vencimiento será el "
-            f"último día del mes, como usted indicó.")
+            f"último día del mes, como usted indicó. Ojo: esto NO es «el último "
+            f"día del mes» —en {_lista([m for m in (config.get('meses') or []) if m not in cortos][:2])} "
+            f"y los demás será el {dia}, no el último.")
         return
 
     r.errores.append(

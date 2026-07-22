@@ -264,3 +264,107 @@ def test_una_regla_impecable_sigue_sin_generar_ruido():
                  "es_ultimo_dia": True, "ajuste_habil": True,
                  "fecha_inicio": "2020-01-01"})
     assert r.advertencias == [], r.advertencias
+
+
+# --------------------------------------------------------------------------
+# Revisión paso a paso, para el asistente
+# --------------------------------------------------------------------------
+
+def test_en_el_primer_paso_NO_se_reclama_lo_que_no_se_ha_preguntado():
+    """Un asistente que en la página 1 se queja del día de corte entrena a pasar
+    de los avisos antes incluso de terminar de crear la obligación."""
+    from app.services.validar_regla import campos_hasta
+
+    r = validar({"modo": "ESPECIFICO"}, respondidos=campos_hasta(0))
+    assert r.se_puede_guardar, r.errores
+    assert r.advertencias == [], r.advertencias
+
+
+def test_en_el_paso_de_las_fechas_SI_se_reclama_lo_que_falta():
+    """El contrapunto: si nunca reclamara nada, la revisión por pasos no
+    serviría de nada y el error saldría al final, cuando ya no se sabe cuál de
+    las cinco páginas lo causó."""
+    from app.services.validar_regla import campos_hasta
+
+    r = validar({"modo": "ESPECIFICO", "meses": [1]}, respondidos=campos_hasta(1))
+    assert not r.se_puede_guardar
+    assert any("día de corte" in e for e in r.errores), r.errores
+
+
+def test_la_revision_por_pasos_usa_LAS_MISMAS_reglas_que_la_completa():
+    """Dos juegos de reglas garantizan que uno esté mal y que nadie sepa cuál.
+
+    Se comprueba sobre el resultado: revisar con todos los campos respondidos
+    tiene que dar exactamente lo mismo que la revisión de siempre.
+    """
+    from app.services.validar_regla import PASOS, campos_hasta
+
+    todos = campos_hasta(len(PASOS) - 1)
+    for config in (mensual(dia_corte=30),
+                   mensual(dia_corte=15),
+                   {"modo": "SEMANAL", "dias_semana": [], "fecha_inicio": "2026-01-01"},
+                   {"modo": "HOURLY", "hora_inicio": 18, "hora_fin": 8,
+                    "intervalo_horas": 1, "fecha_inicio": "2026-01-01"}):
+        completa = validar(config)
+        por_pasos = validar(config, respondidos=todos)
+        assert completa.errores == por_pasos.errores, config
+        assert completa.advertencias == por_pasos.advertencias, config
+
+
+def test_todo_campo_de_una_regla_pertenece_a_ALGUN_paso():
+    """Un campo que no esté en ningún paso no se revisaría nunca en el
+    asistente: se guardaría sin que nadie lo mirara."""
+    from app.services.validar_regla import PASOS
+
+    declarados = set()
+    for _, campos in PASOS:
+        declarados |= campos
+
+    # Los que el motor lee de verdad.
+    del_motor = {
+        "modo", "meses", "dia_corte", "dias_corte", "dia_habil", "es_ultimo_dia",
+        "usar_ultimo_dia_en_meses_cortos", "dia_semana_mes", "semana_del_mes",
+        "intervalo", "dias_semana", "fechas", "hora_inicio", "hora_fin",
+        "intervalo_horas", "ajuste_habil", "ajuste_habil_anterior",
+        "mover_habil", "mover_habil_anterior", "fecha_inicio",
+    }
+    assert del_motor - declarados == set(), del_motor - declarados
+
+
+# --------------------------------------------------------------------------
+# La obligación tiene que llamarse por su nombre
+# --------------------------------------------------------------------------
+
+def test_dia_31_con_excepcion_es_LO_MISMO_que_ultimo_dia_y_no_se_admite():
+    """Comprobado, no supuesto: las dos configuraciones dan las mismas fechas.
+
+    Admitir las dos siembra el problema: dentro de un año nadie sabrá si la
+    norma decía «el 31» o «el último día del mes», que no son la misma exigencia
+    aunque coincidan en el calendario.
+    """
+    from datetime import date, timedelta
+
+    from app.services.scheduler import GeneradorTareas as G
+
+    def fechas(cfg):
+        salida, dia = [], date(2026, 1, 1)
+        while dia <= date(2026, 12, 31):
+            salida += [v.nominal for v in G.obtener_vencimientos_para_fecha(dia, cfg)]
+            dia += timedelta(days=1)
+        return salida
+
+    base = {"modo": "ESPECIFICO", "meses": TODOS_LOS_MESES, "fecha_inicio": "2026-01-01"}
+    assert fechas({**base, "dia_corte": 31, "usar_ultimo_dia_en_meses_cortos": True}) \
+        == fechas({**base, "es_ultimo_dia": True}), "la premisa de esta prueba ya no se cumple"
+
+    r = validar({**base, "dia_corte": 31, "usar_ultimo_dia_en_meses_cortos": True})
+    assert not r.se_puede_guardar
+    assert any("Último día del mes" in e for e in r.errores), r.errores
+
+
+def test_dia_30_con_excepcion_SI_se_admite_porque_NO_es_lo_mismo():
+    """Día 30 salvo febrero no es «el último día»: en enero es el 30, no el 31.
+    Rechazarlo también sería cerrar el sistema."""
+    r = validar(mensual(dia_corte=30, usar_ultimo_dia_en_meses_cortos=True))
+    assert r.se_puede_guardar, r.errores
+    assert any("NO es «el último día del mes»" in a for a in r.advertencias), r.advertencias
