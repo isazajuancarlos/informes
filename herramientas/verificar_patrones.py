@@ -55,9 +55,10 @@ TODOS = list(range(1, 13))
 #: Cuántos vencimientos al año implica cada periodicidad declarada. Sale de la
 #: palabra, no del motor.
 AL_ANIO = {
-    "DIARIO": None,        # depende de los días hábiles; no se fija
-    "SEMANAL": None,       # 52 o 53, y puede tener varios días marcados
-    "BIMENSUAL": 24,       # dos veces al mes
+    "DIARIO": None, "DIARIA": None,   # depende de los días hábiles
+    "SEMANAL": None,                  # 52 o 53, y puede tener varios días
+    "2 VECES POR SEMANA": None,
+    "BIMENSUAL": 24, "QUINCENAL": 24,  # dos veces al mes
     "MENSUAL": 12, "MENUSAL": 12,
     "BIMESTRAL": 6,
     "TRIMESTRAL": 4,
@@ -66,8 +67,19 @@ AL_ANIO = {
     "FECHA": None,
 }
 
+#: Frecuencias que no fijan un número: se comprueba que genere ALGO y que
+#: respete la dirección del ajuste, pero no cuántos.
+#:
+#: Antes, una frecuencia desconocida caía a «MENSUAL» y se le exigían 12 al año.
+#: Eso marcó como FALLA cuatro informes cuyo motor estaba perfecto —una
+#: quincenal genera 24 y dos veces por semana genera 104— y el fallo era del
+#: banco de pruebas, no del sistema. Medir con la vara equivocada es peor que no
+#: medir: sale un número creíble y falso.
+SIN_NUMERO_FIJO = None
+
 #: Meses de entrega según la periodicidad, cuando el código no los da.
 MESES = {"MENSUAL": TODOS, "MENUSAL": TODOS, "BIMENSUAL": TODOS,
+         "QUINCENAL": TODOS, "DIARIA": TODOS, "2 VECES POR SEMANA": TODOS,
          "BIMESTRAL": [1, 3, 5, 7, 9, 11], "TRIMESTRAL": [3, 6, 9, 12],
          "SEMESTRAL": [6, 12], "ANUAL": [12]}
 
@@ -108,7 +120,8 @@ def traducir(periodicidad: str, codigo: str) -> tuple[dict | None, str]:
     # SEMANAL: el número es el día de la SEMANA (1=lunes … 5=viernes), y dos
     # dígitos son dos días. No es un día del mes: ese es justo el error que la
     # línea lógica del asistente existe para impedir.
-    if p == "SEMANAL":
+    if p in ("SEMANAL", "2 VECES POR SEMANA") and letras.startswith("S") \
+            and p != "SEMESTRAL":
         dias = [int(d) - 1 for d in str(dia)] if dia > 6 else [dia - 1]
         if "H" in letras:
             # El n-ésimo día hábil DE LA SEMANA. Ya es hábil por construcción,
@@ -154,7 +167,15 @@ def comprobar(periodicidad, codigo):
     if not venc:
         return ("FALLA", "no genera ningún vencimiento")
 
-    esperados = AL_ANIO.get(periodicidad.strip().upper())
+    # Una frecuencia que no se conoce NO se sustituye por otra: se deja sin
+    # número esperado. Rellenarla con la mensual fue lo que produjo cuatro
+    # fallos inventados.
+    esperados = AL_ANIO.get(periodicidad.strip().upper(), SIN_NUMERO_FIJO)
+    if regla.get("modo") == "FECHAS":
+        # `FECHA` significa «sin patrón»: las fechas viven en otra hoja del
+        # libro, no en el código. Exigirle el número que implica la frecuencia
+        # declarada es medir con la vara de otra cosa.
+        esperados = SIN_NUMERO_FIJO
     if esperados is not None and len(venc) != esperados:
         return ("FALLA", f"{len(venc)} vencimientos al año, se esperaban {esperados}")
 
