@@ -177,6 +177,51 @@ def _candidatos(fechas):
     return salida
 
 
+_MESES_ES = (None, "enero", "febrero", "marzo", "abril", "mayo", "junio",
+             "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre")
+
+
+def _separacion_regular(meses):
+    """Cada cuántos meses se repite, si es regular. None si no lo es.
+
+    Deducir la periodicidad del NÚMERO de meses estaba mal: julio y agosto son
+    dos meses y no son un semestre. Lo que hace semestral a una obligación es
+    que sus meses estén a SEIS de distancia, no que sean dos.
+    """
+    if len(meses) < 2:
+        return None
+    saltos = {(b - a) % 12 for a, b in zip(meses, meses[1:] + [meses[0] + 12])}
+    return saltos.pop() if len(saltos) == 1 else None
+
+
+def _periodicidad_de(meses):
+    if len(meses) == 12:
+        return "MENSUAL"
+    if len(meses) == 1:
+        return "ANUAL"
+    return {6: "SEMESTRAL", 3: "TRIMESTRAL", 2: "BIMESTRAL",
+            1: "MENSUAL"}.get(_separacion_regular(meses) or 0, "ANUAL")
+
+
+def _como_se_lee(meses, dias):
+    """La etiqueta EXACTA. En este sistema la etiqueta es el significado."""
+    que_dia = (f"el día {dias[0]}" if len(dias) == 1
+               else f"los días {', '.join(map(str, dias))}")
+    if len(meses) == 1:
+        de_mes = _MESES_ES[meses[0]]
+        return (f"cada {dias[0]} de {de_mes}" if len(dias) == 1
+                else f"cada año, en {de_mes}, {que_dia}")
+    sep = _separacion_regular(meses)
+    cadencia = {6: "cada semestre", 3: "cada trimestre",
+                2: "cada dos meses", 1: "cada mes"}.get(sep)
+    if cadencia:
+        return f"{cadencia}, {que_dia}"
+    # Meses irregulares: se nombran, en vez de inventarles una cadencia.
+    nombres = [_MESES_ES[m] for m in meses]
+    lista = ", ".join(nombres[:-1]) + " y " + nombres[-1]
+    return f"en {lista}, {que_dia}"
+
+
 def _por_meses(meses):
     return {12: "MENSUAL", 6: "BIMESTRAL", 4: "TRIMESTRAL",
             2: "SEMESTRAL", 1: "ANUAL"}.get(len(meses), "MENSUAL")
@@ -223,3 +268,132 @@ def inferir(fechas) -> Inferencia:
         "SIN_PATRON",
         f"no siguen ningún patrón: quedan como {len(fechas)} fecha(s) sueltas",
         descartados=descartados)
+
+
+# =========================================================================
+# Las LECTURAS de una selección: lo que el usuario ve tras marcar en el
+# calendario
+# =========================================================================
+#
+# `inferir` responde «qué patrón es este», y necesita muchas fechas. La pregunta
+# de verdad, al marcar en un calendario, es otra: **qué puede ser esto**.
+#
+# Seleccionar el lunes 6 de julio de 2026 no determina nada, pero acota mucho:
+# puede ser diario desde ese día, todos los lunes, el 6 de cada mes, el primer
+# lunes de cada mes, cada 6 de julio, o una sola vez. Son seis obligaciones
+# distintas y la selección es idéntica en las seis.
+#
+# Por eso la lista no es un menú que estorba: es la pregunta que la selección
+# deja abierta, y que alguien tiene que contestar. El sistema no puede
+# adivinarla — y adivinarla sería inventar la obligación.
+
+
+@dataclass
+class Lectura:
+    """Una interpretación posible de lo que se marcó."""
+    periodicidad: str
+    nombre: str
+    #: Qué significa, en los términos de quien crea la obligación.
+    dice: str
+    regla: dict
+    #: Las primeras fechas que produciría, para verlo antes de decidir.
+    proximas: list = field(default_factory=list)
+
+
+def _proximas(regla, desde, cuantas=4):
+    from app.services.scheduler import GeneradorTareas
+
+    salida, dia, tope = [], desde, desde + timedelta(days=800)
+    while dia <= tope and len(salida) < cuantas:
+        for v in GeneradorTareas.obtener_vencimientos_para_fecha(dia, regla):
+            salida.append(v.nominal)
+            if len(salida) >= cuantas:
+                break
+        dia += timedelta(days=1)
+    return salida
+
+
+def interpretaciones(seleccion) -> list[Lectura]:
+    """Qué puede ser lo que el usuario acaba de marcar.
+
+    Solo se ofrecen lecturas que **contienen** la selección: si una
+    interpretación no generase alguna de las fechas marcadas, no es una lectura
+    de lo que se marcó, es otra cosa. Comprobado ejecutando, no razonado.
+    """
+    from app.services.periodicidad import CATALOGO
+
+    fechas = sorted(set(seleccion))
+    if not fechas:
+        return []
+
+    inicio, fin = fechas[0], fechas[-1]
+    base = {"fecha_inicio": inicio.isoformat()}
+    semanas = sorted({f.weekday() for f in fechas})
+    dias = sorted({f.day for f in fechas})
+    meses = sorted({f.month for f in fechas})
+    candidatas = []
+
+    candidatas.append(("DIARIA", "todos los días desde esa fecha",
+                       {"modo": "CICLICO", "intervalo": 1, **base}))
+    candidatas.append(("SEMANAL", f"todas las semanas, {_dias_es(semanas)}",
+                       {"modo": "SEMANAL", "dias_semana": semanas, **base}))
+    candidatas.append(("CADA_N_SEMANAS", f"cada dos semanas, {_dias_es(semanas)}",
+                       {"modo": "SEMANAL", "dias_semana": semanas,
+                        "cada_n_semanas": 2, **base}))
+
+    if len(dias) == 1:
+        candidatas.append(("MENSUAL", f"el día {dias[0]} de cada mes",
+                           {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                            "dia_corte": dias[0], **base}))
+    else:
+        candidatas.append(("MENSUAL",
+                           f"los días {', '.join(map(str, dias))} de cada mes",
+                           {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                            "dias_corte": dias, **base}))
+
+    if len(semanas) == 1:
+        ordinal, desde_final = _ordinal_en_el_mes(fechas[0])
+        candidatas.append(("MENSUAL",
+                           f"el {ordinal}º {_dias_es(semanas)} de cada mes",
+                           {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                            "dia_semana_mes": semanas[0],
+                            "semana_del_mes": ordinal, **base}))
+        if desde_final == -1:
+            candidatas.append(("MENSUAL",
+                               f"el último {_dias_es(semanas)} de cada mes",
+                               {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                                "dia_semana_mes": semanas[0],
+                                "semana_del_mes": -1, **base}))
+        habil = _n_esimo_habil_del_mes(fechas[0])
+        if habil:
+            candidatas.append(("MENSUAL", f"el {habil}º día hábil de cada mes",
+                               {"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                                "dia_habil": habil, **base}))
+
+    if len(meses) < 12:
+        candidatas.append((_periodicidad_de(meses),
+                           _como_se_lee(meses, dias),
+                           {"modo": "ESPECIFICO", "meses": meses,
+                            **({"dia_corte": dias[0]} if len(dias) == 1
+                               else {"dias_corte": dias}), **base}))
+
+    candidatas.append(("SIN_PATRON",
+                       "solo esa fecha" if len(fechas) == 1
+                       else f"solo esas {len(fechas)} fechas",
+                       {"modo": "FECHAS",
+                        "fechas": [f.isoformat() for f in fechas], **base}))
+
+    lecturas, vistas = [], set()
+    for clave, dice, regla in candidatas:
+        # La lectura tiene que CONTENER lo marcado. Si no generase alguna de las
+        # fechas seleccionadas, no es una interpretación de lo que se marcó.
+        if not set(fechas) <= _nominales(regla, inicio, fin):
+            continue
+        if dice in vistas:
+            continue
+        vistas.add(dice)
+        lecturas.append(Lectura(
+            periodicidad=clave,
+            nombre=CATALOGO[clave].nombre if clave in CATALOGO else clave,
+            dice=dice, regla=regla, proximas=_proximas(regla, inicio)))
+    return lecturas

@@ -140,3 +140,90 @@ def test_sin_fechas_no_se_inventa_nada():
     inf = inferir([])
     assert not inf.exacta
     assert "ninguna fecha" in inf.explicacion
+
+
+# --------------------------------------------------------------------------
+# Las LECTURAS de una selección: marcar en el calendario y elegir qué es
+# --------------------------------------------------------------------------
+#
+# Seleccionar un lunes no determina nada, pero acota mucho. La lista que aparece
+# después no es un menú que estorba: es la pregunta que la selección deja
+# abierta, y que alguien tiene que contestar. Adivinarla sería inventar la
+# obligación.
+
+def test_una_sola_fecha_admite_VARIAS_lecturas_y_todas_se_ofrecen():
+    """Lunes 6 de julio de 2026 puede ser seis obligaciones distintas, y la
+    selección es idéntica en las seis."""
+    from app.services.inferir_periodicidad import interpretaciones
+
+    lecturas = interpretaciones([date(2026, 7, 6)])
+    dichos = [L.dice for L in lecturas]
+    for esperado in ("todos los días desde esa fecha",
+                     "todas las semanas, lunes",
+                     "el día 6 de cada mes",
+                     "el 1º lunes de cada mes",
+                     "cada 6 de julio",
+                     "solo esa fecha"):
+        assert esperado in dichos, (esperado, dichos)
+
+
+def test_toda_lectura_CONTIENE_lo_que_se_marcó():
+    """Si una interpretación no generase alguna de las fechas seleccionadas, no
+    es una lectura de lo que se marcó: es otra cosa. Se comprueba ejecutando."""
+    from app.services.inferir_periodicidad import interpretaciones
+
+    for seleccion in ([date(2026, 7, 6)],
+                      [date(2026, 7, 6) + timedelta(days=i) for i in range(5)],
+                      [date(2026, 7, 6), date(2026, 8, 6)]):
+        for L in interpretaciones(seleccion):
+            generadas = marcar(L.regla, min(seleccion), max(seleccion))
+            assert set(seleccion) <= set(generadas), (L.dice, seleccion)
+
+
+def test_cada_lectura_enseña_las_FECHAS_que_produciría():
+    """Elegir entre «el día 6» y «el 1º lunes» sin ver qué generan es elegir a
+    ciegas: coinciden en julio y se separan en agosto."""
+    from app.services.inferir_periodicidad import interpretaciones
+
+    lecturas = {L.dice: L for L in interpretaciones([date(2026, 7, 6)])}
+    dia6 = lecturas["el día 6 de cada mes"].proximas
+    primer_lunes = lecturas["el 1º lunes de cada mes"].proximas
+    assert dia6[0] == primer_lunes[0] == date(2026, 7, 6), "coinciden en julio"
+    assert dia6[1] != primer_lunes[1], "y se separan en agosto"
+
+
+# --------------------------------------------------------------------------
+# La etiqueta ES el significado, así que tiene que ser exacta
+# --------------------------------------------------------------------------
+
+def test_dos_meses_NO_son_un_semestre_por_ser_dos():
+    """Deducir la periodicidad del NÚMERO de meses estaba mal: julio y agosto
+    son dos meses y no son un semestre. Lo que hace semestral a una obligación
+    es que sus meses estén a SEIS de distancia."""
+    from app.services.inferir_periodicidad import interpretaciones
+
+    julio_agosto = {L.dice for L in interpretaciones([date(2026, 7, 6),
+                                                      date(2026, 8, 6)])}
+    assert "en julio y agosto, el día 6" in julio_agosto, julio_agosto
+    assert not any("semestre" in d for d in julio_agosto), julio_agosto
+
+    enero_julio = {L.dice for L in interpretaciones([date(2026, 1, 6),
+                                                     date(2026, 7, 6)])}
+    assert "cada semestre, el día 6" in enero_julio, enero_julio
+
+
+def test_los_meses_de_un_trimestre_se_leen_como_trimestre():
+    from app.services.inferir_periodicidad import interpretaciones
+
+    dichos = {L.dice for L in interpretaciones([date(2026, m, 15)
+                                                for m in (3, 6, 9, 12)])}
+    assert "cada trimestre, el día 15" in dichos, dichos
+
+
+def test_una_fecha_anual_dice_EL_MES_y_no_solo_el_dia():
+    """«Cada año, el día 6» no identifica nada: falta el mes."""
+    from app.services.inferir_periodicidad import interpretaciones
+
+    dichos = {L.dice for L in interpretaciones([date(2026, 7, 6)])}
+    assert "cada 6 de julio" in dichos, dichos
+    assert "cada año, el día 6" not in dichos, dichos
