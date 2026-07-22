@@ -642,3 +642,83 @@ def test_el_ejemplo_completo_cada_dos_semanas_lunes_y_en_festivo_el_martes():
         dia += timedelta(days=1)
     for v in (x for x in otros if x.se_movio):
         assert v.limite.weekday() == 4, "anticipar desde lunes cae en VIERNES"
+
+
+# --------------------------------------------------------------------------
+# Lo que identifica una periodicidad es su SIGNIFICADO, no su nombre
+# --------------------------------------------------------------------------
+#
+# «Bisemanal» y «bianual» lo demuestran: cada palabra significa dos cosas. Si el
+# nombre puede mentir, no puede ser la identidad — y de hecho no se guarda en
+# ninguna parte. Lo que queda en la base es la regla, que es significado puro.
+
+def test_el_NOMBRE_de_la_periodicidad_no_se_guarda_en_ninguna_parte():
+    """La palabra ambigua no debe llegar nunca al registro. Lo que se guarda es
+    la regla: modo, días, ajuste. Dentro de un año eso es lo único que quedará,
+    y tiene que bastar para saber qué exigía la norma."""
+    from app.ui.reports_manager import _construir_regla
+
+    datos = {
+        "modo_tiempo": "SEMANAL", "fecha_inicio": "2026-01-01",
+        "tiempo_ciclico": {"total_dias": 0, "ajuste": "ninguno"},
+        "tiempo_especifico": {"meses_seleccionados": [], "dia_corte": 1,
+                              "dia_habil": 0, "es_ultimo_dia": False,
+                              "usar_ultimo_dia_en_meses_cortos": False,
+                              "ajuste": "ninguno"},
+        "tiempo_semanal": {"dias_seleccionados": [2, 4], "ajuste": "siguiente"},
+        "tiempo_horas": {"hora_inicio": 8, "hora_fin": 18, "intervalo": 1},
+    }
+    regla = _construir_regla(datos)
+    texto = str(regla).lower()
+    for palabra in ("bisemanal", "bianual", "semanal ", "periodicidad"):
+        assert palabra not in texto, f"«{palabra}» llegó al registro: {regla}"
+    assert regla["dias_semana"] == [2, 4], regla
+
+
+def test_TODAS_las_periodicidades_enseñan_su_significado_no_solo_las_ambiguas():
+    """Que el significado aparezca solo al desambiguar deja al usuario eligiendo
+    «Trimestral» de una lista sin ver que son cuatro entregas al año — y el error
+    se descubre un trimestre después."""
+    from app.services.periodicidad import catalogo_para_elegir
+
+    entradas = catalogo_para_elegir()
+    assert len(entradas) == len(CATALOGO)
+    import re
+
+    for clave, nombre, significado in entradas:
+        assert significado, clave
+        assert significado != nombre, clave
+        # Lo que se exige no es longitud —eso fue un umbral puesto a ojo, y
+        # «12 al año» lo suspendía siendo correcto— sino que diga CUÁNTAS y
+        # SOBRE QUÉ BASE. El número solo es cierto y no informa: quien elige
+        # «Trimestral» está eligiendo «una por trimestre», no «cuatro».
+        assert re.search(r"\d|una|varias|exactamente", significado), clave
+        assert any(base in significado for base in
+                   ("día", "semana", "mes", "trimestre", "semestre", "año",
+                    "fecha", "franja")), f"{clave}: «{significado}» no dice la base"
+
+
+def test_NO_hay_dos_periodicidades_que_signifiquen_LO_MISMO():
+    """Si dos significan lo mismo, una es sinónimo de la otra y no una
+    periodicidad. Es el mismo criterio que retiró «dos veces por semana» —que era
+    semanal con dos días— y que rechaza «día 31 con excepción» frente a «último
+    día del mes»."""
+    from app.services.periodicidad import catalogo_para_elegir
+
+    vistos = {}
+    for clave, _, significado in catalogo_para_elegir():
+        assert significado not in vistos, (
+            f"{clave} y {vistos[significado]} significan lo mismo: «{significado}»")
+        vistos[significado] = clave
+
+
+def test_el_significado_es_lo_que_permite_elegir_ante_un_termino_ambiguo():
+    """Sin él, dos nombres para lo mismo es una moneda al aire."""
+    from app.services.periodicidad import desambiguar
+
+    opciones = desambiguar("bisemanal")
+    assert len(opciones) == 2
+    significados = {sig for _, _, sig in opciones}
+    assert len(significados) == 2, "las dos opciones deben distinguirse"
+    assert any("104" in s for s in significados)
+    assert any("26" in s for s in significados)

@@ -101,10 +101,61 @@ class Periodicidad:
         #: lleva a dos periodicidades obliga a elegir, que es lo que hace falta.
         self.sinonimos = tuple(sinonimos)
 
+    def significado(self) -> str:
+        """Qué produce esta periodicidad, dicho para una persona.
+
+        Es lo que la identifica de verdad. El NOMBRE no sirve para eso —
+        «bisemanal» y «bianual» significan dos cosas cada uno— y por eso el
+        nombre no se guarda en ninguna parte: en la base queda la regla, que es
+        significado puro.
+
+        Se enseña SIEMPRE, no solo cuando dos nombres colisionan. Que el
+        significado aparezca únicamente al desambiguar deja al usuario eligiendo
+        «Trimestral» de una lista sin ver que son cuatro entregas al año, y el
+        error se descubre un trimestre después.
+        """
+        propio = _SIGNIFICADO.get(self.clave_en_catalogo())
+        if propio:
+            return propio
+        if self.al_anio == 1:
+            return "una al año, en una única fecha"
+        if self.al_anio:
+            return f"{self.al_anio} al año"
+        return "depende de lo que se conteste"
+
+    def clave_en_catalogo(self) -> str:
+        for clave, p in CATALOGO.items():
+            if p is self:
+                return clave
+        return ""
+
     def regla_base(self) -> dict:
         """El punto de partida de la regla: el modo y lo que ya está decidido."""
         return {"modo": self.modo, **self.fija}
 
+
+#: Qué produce cada periodicidad cuyo número no es fijo. Las de número fijo lo
+#: derivan de `al_anio` y no hace falta escribirlas.
+_SIGNIFICADO = {
+    # Las de número fijo también lo declaran: «12 al año» es cierto pero no dice
+    # sobre qué. «12 al año, una por mes» sí, y esa base es lo que el usuario
+    # está eligiendo de verdad.
+    "MENSUAL": "12 al año — una por mes",
+    "QUINCENAL": "24 al año — dos por mes, en los días que indique",
+    "BIMESTRAL": "6 al año — una cada dos meses",
+    "TRIMESTRAL": "4 al año — una por trimestre",
+    "SEMESTRAL": "2 al año — una por semestre",
+    "ANUAL": "1 al año — en una única fecha, día y mes",
+    "DIARIA": "una cada día",
+    "VARIAS_AL_DIA": "varias cada día, en la franja que se indique",
+    "SEMANAL": "una por cada día de la semana que marque — 52 al año con uno, "
+               "104 con dos",
+    "CADA_N_SEMANAS": "una cada N semanas, en el día que elija — 26 al año si "
+                      "son dos",
+    "CADA_N_DIAS": "una cada N días, contados desde la vigencia",
+    "PLURIANUAL": "una cada N años",
+    "SIN_PATRON": "exactamente las fechas que escriba",
+}
 
 #: El catálogo. Añadir una periodicidad es añadir una línea aquí; no hay que
 #: tocar ni el motor ni el validador.
@@ -246,29 +297,21 @@ def es_ambiguo(termino: str) -> bool:
     return len(buscar(termino)) > 1
 
 
-#: Cuántas entregas produce cada periodicidad, dicho para una persona. Lo que
-#: de verdad separa dos opciones es esto: ofrecer dos nombres sin decir en qué
-#: se distinguen deja al usuario eligiendo a cara o cruz.
-_CUANTAS = {
-    "DIARIA": "una cada día",
-    "VARIAS_AL_DIA": "varias cada día",
-    "SEMANAL": "una por cada día de la semana que marque — 52 al año con uno, "
-               "104 con dos",
-    "CADA_N_SEMANAS": "una cada N semanas — 26 al año si son dos",
-    "CADA_N_DIAS": "una cada N días",
-    "PLURIANUAL": "una cada N años",
-    "SIN_PATRON": "las fechas que escriba",
-}
+def catalogo_para_elegir() -> list[tuple[str, str, str]]:
+    """(clave, nombre, significado) de TODAS, para el primer paso del asistente.
+
+    El significado va siempre, no solo cuando dos nombres colisionan: lo que
+    identifica una periodicidad es lo que produce, y el nombre puede mentir.
+    «Bisemanal» y «bianual» lo demuestran — cada uno significa dos cosas.
+    """
+    return [(clave, p.nombre, p.significado()) for clave, p in CATALOGO.items()]
 
 
 def desambiguar(termino: str) -> list[tuple[str, str, str]]:
-    """(clave, nombre, en qué se diferencia) para que la elección sea informada."""
-    salida = []
-    for clave in buscar(termino):
-        p = CATALOGO[clave]
-        cuantas = _CUANTAS.get(clave)
-        if cuantas is None:
-            cuantas = (f"{p.al_anio} al año" if p.al_anio
-                       else "depende de lo que se conteste")
-        salida.append((clave, p.nombre, cuantas))
-    return salida
+    """Lo mismo, restringido a las que responden a un término.
+
+    Devuelve varias cuando el término es ambiguo, y entonces el significado es
+    justamente lo que permite elegir.
+    """
+    return [(clave, CATALOGO[clave].nombre, CATALOGO[clave].significado())
+            for clave in buscar(termino)]
