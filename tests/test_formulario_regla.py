@@ -526,3 +526,52 @@ def test_lo_que_SI_tiene_datos_se_mueve():
         valor = db.query(ConfiguracionInformeVariable).filter_by(
             informe_id=ident, variable_id=campo.id).first()
         assert valor.valor_parametro == 'Vigilancia'
+
+
+def test_un_campo_ANADIDO_y_dejado_en_blanco_sobrevive_al_guardado():
+    """Guardar solo los rellenos hace que añadir un campo y no contestarlo no
+    sirva de nada: desaparece al guardar y quien lo añadió no entiende por qué.
+
+    Y borra una distinción que importa: «este campo no aplica a este informe»
+    (no hay fila) frente a «aplica y nadie lo ha contestado» (fila vacía).
+    """
+    from app.core.database import Base, engine, get_db_session
+    from app.models.meta_tables import (AMBITO_FICHA, ConfiguracionInformeVariable,
+                                        Informe, MetaVariable, Usuario)
+    from app.ui.reports_manager import guardar_campos_del_informe
+
+    Base.metadata.create_all(engine)
+    with get_db_session() as db:
+        autor = db.query(Usuario).first()
+        if autor is None:
+            autor = Usuario(nombre='P', email='p2@local', password_hash='x')
+            db.add(autor); db.flush()
+        contestado = MetaVariable(nombre_interno='c_contestado',
+                                  etiqueta_visual='Contestado', tipo_dato='TEXTO',
+                                  ambito=AMBITO_FICHA)
+        en_blanco = MetaVariable(nombre_interno='c_en_blanco',
+                                 etiqueta_visual='En blanco', tipo_dato='TEXTO',
+                                 ambito=AMBITO_FICHA)
+        no_aplica = MetaVariable(nombre_interno='c_no_aplica',
+                                 etiqueta_visual='No aplica', tipo_dato='TEXTO',
+                                 ambito=AMBITO_FICHA)
+        inf = Informe(nombre='Informe con campos en blanco', creador_id=autor.id)
+        db.add_all([contestado, en_blanco, no_aplica, inf])
+        db.commit()
+        ids = (contestado.id, en_blanco.id, no_aplica.id, inf.id)
+
+    id_con, id_blanco, id_no, id_inf = ids
+    with get_db_session() as db:
+        # `no_aplica` NO está en el diccionario: este informe no lo lleva.
+        guardar_campos_del_informe(db, id_inf, {str(id_con): 'Vigilancia',
+                                                str(id_blanco): ''})
+        db.commit()
+
+    with get_db_session() as db:
+        filas = {f.variable_id: f.valor_parametro
+                 for f in db.query(ConfiguracionInformeVariable)
+                 .filter_by(informe_id=id_inf).all()}
+    assert filas[id_con] == 'Vigilancia'
+    assert id_blanco in filas, "el campo añadido y en blanco tiene que persistir"
+    assert filas[id_blanco] is None, "y quedar vacío, no con una cadena falsa"
+    assert id_no not in filas, "el que no se añadió NO se guarda"

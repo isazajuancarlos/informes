@@ -105,6 +105,26 @@ def opciones_de_partes(usuarios, stakeholders) -> dict:
     return opciones
 
 
+def guardar_campos_del_informe(db, informe_id, valores) -> int:
+    """Escribe una fila POR CADA CAMPO QUE EL INFORME LLEVA, aunque esté vacío.
+
+    Guardar solo los rellenos —que es lo que hacía— borra la diferencia entre
+    «este campo no aplica a este informe» y «aplica y nadie lo ha contestado».
+    Y tiene un efecto más inmediato: un campo añadido a la ficha y dejado en
+    blanco desaparecía al guardar, así que añadirlo no servía de nada y quien lo
+    hiciera no entendería por qué.
+
+    Vive fuera de `guardar()` para poder comprobarse: dentro era un trozo de
+    cierre que ninguna prueba alcanzaba, y una mutación que lo rompía salía roja
+    por contaminación entre pruebas, no por detectarlo.
+    """
+    for var_id, valor in valores.items():
+        db.add(ConfiguracionInformeVariable(
+            informe_id=informe_id, variable_id=int(var_id),
+            valor_parametro=str(valor) if valor else None))
+    return len(valores)
+
+
 def faltan_campos(definiciones, valores) -> list[str]:
     """Los campos marcados como obligatorios que vienen en blanco.
 
@@ -542,8 +562,8 @@ def page_reports_manager():
                         db.add(Participacion(informe_id=inf.id, usuario_id=ident,
                                              rol=rol, orden=orden))
 
-            for var_id, val in nuevo_informe['variables_config'].items():
-                if val: db.add(ConfiguracionInformeVariable(informe_id=inf.id, variable_id=int(var_id), valor_parametro=str(val)))
+            guardar_campos_del_informe(db, inf.id,
+                                       nuevo_informe['variables_config'])
             db.commit()
         
         ui.notify(f'Informe {msg}', type='positive'); ir_a_lista()
@@ -566,12 +586,23 @@ def page_reports_manager():
                        'descripcion': c.descripcion,
                        'opciones': c.lista_de_opciones} for c in campos]
 
-        if not campos:
+        valores = nuevo_informe['variables_config']
+
+        # Un campo del catálogo NO aparece en todos los informes: aparece en los
+        # que lo llevan. Antes se pintaban todos, así que crear un campo para un
+        # informe se lo imponía a los demás y con veinte campos definidos cada
+        # formulario tenía veinte casillas — casi todas en blanco.
+        #
+        # La excepción son los OBLIGATORIOS: si un campo es obligatorio, lo es
+        # para todos, y poder no ponerlo lo vaciaría de sentido.
+        del_informe = [c for c in campos
+                       if str(c['id']) in valores or c['obligatorio']]
+
+        if not del_informe:
             ui.label(vacio).classes('text-xs text-slate-500')
             return
 
-        valores = nuevo_informe['variables_config']
-        for campo in campos:
+        for campo in del_informe:
             clave = str(campo['id'])
             valores.setdefault(clave, '')
             etiqueta = campo['etiqueta'] + (' *' if campo['obligatorio'] else '')
@@ -580,6 +611,27 @@ def page_reports_manager():
                 control.classes('flex-1').props('outlined dense')
                 if campo['descripcion']:
                     ayuda(campo['descripcion'])
+                if campo['obligatorio']:
+                    # No se puede quitar, y se dice por qué en vez de enseñar un
+                    # botón apagado.
+                    ui.icon('lock').classes('text-slate-300') \
+                        .tooltip('Obligatorio para todos los informes')
+                else:
+                    ui.button(icon='close',
+                              on_click=lambda _, k=clave: _quitar_campo(k)) \
+                        .props('flat dense round color=grey') \
+                        .tooltip('Quitar este campo de ESTE informe. El campo '
+                                 'sigue existiendo para los demás.')
+
+    def _quitar_campo(clave: str):
+        """Lo quita de este informe. NO lo borra del catálogo.
+
+        Son dos cosas distintas y confundirlas sería caro: borrar el campo se
+        hace en «Campos de los informes», y allí se impide si alguien lo tiene
+        contestado.
+        """
+        nuevo_informe['variables_config'].pop(clave, None)
+        render_ui()
 
     def _control_de_campo(campo, etiqueta, valores, clave):
         tipo = (campo['tipo'] or 'TEXTO').upper()
@@ -611,7 +663,63 @@ def page_reports_manager():
     def abrir_alta_campo():
         nuevo_campo.update({'etiqueta': '', 'tipo': 'TEXTO', 'opciones': '',
                             'obligatorio': False, 'descripcion': ''})
+        _pintar_catalogo()
         dialogo_campo.open()
+
+    def campos_disponibles():
+        """Los del catálogo que este informe todavía no lleva.
+
+        Los obligatorios no salen: ya están en todos los informes por
+        definición, así que ofrecerlos sería ofrecer algo que no hace nada.
+        """
+        puestos = set(nuevo_informe['variables_config'])
+        with get_db_session() as db:
+            campos = db.query(MetaVariable) \
+                .filter((MetaVariable.activo == True) | (MetaVariable.activo.is_(None))) \
+                .order_by(MetaVariable.orden, MetaVariable.id).all()
+            return [{'id': c.id, 'etiqueta': c.etiqueta_visual, 'tipo': c.tipo_dato,
+                     'descripcion': c.descripcion}
+                    for c in campos
+                    if str(c.id) not in puestos and not c.es_obligatorio]
+
+    def _agregar_campo(id_campo):
+        """Lo añade a ESTE informe, en blanco. No crea nada."""
+        nuevo_informe['variables_config'].setdefault(str(id_campo), '')
+        dialogo_campo.close()
+        render_ui()
+
+    def _pintar_catalogo():
+        """La lista de lo que ya existe, para no volver a crearlo.
+
+        Va ARRIBA y la creación debajo, en ese orden y no al revés: un formulario
+        de creación en primer plano invita a escribir el nombre de un campo que
+        ya está, y entonces el catálogo se llena de «Subsistema», «SUBSISTEMA» y
+        «Sub-sistema», que son tres columnas para el mismo dato y ya no se puede
+        agrupar por ninguna.
+        """
+        catalogo.clear()
+        disponibles = campos_disponibles()
+        with catalogo:
+            if not disponibles:
+                ui.label('No hay más campos creados. Cree el primero abajo.') \
+                    .classes('text-xs text-slate-500')
+                return
+            ui.label(f'Ya existen {len(disponibles)} campo(s). Añada los que '
+                     f'necesite este informe:') \
+                .classes('text-xs font-bold text-slate-600')
+            with ui.column().classes('w-full gap-1 max-h-52 scroll-y'):
+                for campo in disponibles:
+                    with ui.row().classes(
+                            'w-full items-center justify-between no-wrap '
+                            'border rounded px-2 py-1 hover:bg-slate-50'):
+                        with ui.column().classes('gap-0'):
+                            ui.label(campo['etiqueta']).classes('text-sm')
+                            ui.label(campo['descripcion'] or campo['tipo']) \
+                                .classes('text-xs text-slate-400')
+                        ui.button('Añadir',
+                                  on_click=lambda _, i=campo['id']: _agregar_campo(i)) \
+                            .props('flat dense size=sm color=primary') \
+                            .mark(f"agregar-campo-{campo['id']}")
 
     def guardar_campo():
         etiqueta = (nuevo_campo['etiqueta'] or '').strip()
@@ -620,25 +728,42 @@ def page_reports_manager():
             return
         interno = _nombre_interno(etiqueta)
         with get_db_session() as db:
-            if db.query(MetaVariable).filter_by(nombre_interno=interno).first():
-                ui.notify(f'Ya existe un campo llamado «{etiqueta}»', type='warning')
+            ya = db.query(MetaVariable).filter_by(nombre_interno=interno).first()
+            if ya:
+                # No se crea un duplicado ni se deja al usuario con un error
+                # seco: se añade el que ya está, que es lo que quería.
+                nuevo_informe['variables_config'].setdefault(str(ya.id), '')
+                ui.notify(f'«{ya.etiqueta_visual}» ya existía; se añadió ese.',
+                          type='info')
+                dialogo_campo.close()
+                render_ui()
                 return
-            db.add(MetaVariable(
+            campo = MetaVariable(
                 nombre_interno=interno, etiqueta_visual=etiqueta,
                 tipo_dato=nuevo_campo['tipo'], ambito=AMBITO_FICHA,
                 opciones=(nuevo_campo['opciones'] or '').strip() or None,
                 es_obligatorio=bool(nuevo_campo['obligatorio']),
                 descripcion=(nuevo_campo['descripcion'] or '').strip() or None,
-                activo=True, orden=0))
+                activo=True, orden=0)
+            db.add(campo)
             db.commit()
-        ui.notify(f'Campo «{etiqueta}» creado', type='positive')
+            ident = campo.id
+        # Se crea Y se añade: quien lo crea desde aquí lo quiere en ESTE
+        # informe. Crearlo y que no apareciera obligaría a buscarlo en la lista
+        # que se acaba de mirar.
+        nuevo_informe['variables_config'].setdefault(str(ident), '')
+        ui.notify(f'Campo «{etiqueta}» creado y añadido', type='positive')
         dialogo_campo.close()
         render_ui()
 
-    with ui.dialog() as dialogo_campo, ui.card().classes('w-[480px] max-w-full'):
-        ui.label('Nuevo campo').classes('text-lg font-bold text-slate-800')
-        ui.label('El campo queda disponible para TODOS los informes, no solo para '
-                 'este. Es una manera de clasificar, no un dato suelto.') \
+    with ui.dialog() as dialogo_campo, ui.card().classes('w-[520px] max-w-full'):
+        ui.label('Añadir un campo a la ficha') \
+            .classes('text-lg font-bold text-slate-800')
+        catalogo = ui.column().classes('w-full gap-1')
+        ui.separator().classes('my-2')
+        ui.label('…o cree uno que no exista').classes('text-sm font-bold text-slate-700')
+        ui.label('Queda disponible para TODOS los informes, no solo para este: '
+                 'es una manera de clasificar, no un dato suelto.') \
             .classes('text-xs text-slate-500')
         ui.input('Nombre del campo *').bind_value(nuevo_campo, 'etiqueta') \
             .classes('w-full').mark('nombre-campo')
@@ -1172,9 +1297,10 @@ def page_reports_manager():
                         .mark('alta-campo-ficha') \
                         .tooltip('Crear un campo nuevo sin salir de aquí')
                 _pintar_campos(
-                    'La ficha está vacía, y así empieza siempre: los campos que '
-                    'describen un informe los decide cada entidad, no el programa. '
-                    'Cree el primero con el «+».')
+                    'Este informe todavía no tiene campos de ficha. Con el «+» '
+                    'se añaden los que ya existen —para no volver a crearlos— o '
+                    'se crea uno nuevo. Los campos que describen un informe los '
+                    'decide cada entidad, no el programa.')
 
             ui.button('Guardar', on_click=guardar).classes('mt-6 w-full bg-slate-900 text-white')
 

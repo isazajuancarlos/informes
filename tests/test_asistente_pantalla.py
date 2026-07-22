@@ -367,12 +367,78 @@ async def test_la_ficha_empieza_VACIA(user: User):
 
     await user.open("/")
     user.find(marker="nuevo-informe").click()
-    await user.should_see("La ficha está vacía")
+    await user.should_see("todavía no tiene campos de ficha")
 
     # Y se puede llenar desde aquí mismo.
     user.find(marker="alta-campo-ficha").click()
-    await user.should_see("Nuevo campo")
+    await user.should_see("Añadir un campo a la ficha")
+    await user.should_see("No hay más campos creados")   # el catálogo vacío
     _solo(user, "nombre-campo").set_value("Subsistema")
     user.find("Crear campo").click()
-    assert user.notify.contains("creado"), user.notify.messages
+    assert user.notify.contains("creado y añadido"), user.notify.messages
     await user.should_see("Subsistema")
+
+
+async def test_lo_que_YA_EXISTE_se_ofrece_antes_de_dejar_crearlo(user: User):
+    """Para no repetir. Un formulario de creación en primer plano invita a
+    escribir el nombre de un campo que ya está, y el catálogo acaba con
+    «Subsistema», «SUBSISTEMA» y «Sub-sistema»: tres columnas para el mismo dato
+    y ya no se puede agrupar por ninguna.
+    """
+    from app.core.database import get_db_session
+    from app.models.meta_tables import AMBITO_FICHA, MetaVariable
+    from app.ui.reports_manager import page_reports_manager
+
+    with get_db_session() as db:
+        db.add(MetaVariable(nombre_interno='area_tematica',
+                            etiqueta_visual='Área temática', tipo_dato='TEXTO',
+                            ambito=AMBITO_FICHA, es_obligatorio=False, activo=True))
+        db.commit()
+        ident = db.query(MetaVariable).filter_by(
+            nombre_interno='area_tematica').first().id
+
+    @ui.page("/")
+    def _():
+        page_reports_manager()
+
+    await user.open("/")
+    user.find(marker="nuevo-informe").click()
+    # No aparece en la ficha por defecto: un campo está en los informes que lo
+    # llevan, no en todos.
+    await user.should_see("todavía no tiene campos de ficha")
+
+    user.find(marker="alta-campo-ficha").click()
+    await user.should_see("Área temática")
+    user.find(marker=f"agregar-campo-{ident}").click()
+    await user.should_see("Área temática")
+
+
+async def test_crear_uno_que_YA_EXISTE_añade_el_que_hay_en_vez_de_fallar(user: User):
+    """Un error seco deja a quien lo escribió sin saber qué hacer; lo que quería
+    era tener ese campo en su informe."""
+    from app.core.database import get_db_session
+    from app.models.meta_tables import AMBITO_FICHA, MetaVariable
+    from app.ui.reports_manager import page_reports_manager
+
+    with get_db_session() as db:
+        if not db.query(MetaVariable).filter_by(nombre_interno='linea_base').first():
+            db.add(MetaVariable(nombre_interno='linea_base',
+                                etiqueta_visual='Línea base', tipo_dato='TEXTO',
+                                ambito=AMBITO_FICHA, es_obligatorio=False,
+                                activo=True))
+            db.commit()
+
+    @ui.page("/")
+    def _():
+        page_reports_manager()
+
+    await user.open("/")
+    user.find(marker="nuevo-informe").click()
+    user.find(marker="alta-campo-ficha").click()
+    _solo(user, "nombre-campo").set_value("  LÍNEA BASE  ")
+    user.find("Crear campo").click()
+    assert user.notify.contains("ya existía"), user.notify.messages
+
+    with get_db_session() as db:
+        assert db.query(MetaVariable).filter_by(
+            nombre_interno='linea_base').count() == 1, "no puede duplicarse"
