@@ -349,3 +349,139 @@ def test_el_verificador_de_patrones_DISCRIMINA():
 
     # Y comprobado que vuelve a estar sano, o el resto del banco mentiría.
     assert comprobar("MENSUAL", "M<15")[0] == "OK"
+
+
+# --------------------------------------------------------------------------
+# El nombre de la periodicidad es una AFIRMACIÓN, y el motor sabe contar
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("clave,regla,ok", [
+    ("ANUAL", {"modo": "ESPECIFICO", "meses": [3], "dia_corte": 15}, True),
+    # Un informe anual entregado dos veces al año no es anual. Ni con dos días
+    # en el mismo mes, ni con el mismo día en dos meses.
+    ("ANUAL", {"modo": "ESPECIFICO", "meses": [3], "dias_corte": [5, 20]}, False),
+    ("ANUAL", {"modo": "ESPECIFICO", "meses": [3, 9], "dia_corte": 5}, False),
+    ("MENSUAL", {"modo": "ESPECIFICO", "meses": TODOS, "dia_corte": 15}, True),
+    ("MENSUAL", {"modo": "ESPECIFICO", "meses": TODOS,
+                 "dias_corte": [7, 10, 20]}, False),
+    # En la quincenal la multiplicidad NO es una excepción: es la definición.
+    ("QUINCENAL", {"modo": "ESPECIFICO", "meses": TODOS, "dias_corte": [15, 30],
+                   "usar_ultimo_dia_en_meses_cortos": True}, True),
+    ("TRIMESTRAL", {"modo": "ESPECIFICO", "meses": [3, 6, 9, 12],
+                    "dia_corte": 15}, True),
+    ("TRIMESTRAL", {"modo": "ESPECIFICO", "meses": TODOS, "dia_corte": 15}, False),
+])
+def test_la_regla_tiene_que_generar_LO_QUE_SU_NOMBRE_PROMETE(clave, regla, ok):
+    r = validar({**regla, **INICIO}, periodicidad=clave)
+    assert r.se_puede_guardar is ok, (clave, r.errores)
+
+
+def test_cuando_el_nombre_no_cuadra_se_SUGIERE_el_correcto():
+    """No se rechaza la FORMA —dos entregas al año es legítimo— sino el NOMBRE.
+    Decir solo «no cuadra» deja al usuario adivinando."""
+    r = validar({"modo": "ESPECIFICO", "meses": [3], "dias_corte": [5, 20],
+                 **INICIO}, periodicidad="ANUAL")
+    assert not r.se_puede_guardar
+    assert "Semestral" in " ".join(r.errores), r.errores
+
+
+def test_sin_declarar_periodicidad_no_se_exige_nada():
+    """El formulario de una sola página no la pasa, y no puede empezar a
+    rechazar reglas que antes guardaba."""
+    r = validar({"modo": "ESPECIFICO", "meses": [3], "dias_corte": [5, 20], **INICIO})
+    assert r.se_puede_guardar, r.errores
+
+
+def test_una_periodicidad_de_numero_VARIABLE_no_se_comprueba():
+    """Semanal puede dar 52 o 53, y con dos días marcados el doble. Exigirle un
+    número fijo marcaría como error algo perfectamente correcto."""
+    r = validar({"modo": "SEMANAL", "dias_semana": [0, 3], **INICIO},
+                periodicidad="SEMANAL")
+    assert r.se_puede_guardar, r.errores
+
+
+def test_el_conteo_arranca_en_la_VIGENCIA_y_no_en_el_ano_natural():
+    """Una regla que empieza en julio tendría la mitad de vencimientos en su
+    primer año natural, y saldría marcada por una razón falsa."""
+    r = validar({"modo": "ESPECIFICO", "meses": TODOS, "dia_corte": 15,
+                 "fecha_inicio": "2026-07-01"}, periodicidad="MENSUAL")
+    assert r.se_puede_guardar, r.errores
+
+
+# --------------------------------------------------------------------------
+# La jornada la declara la entidad; los festivos son otra cosa
+# --------------------------------------------------------------------------
+
+def dias_generados(regla, anio=2026):
+    return len(fechas(regla, anio, anio))
+
+
+def test_un_diario_puede_ser_de_domingo_a_domingo_o_de_lunes_a_viernes():
+    """«Diario» no significa lo mismo en todas partes. En una entidad pública
+    suele ser de lunes a viernes; en una privada puede incluir el sábado."""
+    assert dias_generados({"modo": "CICLICO", "intervalo": 1, **INICIO}) == 365
+    assert dias_generados({"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4],
+                           **INICIO}) == 261
+    assert dias_generados({"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4, 5],
+                           **INICIO}) == 313
+
+
+def test_omitir_festivos_NO_borra_los_sabados_de_una_jornada_que_los_trabaja():
+    """El defecto que tuvo la primera versión: se comprobaba `_es_habil`, que
+    lleva dentro la regla «lunes a viernes», así que una jornada de lunes a
+    sábado perdía TODOS los sábados. El calendario imponiendo su jornada a la
+    del cliente.
+
+    Los días que la entidad trabaja los declara ella; lo que el calendario
+    aporta es qué días son festivos.
+    """
+    lv = dias_generados({"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4],
+                         "omitir_festivos": True, **INICIO})
+    ls = dias_generados({"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4, 5],
+                         "omitir_festivos": True, **INICIO})
+    assert ls > lv, f"lunes a sábado ({ls}) debe superar a lunes a viernes ({lv})"
+    assert ls - lv > 45, "se perdieron sábados"
+
+
+def test_un_festivo_NO_genera_una_entrega_que_haya_que_poner_otro_dia():
+    """Omitir no es ajustar. Tratar el festivo como los otros dos ajustes
+    pondría el día siguiente DOS entregas —la del festivo y la suya propia— y
+    eso es un incumplimiento inventado."""
+    from app.services.scheduler import AJUSTE_OMITIR
+
+    regla = {"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4],
+             "omitir_festivos": True, **INICIO}
+    venc = fechas(regla, 2026, 2026)
+    assert date(2026, 1, 1) not in venc, "el 1 de enero es festivo"
+    assert date(2026, 1, 2) in venc
+
+    completos = [v for v in G.obtener_vencimientos_para_fecha(date(2026, 1, 2), regla)]
+    assert completos[0].ajuste == AJUSTE_OMITIR
+    assert not completos[0].se_movio, "omitir no mueve nada"
+
+
+def test_sin_omitir_festivos_el_informe_se_entrega_igual():
+    """Hay obligaciones diarias que no perdonan el festivo. Que se pueda omitir
+    no significa que se omita siempre."""
+    con = dias_generados({"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4],
+                          "omitir_festivos": True, **INICIO})
+    sin = dias_generados({"modo": "SEMANAL", "dias_semana": [0, 1, 2, 3, 4], **INICIO})
+    assert sin > con and sin - con == 19, f"{sin} vs {con}"
+
+
+def test_el_cuadro_de_posibilidades_NO_promete_nada_que_el_sistema_no_haga():
+    """El cuadro se genera ejecutando el motor, no escribiéndolo.
+
+    Un cuadro escrito a mano envejece y acaba prometiendo lo que el sistema ya
+    no hace — y es lo que se le enseña a un cliente. Esta prueba lo regenera en
+    cada corrida: si una fila deja de poder crearse, se cae.
+    """
+    from herramientas.cuadro_posibilidades import FILAS, al_anio
+
+    rotas = []
+    for dimension, posibilidad, regla, _ in FILAS:
+        r = validar(regla)
+        if not r.se_puede_guardar or al_anio(regla) == 0:
+            rotas.append(f"{dimension}/{posibilidad}: {r.errores}")
+    assert not rotas, rotas
+    assert len(FILAS) >= 26, "el cuadro encogió"

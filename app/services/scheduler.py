@@ -30,6 +30,13 @@ AJUSTE_ANTICIPADO = 'ANTICIPADO'
 #: Período de gracia: se admite entregar hasta el hábil SIGUIENTE. El
 #: vencimiento sigue siendo el día nominal; lo que se amplía es el plazo.
 AJUSTE_GRACIA = 'GRACIA'
+#: El vencimiento NO EXISTE ese día. No se mueve ni antes ni después: no lo hay.
+#:
+#: Es lo que significa «informe diario en días laborales»: un festivo no genera
+#: un informe que haya que entregar otro día — genera CERO informes. Tratarlo
+#: como los otros dos ajustes produciría el lunes siguiente dos entregas, una
+#: por el festivo y otra por el propio lunes, que es un incumplimiento inventado.
+AJUSTE_OMITIR = 'OMITIR'
 
 
 @dataclass(frozen=True)
@@ -258,6 +265,17 @@ class GeneradorTareas:
             return Vencimiento(nominal,
                                GeneradorTareas.mover_a_habil_siguiente(nominal),
                                AJUSTE_GRACIA)
+        if config.get('omitir_festivos'):
+            # Un festivo no genera obligación. Los días de la semana que la
+            # entidad trabaja ya los declaró en `dias_semana`: aquí NO se
+            # descartan sábados, porque hay empresas que trabajan el sábado.
+            #
+            # Comprobar `_es_habil` en vez de `_es_festivo` borraba todos los
+            # sábados de una jornada de lunes a sábado — el calendario imponiendo
+            # su jornada a la del cliente.
+            if _get_motor()._es_festivo(nominal):
+                return None
+            return Vencimiento(nominal, nominal, AJUSTE_OMITIR)
         if config.get('ajuste_habil_anterior') or config.get('mover_habil_anterior'):
             return Vencimiento(nominal,
                                GeneradorTareas.mover_a_habil_anterior(nominal),
@@ -303,7 +321,9 @@ class GeneradorTareas:
                 diff = (fecha_evaluar - inicio_dt).days
                 toca = (intervalo == 0 and diff == 0) or (intervalo > 0 and diff % intervalo == 0)
                 if toca:
-                    vencimientos.append(GeneradorTareas._con_ajuste(fecha_evaluar, config))
+                    v = GeneradorTareas._con_ajuste(fecha_evaluar, config)
+                    if v is not None:
+                        vencimientos.append(v)
 
         # ESPECÍFICO
         elif modo == 'ESPECIFICO':
@@ -326,8 +346,9 @@ class GeneradorTareas:
                 for nominal in GeneradorTareas._nominales_del_mes(
                         fecha_evaluar.year, fecha_evaluar.month, config):
                     if nominal == fecha_evaluar:
-                        vencimientos.append(
-                            GeneradorTareas._con_ajuste(nominal, config))
+                        v = GeneradorTareas._con_ajuste(nominal, config)
+                        if v is not None:
+                            vencimientos.append(v)
                         break  # un vencimiento por día, aunque dos días coincidan
 
         # FECHAS EXPLÍCITAS
@@ -343,7 +364,9 @@ class GeneradorTareas:
                 except (ValueError, TypeError):
                     continue  # una fecha ilegible no invalida las demás
                 if nominal == fecha_evaluar:
-                    vencimientos.append(GeneradorTareas._con_ajuste(nominal, config))
+                    v = GeneradorTareas._con_ajuste(nominal, config)
+                    if v is not None:
+                        vencimientos.append(v)
                     break
 
         # SEMANAL
@@ -361,7 +384,9 @@ class GeneradorTareas:
                     # Ya es hábil por construcción: no hay ajuste que aplicar.
                     vencimientos.append(Vencimiento(nominal, nominal, AJUSTE_NINGUNO))
             elif fecha_evaluar.weekday() in config.get('dias_semana', []):
-                vencimientos.append(GeneradorTareas._con_ajuste(fecha_evaluar, config))
+                v = GeneradorTareas._con_ajuste(fecha_evaluar, config)
+                if v is not None:
+                    vencimientos.append(v)
 
         # HORAS
         elif modo == 'HOURLY':

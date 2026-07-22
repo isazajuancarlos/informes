@@ -53,6 +53,19 @@ class MotorReglasDinamicas:
                 f"opera sin festivos, constrúyalo con sin_festivos=True."
             ) from e
 
+    def _es_festivo(self, fecha: date) -> bool:
+        """Solo festivo. NO incluye fines de semana, y esa es la diferencia.
+
+        `_es_habil` lleva dentro la regla «lunes a viernes», que es la jornada de
+        una entidad pública colombiana — no una ley del calendario. Una empresa
+        privada puede trabajar de lunes a sábado, y para ella el sábado es un día
+        laboral con un festivo posible.
+
+        Quién trabaja qué días lo declara la entidad al elegir los días de la
+        semana. Lo que el calendario aporta es qué días son festivos.
+        """
+        return fecha in self.festivos
+
     def _es_habil(self, fecha: date) -> bool:
         """Verifica si es hábil (Lunes-Viernes y No Festivo)"""
         return (fecha.weekday() < 5) and (fecha not in self.festivos)

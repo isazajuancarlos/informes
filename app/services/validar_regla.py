@@ -97,8 +97,13 @@ def campos_hasta(paso: int) -> set:
     return decididos
 
 
-def validar(config: dict, respondidos: set | None = None) -> Resultado:
+def validar(config: dict, respondidos: set | None = None,
+            periodicidad: str | None = None) -> Resultado:
     """Comprueba una regla de periodicidad. No toca la base de datos.
+
+    `periodicidad` es el nombre que el usuario le dio —«anual», «trimestral»—.
+    Si se da, se comprueba que la regla genere lo que ese nombre PROMETE: el
+    nombre es una afirmación y el motor sabe contar.
 
     `respondidos` limita la revisión a los campos que el usuario ya ha tenido
     ocasión de contestar. Se usa en el asistente para revisar página a página;
@@ -143,6 +148,9 @@ def validar(config: dict, respondidos: set | None = None) -> Resultado:
                 "Hay varias formas de indicar el día contestadas a la vez ("
                 + ", ".join(FORMAS_DEL_DIA[f] for f in formas)
                 + "). Son excluyentes: solo se aplicará una.")
+
+    if not r.errores and periodicidad and respondidos is None:
+        _coincide_con_su_nombre(config, periodicidad, r)
 
     # La comprobación que cubre lo que no se ha imaginado: ¿genera algo?
     # Se hace al final y solo si no hay errores ya explicados, para no repetir
@@ -486,3 +494,50 @@ def _lista(meses):
     if len(nombres) == 1:
         return nombres[0]
     return ", ".join(nombres[:-1]) + " ni " + nombres[-1]
+
+
+def _coincide_con_su_nombre(config, clave, r):
+    """¿La regla genera lo que su nombre promete?
+
+    Un informe ANUAL entregado dos veces al año no es anual. Hasta ahora eso se
+    guardaba en silencio: la periodicidad era una etiqueta del formulario y nada
+    la comprobaba contra lo que la regla produce de verdad.
+
+    No se rechaza la FORMA —dos entregas al año es una obligación legítima— sino
+    el NOMBRE, y se dice cuál corresponde. Es lo mismo que «día 31 con excepción»
+    frente a «último día del mes»: el registro tiene que decir lo que la norma
+    dice, porque dentro de un año eso es lo único que quedará.
+    """
+    from datetime import date, timedelta
+
+    from app.services.periodicidad import CATALOGO
+    from app.services.scheduler import GeneradorTareas
+
+    p = CATALOGO.get(clave)
+    if p is None or p.al_anio is None:
+        return  # su número depende de lo que se conteste; no hay nada que exigir
+
+    # Se cuenta sobre un año completo empezando en la vigencia, no sobre el año
+    # natural: una regla que arranca en julio tendría la mitad de vencimientos
+    # en su primer año natural y saldría marcada por una razón falsa.
+    try:
+        desde = date.fromisoformat(str(config.get("fecha_inicio")))
+    except (ValueError, TypeError):
+        return
+    hasta = date(desde.year + 1, desde.month, desde.day) - timedelta(days=1)
+
+    total, dia = 0, desde
+    while dia <= hasta:
+        total += len(GeneradorTareas.obtener_vencimientos_para_fecha(dia, config))
+        dia += timedelta(days=1)
+
+    if total == p.al_anio:
+        return
+
+    sugerida = next((q.nombre for q in CATALOGO.values() if q.al_anio == total), None)
+    arreglo = (f" Con esa cantidad, la periodicidad que corresponde es "
+               f"«{sugerida}»." if sugerida else
+               " Revise los meses y los días seleccionados.")
+    r.errores.append(
+        f"Marcó «{p.nombre}», que son {p.al_anio} entrega(s) al año, pero esta "
+        f"regla genera {total}.{arreglo}")

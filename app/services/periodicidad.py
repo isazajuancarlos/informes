@@ -72,7 +72,8 @@ GRUPOS = {
 class Periodicidad:
     """Una periodicidad tal como la nombra quien crea la obligación."""
 
-    def __init__(self, nombre, modo, pregunta, fija=None, ayuda=""):
+    def __init__(self, nombre, modo, pregunta, fija=None, ayuda="",
+                 al_anio=None, multiples_dias=False):
         self.nombre = nombre
         self.modo = modo
         #: Grupos de `GRUPOS` que hay que preguntar, EN ORDEN.
@@ -83,6 +84,16 @@ class Periodicidad:
         #: la puerta a contradecirse.
         self.fija = fija or {}
         self.ayuda = ayuda
+        #: Cuántos vencimientos al año PROMETE este nombre. `None` cuando
+        #: depende de lo que se conteste (semanal, cada N días, sin patrón).
+        #:
+        #: El nombre de la periodicidad es una AFIRMACIÓN, y el motor sabe
+        #: contar. Sin esto, «anual» con dos fechas se guardaba en silencio y
+        #: nadie sabía, al leerlo un año después, si la norma exigía una entrega
+        #: o dos.
+        self.al_anio = al_anio
+        #: Si tiene sentido que ocurra varias veces dentro de su periodo.
+        self.multiples_dias = multiples_dias
 
     def regla_base(self) -> dict:
         """El punto de partida de la regla: el modo y lo que ya está decidido."""
@@ -97,28 +108,34 @@ CATALOGO = {
         ayuda="Todos los días. Si además ocurre varias veces al día, use "
               "«Varias veces al día»."),
     "VARIAS_AL_DIA": Periodicidad(
-        "Varias veces al día", "HOURLY", ["franja_horaria"],
+        "Varias veces al día", "HOURLY", ["franja_horaria"], al_anio=None, multiples_dias=True,
         ayuda="Se pregunta la franja de horas, no una fecha. El ajuste a día "
               "hábil no aplica: una franja no se traslada a otro día."),
     "SEMANAL": Periodicidad(
-        "Semanal", "SEMANAL", ["dias_semana", "ajuste"],
+        "Semanal", "SEMANAL", ["dias_semana", "ajuste"], multiples_dias=True,
         ayuda="Se pregunta el día de la SEMANA, no un número de día ni una "
               "fecha."),
     "MENSUAL": Periodicidad(
-        "Mensual", "ESPECIFICO", ["dia", "ajuste"],
+        "Mensual", "ESPECIFICO", ["dia", "ajuste"], al_anio=12, multiples_dias=True,
         fija={"meses": list(range(1, 13))},
         ayuda="Todos los meses. Solo se pregunta qué día."),
+    "QUINCENAL": Periodicidad(
+        "Quincenal", "ESPECIFICO", ["dia", "ajuste"],
+        fija={"meses": list(range(1, 13))}, al_anio=24, multiples_dias=True,
+        ayuda="Dos veces al mes. La multiplicidad de días no es una excepción "
+              "aquí: es la definición. Lo normal es «el 15 y el último» o «el 7 "
+              "y el 20»."),
     "BIMESTRAL": Periodicidad(
-        "Bimestral", "ESPECIFICO", ["meses", "dia", "ajuste"],
+        "Bimestral", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=6,
         ayuda="Seis entregas al año. Se preguntan los meses y el día."),
     "TRIMESTRAL": Periodicidad(
-        "Trimestral", "ESPECIFICO", ["meses", "dia", "ajuste"],
+        "Trimestral", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=4,
         ayuda="Cuatro entregas al año."),
     "SEMESTRAL": Periodicidad(
-        "Semestral", "ESPECIFICO", ["meses", "dia", "ajuste"],
+        "Semestral", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=2,
         ayuda="Dos entregas al año."),
     "ANUAL": Periodicidad(
-        "Anual", "ESPECIFICO", ["meses", "dia", "ajuste"],
+        "Anual", "ESPECIFICO", ["meses", "dia", "ajuste"], al_anio=1,
         ayuda="Una vez al año: se pregunta el MES y el DÍA."),
     "PLURIANUAL": Periodicidad(
         "Cada varios años", "ESPECIFICO", ["cada_n_anios", "meses", "dia", "ajuste"],
