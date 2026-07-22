@@ -56,12 +56,18 @@ def test_ciclico_con_intervalo_negativo_no_se_guarda():
     assert any("negativo" in e for e in r.errores)
 
 
-def test_horas_con_inicio_posterior_al_fin_no_se_guarda():
-    """Turno nocturno mal expresado: 18→8 daba 0 vencimientos sin avisar."""
+def test_el_turno_que_cruza_la_MEDIANOCHE_si_se_puede_guardar():
+    """Antes se rechazaba y se le pedía al administrador que partiera su
+    obligación en dos franjas para caber en el sistema.
+
+    Eso era decidir por él qué forma podía tener su obligación. El sistema tiene
+    que admitir la forma que la obligación tenga, no al revés: 18→8 es un turno
+    nocturno, no un error. Se avisa por si fue un dedazo, y se guarda.
+    """
     r = validar({"modo": "HOURLY", "hora_inicio": 18, "hora_fin": 8,
                  "intervalo_horas": 1, "fecha_inicio": "2026-01-01"})
-    assert not r.se_puede_guardar
-    assert any("nocturno" in e for e in r.errores), r.errores
+    assert r.se_puede_guardar, r.errores
+    assert any("medianoche" in a for a in r.advertencias), r.advertencias
 
 
 def test_especifico_sin_meses_no_se_guarda():
@@ -122,11 +128,60 @@ def test_intervalo_cero_avisa_de_que_ocurre_UNA_VEZ():
     assert any("UNA SOLA VEZ" in a for a in r.advertencias)
 
 
-def test_dia_de_corte_alto_avisa_de_los_meses_cortos():
-    """Quien pone 31 espera el 31, y en febrero verá el 28."""
+def test_un_dia_que_algun_mes_NO_TIENE_se_bloquea_hasta_que_lo_decida_el_usuario():
+    """«El día 30 de cada mes» no puede guardarse tal cual: febrero no lo tiene.
+
+    Antes era una advertencia y el motor usaba el último día real. Eso es
+    rellenar un dato que el administrador no dio: quien escribe 30 espera el 30,
+    y en febrero se encuentra el 28 sin haberlo decidido. Un valor de relleno
+    produce un sistema que PARECE funcionar, y eso es peor que uno que se queja.
+
+    Descartar el mes tampoco vale: entonces desaparece una obligación y nadie la
+    ve hasta que la pregunta un ente de control.
+
+    Se bloquea y se le devuelven las tres salidas, que la decisión es suya.
+    """
+    r = validar(mensual(dia_corte=30))
+    assert not r.se_puede_guardar
+    assert any("No existe el día 30 en febrero" in e for e in r.errores), r.errores
+    # El error dice QUÉ hacer, no solo qué está mal.
+    assert any("último día" in e and "quitar" in e for e in r.errores), r.errores
+
+
+def test_el_dia_31_nombra_TODOS_los_meses_que_no_lo_tienen():
+    """«Hay meses sin ese día» obliga a buscarlos a ojo."""
     r = validar(mensual(dia_corte=31))
-    assert r.se_puede_guardar
-    assert any("meses más cortos" in a for a in r.advertencias)
+    assert not r.se_puede_guardar
+    texto = " ".join(r.errores)
+    for mes in ("febrero", "abril", "junio", "septiembre", "noviembre"):
+        assert mes in texto, mes
+    assert "enero" not in texto, "enero sí tiene 31: nombrarlo sería falso"
+
+
+def test_si_el_usuario_DECLARA_la_excepcion_se_guarda_y_se_confirma():
+    """El camino permisivo existe —hay obligaciones que vencen «el último
+    día»— pero hay que pedirlo."""
+    r = validar(mensual(dia_corte=30, usar_ultimo_dia_en_meses_cortos=True))
+    assert r.se_puede_guardar, r.errores
+    assert any("como usted indicó" in a for a in r.advertencias), r.advertencias
+
+
+def test_si_NINGUN_mes_seleccionado_se_queda_corto_no_se_estorba():
+    """Día 31 solo en meses de 31 no tiene ningún problema, y un validador que
+    se queja igual entrena a ignorar los avisos."""
+    r = validar({"modo": "ESPECIFICO", "meses": [1, 3, 5, 7, 8, 10, 12],
+                 "dia_corte": 31, "fecha_inicio": "2026-01-01"})
+    assert r.se_puede_guardar, r.errores
+    assert r.advertencias == [], r.advertencias
+
+
+def test_la_regla_vale_tambien_para_la_LISTA_de_dias():
+    """La comprobación vivía solo en la rama del día suelto, así que una
+    quincenal [15, 31] se colaba sin que nadie decidiera nada."""
+    r = validar({"modo": "ESPECIFICO", "meses": list(range(1, 13)),
+                 "dias_corte": [15, 31], "fecha_inicio": "2026-01-01"})
+    assert not r.se_puede_guardar
+    assert any("No existe el día 31" in e for e in r.errores), r.errores
 
 
 def test_ultimo_dia_mas_dia_de_corte_avisa_de_cual_gana():

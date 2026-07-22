@@ -72,6 +72,8 @@ def _construir_regla(datos):
                 "meses": datos['tiempo_especifico']['meses_seleccionados'],
                 "dia_corte": int(datos['tiempo_especifico']['dia_corte'] or 1),
                 "dia_habil": int(datos['tiempo_especifico'].get('dia_habil') or 0),
+                "usar_ultimo_dia_en_meses_cortos": bool(
+                    datos['tiempo_especifico'].get('usar_ultimo_dia_en_meses_cortos')),
                 "es_ultimo_dia": datos['tiempo_especifico']['es_ultimo_dia'],
                 **_banderas_desde_ajuste(datos['tiempo_especifico']['ajuste'],
                                          "ajuste_habil", "ajuste_habil_anterior"),
@@ -128,7 +130,7 @@ def page_reports_manager():
         'modo_tiempo': 'CICLICO',
         'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
         'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
-        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
+        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'usar_ultimo_dia_en_meses_cortos': False, 'ajuste': 'ninguno'},
         'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
         'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
         'variables_config': {}
@@ -176,7 +178,7 @@ def page_reports_manager():
             'modo_tiempo': 'CICLICO',
             'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
             'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
-            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
+            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'usar_ultimo_dia_en_meses_cortos': False, 'ajuste': 'ninguno'},
             'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
             'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
             'variables_config': {}
@@ -579,6 +581,18 @@ def page_reports_manager():
                             with ui.row().classes('w-full gap-4 items-center'):
                                 ui.number('Día de corte', min=1, max=31, format='%.0f', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'dia_corte').classes('w-1/3')
                                 ui.checkbox('Último día del mes', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'es_ultimo_dia')
+                            # Febrero no tiene día 30. El sistema NO decide por
+                            # el administrador: bloquea al guardar y le devuelve
+                            # las tres salidas. Esta es una de ellas, y hay que
+                            # marcarla a propósito.
+                            ui.checkbox('Si el mes no tiene ese día, usar el último',
+                                        on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_especifico'],
+                                            'usar_ultimo_dia_en_meses_cortos') \
+                                .tooltip('Con día de corte 29, 30 o 31 hay meses que no lo '
+                                         'tienen. Marque esto para que en esos meses el '
+                                         'vencimiento sea el último día, o elija otro día '
+                                         'de corte.')
                             # «Dentro de los primeros cinco días HÁBILES del mes
                             # siguiente» es de las formas más frecuentes de fijar
                             # un plazo en la norma, y no se puede expresar

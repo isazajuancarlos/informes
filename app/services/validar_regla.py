@@ -191,11 +191,33 @@ def _especifico(config, r):
         if fuera:
             r.errores.append(
                 f"Los días de corte deben estar entre 1 y 31: {fuera}")
-        elif len(set(int(d) for d in config["dias_corte"])) != len(config["dias_corte"]):
-            r.advertencias.append(
-                "Hay días de corte repetidos; solo se generará un vencimiento "
-                "por día.")
+        else:
+            if len(set(int(d) for d in config["dias_corte"])) != len(config["dias_corte"]):
+                r.advertencias.append(
+                    "Hay días de corte repetidos; solo se generará un "
+                    "vencimiento por día.")
+            # La misma regla que para el día suelto: si alguno de los días no
+            # existe en alguno de los meses, lo decide el administrador. Que la
+            # comprobación viviera solo en la rama del escalar era un agujero:
+            # `dias_corte: [15, 31]` se colaba sin decidir nada.
+            for d in sorted({int(x) for x in config["dias_corte"]}):
+                if d in (29, 30, 31):
+                    _dia_que_algunos_meses_no_tienen(config, d, r)
         return  # manda la lista; el resto no aplica
+
+    if config.get("dia_semana_mes") is not None and config.get("semana_del_mes"):
+        dia = _entero(config.get("dia_semana_mes"), -1)
+        ordinal = _entero(config.get("semana_del_mes"), 0)
+        if not 0 <= dia <= 6:
+            r.errores.append("El día de la semana debe estar entre 0 (lunes) y 6.")
+        if ordinal not in (1, 2, 3, 4, 5, -1):
+            r.errores.append(
+                "La semana del mes debe ser 1, 2, 3, 4, 5 o -1 para «la última».")
+        elif ordinal == 5:
+            r.advertencias.append(
+                "No todos los meses tienen un quinto; en esos se usará el "
+                "último. Si quería «el último», use -1.")
+        return
 
     if config.get("dia_habil"):
         n = _entero(config.get("dia_habil"), 0)
@@ -223,12 +245,7 @@ def _especifico(config, r):
         if not 1 <= dia <= 31:
             r.errores.append("El día de corte debe estar entre 1 y 31.")
         elif dia in (29, 30, 31):
-            # No es un error: el motor usa el último día real del mes. Pero si
-            # nadie lo dice, quien puso 31 espera el 31 y en febrero verá el 28.
-            r.advertencias.append(
-                f"Con día de corte {dia}, en los meses más cortos el vencimiento "
-                "será el último día del mes."
-            )
+            _dia_que_algunos_meses_no_tienen(config, dia, r)
     elif dia and dia != 1:
         # Los dos campos puestos: el motor ignora `dia_corte` en silencio.
         r.advertencias.append(
@@ -258,10 +275,14 @@ def _horas(config, r):
     if not 0 <= ini <= 23 or not 0 <= fin <= 23:
         r.errores.append("Las horas deben estar entre 0 y 23.")
     elif ini > fin:
-        r.errores.append(
-            f"La hora de inicio ({ini}) es posterior a la de fin ({fin}), y así "
-            "no se genera ningún vencimiento. Para un turno nocturno, cree dos "
-            "franjas: una hasta las 23 y otra desde las 0."
+        # NO es un error: es un turno que cruza la medianoche. Antes se
+        # rechazaba y se le pedía al administrador que partiera su obligación en
+        # dos para caber en el sistema. El sistema tiene que admitir la forma que
+        # tenga la obligación, no al revés.
+        r.advertencias.append(
+            f"La franja va de las {ini} a las {fin} del día siguiente: es un "
+            f"turno que cruza la medianoche. Si no era lo que quería, invierta "
+            f"las horas."
         )
     if intervalo < 1:
         r.errores.append("El intervalo en horas debe ser de al menos 1.")
@@ -280,3 +301,55 @@ def _horas(config, r):
 # 1 de enero, dentro de vigencia, y su entrega se adelanta al 31 de diciembre.
 # No hay nada que advertir. Mantener el aviso habría entrenado a ignorar los
 # avisos, que es el modo en que un validador deja de servir.
+
+#: Días máximos de cada mes, en el peor caso (febrero de año común).
+_DIAS_DEL_MES = {1: 31, 2: 28, 3: 31, 4: 30, 5: 31, 6: 30,
+                 7: 31, 8: 31, 9: 30, 10: 31, 11: 30, 12: 31}
+_NOMBRE_MES = {1: "enero", 2: "febrero", 3: "marzo", 4: "abril", 5: "mayo",
+               6: "junio", 7: "julio", 8: "agosto", 9: "septiembre",
+               10: "octubre", 11: "noviembre", 12: "diciembre"}
+
+
+def _dia_que_algunos_meses_no_tienen(config, dia, r):
+    """Un informe «el día 30 de cada mes» no puede guardarse tal cual.
+
+    Febrero nunca tiene un día 30. El motor usaba el último día real del mes, y
+    eso es **rellenar un dato que el administrador no dio**: quien escribió 30
+    espera el 30, y en febrero se encuentra con el 28 sin haberlo decidido. Un
+    valor de relleno produce un sistema que parece funcionar, y eso es peor que
+    uno que se queja: la queja se atiende en un minuto, la fecha inventada no se
+    nota nunca.
+
+    Tampoco vale descartar el mes en silencio: entonces desaparece una
+    obligación y nadie la ve hasta que la pregunta un ente de control.
+
+    Así que se bloquea y se le devuelve la decisión, que es suya: o declara la
+    excepción para los meses que no llegan a ese día, o elige otro día, o quita
+    esos meses de la selección. El camino permisivo sigue existiendo —hay
+    obligaciones que de verdad vencen «el último día»— pero hay que **pedirlo**.
+    """
+    meses = [m for m in (config.get("meses") or []) if isinstance(m, int)]
+    cortos = [m for m in meses if _DIAS_DEL_MES.get(m, 31) < dia]
+    if not cortos:
+        return  # ningún mes seleccionado se queda corto: nada que decidir
+
+    if config.get("usar_ultimo_dia_en_meses_cortos"):
+        # Lo pidió explícitamente. Se confirma qué va a pasar y se sigue.
+        r.advertencias.append(
+            f"En {_lista(cortos)} no hay día {dia}: el vencimiento será el "
+            f"último día del mes, como usted indicó.")
+        return
+
+    r.errores.append(
+        f"No existe el día {dia} en {_lista(cortos)}. Elija una de estas tres: "
+        f"marcar «usar el último día del mes cuando no exista», cambiar el día "
+        f"de corte, o quitar {'esos meses' if len(cortos) > 1 else 'ese mes'} "
+        f"de la selección."
+    )
+
+
+def _lista(meses):
+    nombres = [_NOMBRE_MES[m] for m in sorted(meses)]
+    if len(nombres) == 1:
+        return nombres[0]
+    return ", ".join(nombres[:-1]) + " ni " + nombres[-1]

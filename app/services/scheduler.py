@@ -142,6 +142,28 @@ class GeneradorTareas:
         return ultimo_habil
 
     @staticmethod
+    def _ordinal_de_semana(year, month, dia_semana, ordinal):
+        """El n-ésimo `dia_semana` del mes. `ordinal = -1` es el ÚLTIMO.
+
+        «El último martes» no es «el martes de la última semana»: un mes puede
+        tener cuatro o cinco martes, y la última semana puede no tenerlo. Se
+        cuentan los que hay y se toma el que toca.
+
+        Si se pide el quinto y el mes solo tiene cuatro, se usa el último — el
+        mismo criterio que el día 31 en un mes de 30. Descartarlo haría
+        desaparecer la obligación sin avisar, que es la forma cara de fallar.
+        """
+        ultimo_dia = calendar.monthrange(year, month)[1]
+        candidatos = [datetime(year, month, d).date()
+                      for d in range(1, ultimo_dia + 1)
+                      if datetime(year, month, d).date().weekday() == dia_semana]
+        if not candidatos:
+            return None
+        if ordinal < 0:
+            return candidatos[-1]
+        return candidatos[min(ordinal, len(candidatos)) - 1]
+
+    @staticmethod
     def _nominales_del_mes(year, month, config):
         """TODOS los días nominales que la regla fija en ese mes.
 
@@ -175,6 +197,16 @@ class GeneradorTareas:
         función devolvía la fecha ya ajustada, el mes al que «pertenecía» un
         vencimiento dependía del calendario de festivos.
         """
+        # «El último martes del mes», «el primer lunes». Es la forma en que se
+        # fijan las reuniones de comité y las juntas, y era el último límite
+        # arbitrario que quedaba: una obligación con esa forma no se podía
+        # crear, y el administrador tenía que enumerar las fechas a mano año
+        # tras año.
+        if config.get('dia_semana_mes') is not None and config.get('semana_del_mes'):
+            return GeneradorTareas._ordinal_de_semana(
+                year, month,
+                int(config['dia_semana_mes']), int(config['semana_del_mes']))
+
         # El n-ésimo día hábil YA es hábil por construcción, así que el ajuste
         # no tiene nada que hacer. Se resuelve primero por eso.
         if config.get('dia_habil'):
@@ -293,10 +325,22 @@ class GeneradorTareas:
             hora_ini = int(config.get('hora_inicio', 8))
             hora_fin = int(config.get('hora_fin', 18))
             intervalo = int(config.get('intervalo_horas', 1))
+
+            # La franja puede CRUZAR LA MEDIANOCHE: de 18 a 8 es un turno
+            # nocturno, no un error. Antes se rechazaba al guardar y se le decía
+            # al administrador que creara dos reglas — es decir, se decidía por
+            # él qué forma podía tener su obligación y se le pedía que la
+            # partiera para caber en el sistema.
+            #
+            # Se recorre hasta `fin + 24` y se toma el resto: así el intervalo
+            # se mantiene constante al pasar de las 23 a las 0, que es lo que
+            # hace que «cada 2 horas» siga siendo cada 2 horas.
+            final = hora_fin if hora_fin >= hora_ini else hora_fin + 24
             curr = hora_ini
-            while curr <= hora_fin and intervalo > 0:
+            while curr <= final and intervalo > 0:
                 vencimientos.append(
-                    Vencimiento(fecha_evaluar, fecha_evaluar, AJUSTE_NINGUNO, hora=curr))
+                    Vencimiento(fecha_evaluar, fecha_evaluar, AJUSTE_NINGUNO,
+                                hora=curr % 24))
                 curr += intervalo
 
         return vencimientos

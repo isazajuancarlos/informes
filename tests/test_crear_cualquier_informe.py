@@ -63,6 +63,7 @@ def test_varios_dias_de_corte_generan_uno_por_dia_y_por_mes(dias):
 
     for anio in ANIOS:
         cfg = {"modo": "ESPECIFICO", "meses": TODOS, "dias_corte": dias,
+               "usar_ultimo_dia_en_meses_cortos": True,
                "fecha_inicio": f"{anio}-01-01"}
         venc = barrer(cfg, anio)
         assert len(venc) == 12 * len(dias), f"{anio}/{dias}: {len(venc)}"
@@ -80,7 +81,10 @@ def test_una_obligacion_QUINCENAL_se_puede_expresar():
     """El 15 y el último día. Era imposible con un `dia_corte` escalar, y no es
     un caso raro: es de las periodicidades más comunes que hay."""
     for anio in ANIOS:
+        # La excepción se DECLARA: febrero no tiene 31, y el validador no deja
+        # guardar la regla hasta que el administrador diga qué hacer.
         cfg = {"modo": "ESPECIFICO", "meses": TODOS, "dias_corte": [15, 31],
+               "usar_ultimo_dia_en_meses_cortos": True,
                "ajuste_habil_anterior": True, "fecha_inicio": f"{anio}-01-01"}
         venc = barrer(cfg, anio)
         assert len(venc) == 24, f"{anio}: {len(venc)} de 24"
@@ -170,3 +174,59 @@ def test_las_formas_admitidas_estan_TODAS_cubiertas_por_el_validador():
     assert del_motor == del_validador, (
         f"solo en el motor: {del_motor - del_validador} · "
         f"solo en el validador: {del_validador - del_motor}")
+
+
+# --------------------------------------------------------------------------
+# El ordinal de día de semana: «el último martes», «el primer lunes»
+# --------------------------------------------------------------------------
+#
+# Es la forma en que se fijan las reuniones de comité y las juntas. Sin ella, el
+# administrador tenía que enumerar las fechas a mano, año tras año.
+
+def ordinal(dia, semana, anio):
+    return {"modo": "ESPECIFICO", "meses": TODOS, "dia_semana_mes": dia,
+            "semana_del_mes": semana, "fecha_inicio": f"{anio}-01-01"}
+
+
+@pytest.mark.parametrize("dia,semana", [(0, 1), (1, -1), (4, 3), (2, 2), (6, -1)])
+def test_hay_uno_por_mes_y_cae_en_el_dia_de_semana_pedido(dia, semana):
+    for anio in ANIOS:
+        venc = barrer(ordinal(dia, semana, anio), anio)
+        assert len(venc) == 12, f"{anio}: {len(venc)} de 12"
+        assert all(v.nominal.weekday() == dia for v in venc), anio
+
+
+def test_el_ULTIMO_martes_no_es_el_martes_de_la_ultima_semana():
+    """Un mes puede tener cuatro o cinco martes, y la última semana del mes
+    puede no incluir ninguno. Se cuentan los que hay."""
+    import calendar
+
+    for anio in ANIOS:
+        for v in barrer(ordinal(1, -1, anio), anio):
+            ultimo_dia = calendar.monthrange(v.nominal.year, v.nominal.month)[1]
+            # No hay ningún martes después de él en ese mes.
+            assert v.nominal.day + 7 > ultimo_dia, f"{anio}: {v.nominal}"
+
+
+def test_pedir_el_QUINTO_en_un_mes_de_cuatro_usa_el_ultimo_y_no_desaparece():
+    """Igual que el día 31 en un mes de 30. Una obligación que se esfuma es peor
+    que una mal fechada: nadie la ve hasta que la pregunta un ente de control."""
+    for anio in ANIOS:
+        venc = barrer(ordinal(1, 5, anio), anio)
+        assert len(venc) == 12, f"{anio}: {len(venc)} de 12"
+
+
+def test_el_ordinal_admite_ajuste_de_entrega_como_cualquier_otra_forma():
+    """Las formas nuevas no son ciudadanas de segunda: la distinción entre día
+    de vencimiento y día de entrega vale para todas."""
+    cfg = {**ordinal(1, -1, 2026), "ajuste_habil_anterior": True}
+    venc = barrer(cfg, 2026)
+    assert all(v.limite <= v.nominal for v in venc)
+
+
+@pytest.mark.parametrize("semana,valido", [(1, True), (5, True), (-1, True), (0, False), (7, False)])
+def test_el_validador_acota_el_ordinal(semana, valido):
+    cfg = ordinal(1, semana, 2026)
+    if semana == 0:  # 0 es falsy: la regla cae a «día de corte», que es válida
+        pytest.skip("0 no activa el modo ordinal; lo cubre el día de corte")
+    assert validar(cfg).se_puede_guardar is valido, semana
