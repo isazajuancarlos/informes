@@ -115,7 +115,7 @@ def page_org_units():
                             activo=form['activo']
                         ))
                     else:
-                        u = db.query(UnidadOrganizacional).get(form['id'])
+                        u = db.get(UnidadOrganizacional, form['id'])
                         if u:
                             u.nombre = form['nombre']
                             u.codigo = form['codigo'] or None
@@ -151,7 +151,7 @@ def page_org_units():
 
             def confirmar():
                 with get_db_session() as db:
-                    u = db.query(UnidadOrganizacional).get(fila['id'])
+                    u = db.get(UnidadOrganizacional, fila['id'])
                     if u:
                         db.delete(u)
                         db.commit()

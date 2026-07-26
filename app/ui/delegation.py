@@ -76,7 +76,7 @@ def page_delegation():
 
     def cancelar_delegacion(del_id: int):
         with get_db_session() as db:
-            d = db.query(Delegacion).get(del_id)
+            d = db.get(Delegacion, del_id)
             if d:
                 d.activo = False
                 db.commit()

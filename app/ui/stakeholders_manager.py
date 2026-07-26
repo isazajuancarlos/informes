@@ -27,7 +27,7 @@ def page_stakeholders():
         with get_db_session() as db:
             if estado['id_edicion']:
                 # --- MODO EDICIÓN ---
-                s = db.query(Stakeholder).get(estado['id_edicion'])
+                s = db.get(Stakeholder, estado['id_edicion'])
                 if not s:
                     ui.notify('Tercero no encontrado', type='negative')
                     return
@@ -95,7 +95,7 @@ def page_stakeholders():
     def confirmar_eliminar(fila):
         def eliminar():
             with get_db_session() as db:
-                s = db.query(Stakeholder).get(fila['id'])
+                s = db.get(Stakeholder, fila['id'])
                 if s:
                     db.delete(s)
                     db.commit()

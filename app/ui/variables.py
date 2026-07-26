@@ -40,7 +40,7 @@ def puede_borrarse(db, id_var):
     if en_uso:
         cuantos = db.query(ConfiguracionInformeVariable).filter_by(
             variable_id=id_var).count()
-        informe = db.query(Informe).get(en_uso.informe_id)
+        informe = db.get(Informe, en_uso.informe_id)
         nombre = informe.nombre if informe else f"#{en_uso.informe_id}"
         return False, (
             f"No se puede eliminar: {cuantos} informe(s) lo tienen "
@@ -109,7 +109,7 @@ def page_variables():
                 ui.notify(mensaje, type='negative', close_button=True, multi_line=True)
                 return
 
-            var_obj = db.query(MetaVariable).get(id_var)
+            var_obj = db.get(MetaVariable, id_var)
             if var_obj:
                 db.delete(var_obj)
                 db.commit()
@@ -126,7 +126,7 @@ def page_variables():
         with get_db_session() as db:
             # --- MODO EDICIÓN ---
             if estado['id_edicion']:
-                var_obj = db.query(MetaVariable).get(estado['id_edicion'])
+                var_obj = db.get(MetaVariable, estado['id_edicion'])
                 if var_obj:
                     var_obj.nombre_interno = nombre.value
                     var_obj.etiqueta_visual = etiqueta.value

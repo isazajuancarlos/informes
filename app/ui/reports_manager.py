@@ -408,7 +408,7 @@ def page_reports_manager():
         estado['id_edicion'] = id_inf
         estado['modo'] = 'FORMULARIO'
         with get_db_session() as db:
-            inf = db.query(Informe).get(id_inf)
+            inf = db.get(Informe, id_inf)
             nuevo_informe['nombre'] = inf.nombre
             nuevo_informe['descripcion'] = inf.descripcion
             nuevo_informe['responsables'] = [str(u.id) for u in inf.responsables]
@@ -503,7 +503,7 @@ def page_reports_manager():
 
         with get_db_session() as db:
             if estado['id_edicion']:
-                inf = db.query(Informe).get(estado['id_edicion'])
+                inf = db.get(Informe, estado['id_edicion'])
                 inf.nombre = nuevo_informe['nombre']; inf.descripcion = nuevo_informe['descripcion']
                 inf.recurrencia_json = rec_final; inf.datos_generales = datos_gen
                 # Los siete campos de ficha que se asignaban aquí —subsistema,
@@ -542,7 +542,7 @@ def page_reports_manager():
             # Las tres listas de la pantalla son el MISMO hecho con distinto rol:
             # quién produce (interno), quién consume y quién recibe (externos).
             for orden, uid in enumerate(nuevo_informe['responsables']):
-                if db.query(Usuario).get(int(uid)):
+                if db.get(Usuario, int(uid)):
                     db.add(Participacion(informe_id=inf.id, usuario_id=int(uid),
                                          rol=ROL_ORIGEN, orden=orden))
 
@@ -554,11 +554,11 @@ def page_reports_manager():
                         continue  # clave ilegible: no se adivina de quién es
                     prefijo, ident = parte
                     if prefijo == PREFIJO_EXTERNO:
-                        if db.query(Stakeholder).get(ident):
+                        if db.get(Stakeholder, ident):
                             db.add(Participacion(informe_id=inf.id,
                                                  stakeholder_id=ident,
                                                  rol=rol, orden=orden))
-                    elif db.query(Usuario).get(ident):
+                    elif db.get(Usuario, ident):
                         db.add(Participacion(informe_id=inf.id, usuario_id=ident,
                                              rol=rol, orden=orden))
 
@@ -861,7 +861,7 @@ def page_reports_manager():
     def ver_detalle(id_inf):
         contenedor_info_detalle.clear()
         with get_db_session() as db:
-            inf = db.query(Informe).get(id_inf)
+            inf = db.get(Informe, id_inf)
             if not inf: return
             rec = inf.recurrencia_json or {}
             
@@ -906,12 +906,12 @@ def page_reports_manager():
     def procesar_desactivacion():
         if not motivo_input['texto'].strip(): ui.notify('Motivo obligatorio', type='negative'); return
         with get_db_session() as db:
-            inf = db.query(Informe).get(estado['id_desactivar'])
+            inf = db.get(Informe, estado['id_desactivar'])
             inf.activo = False; inf.tipo_novedad = "Desactivación"; inf.fecha_desactivacion = datetime.now(); inf.motivo_desactivacion = motivo_input['texto']; db.commit()
         ui.notify('Desactivado', type='warning'); dialogo_motivo.close(); render_ui()
     def activar_informe(id_inf):
         with get_db_session() as db:
-            inf = db.query(Informe).get(id_inf)
+            inf = db.get(Informe, id_inf)
             inf.activo = True; inf.tipo_novedad = "Actualización"; inf.fecha_actualizacion = datetime.now(); inf.motivo_desactivacion = None; db.commit()
         ui.notify('Reactivado', type='positive'); render_ui()
     def manejar_toggle(fila):

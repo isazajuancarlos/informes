@@ -77,7 +77,7 @@ def page_conjuntos_datos():
                 )
                 return
 
-            conjunto = db.query(ConjuntoDatos).get(id_conjunto)
+            conjunto = db.get(ConjuntoDatos, id_conjunto)
             if conjunto:
                 db.delete(conjunto)
                 db.commit()
@@ -94,7 +94,7 @@ def page_conjuntos_datos():
         with get_db_session() as db:
             if estado['id_edicion']:
                 # Editar
-                conjunto = db.query(ConjuntoDatos).get(estado['id_edicion'])
+                conjunto = db.get(ConjuntoDatos, estado['id_edicion'])
                 if conjunto:
                     conjunto.nombre = form['nombre']
                     conjunto.descripcion = form['descripcion']

@@ -28,7 +28,7 @@ def page_rules():
     # --- 2. ACCIONES ---
     def borrar_regla(id_regla):
         with get_db_session() as db:
-            r = db.query(MetaRegla).get(id_regla)
+            r = db.get(MetaRegla, id_regla)
             if r:
                 db.delete(r)
                 db.commit()

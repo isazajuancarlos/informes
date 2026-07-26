@@ -74,8 +74,8 @@ def page_entregas_manuales():
                 db.commit()
 
                 # Obtener datos para notificaciones
-                informe = db.query(Informe).get(int(form['informe_id']))
-                usuario = db.query(Usuario).get(int(form['usuario_id']))
+                informe = db.get(Informe, int(form['informe_id']))
+                usuario = db.get(Usuario, int(form['usuario_id']))
                 informe_nombre = informe.nombre if informe else '?'
                 usuario_email = usuario.email if usuario else None
                 usuario_nombre = usuario.nombre if usuario else '?'

@@ -60,7 +60,7 @@ def page_users_manager():
             es_admin = (form['rol_sistema'] == 'ADMIN')
             
             if estado['id_edicion']:
-                u = db.query(Usuario).get(estado['id_edicion'])
+                u = db.get(Usuario, estado['id_edicion'])
                 u.nombre = form['nombre']
                 u.email = form['email']
                 u.rol_sistema = form['rol_sistema']

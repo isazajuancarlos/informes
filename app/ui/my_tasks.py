@@ -61,7 +61,7 @@ def page_my_tasks():
 
             # Actualizar BD y cerrar tarea
             with get_db_session() as db:
-                tarea = db.query(EntregaEsperada).get(tarea_id)
+                tarea = db.get(EntregaEsperada, tarea_id)
                 hora_actual = datetime.now()
                 
                 # Determinar estado final (Cumplido vs Extemporáneo)
@@ -143,7 +143,7 @@ def page_my_tasks():
                     Delegacion.fecha_fin >= t.fecha_programada
                 ).first()
                 if delegacion:
-                    delegante = db.query(Usuario).get(delegacion.delegante_id)
+                    delegante = db.get(Usuario, delegacion.delegante_id)
                     if delegante:
                         delegante_nombre = delegante.nombre
 
@@ -201,7 +201,7 @@ def page_my_tasks():
             
             # Preparar datos para abrir el modal inmediatamente
             id_tarea = nueva.id
-            inf = db.query(Informe).get(inf_id)
+            inf = db.get(Informe, inf_id)
             exts = (inf.datos_generales or {}).get('extensiones', [])
 
         ui.notify('Reporte creado. Suba la evidencia.', type='positive')

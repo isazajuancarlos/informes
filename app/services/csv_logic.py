@@ -166,7 +166,7 @@ class CsvLogic:
                         
                         # 2. Asignar Usuarios
                         for uid in ids_responsables:
-                            user_obj = db.query(Usuario).get(uid)
+                            user_obj = db.get(Usuario, uid)
                             nuevo_inf.responsables.append(user_obj)
                             
                         # 3. Asignar Variables

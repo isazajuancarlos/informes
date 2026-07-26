@@ -107,7 +107,7 @@ class AuthService:
             if not registro: return False, "Token inválido o expirado"
             
             # Cambiar password
-            user = db.query(Usuario).get(registro.usuario_id)
+            user = db.get(Usuario, registro.usuario_id)
             user.password_hash = AuthService.get_password_hash(nueva_pass)
             
             # Quemar token

@@ -85,7 +85,7 @@ def page_audit():
         almacenado envejece y deja de significar nada.
         """
         with get_db_session() as db:
-            t = db.query(EntregaEsperada).get(eid)
+            t = db.get(EntregaEsperada, eid)
             if t is None:
                 ui.notify('La entrega ya no existe', type='negative')
                 return
