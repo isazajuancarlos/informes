@@ -4,8 +4,10 @@
 
 Este sistema mezcla dos relojes, y la mezcla es histórica:
 
-- Ocho columnas del modelo llevan `default=datetime.utcnow` — guardan **UTC sin
-  zona** (naive).
+- Seis columnas del modelo guardan **UTC sin zona** (naive).
+- Una, `EntregaEsperada.fecha_programada`, guarda hora **local** — aunque su
+  default declarase UTC, porque los cinco sitios que crean entregas la fijan a
+  mano en local y el default nunca llegaba a usarse.
 - Cuarenta y cinco sitios del código usan `datetime.now()` — hora **local sin
   zona**.
 
@@ -40,6 +42,37 @@ from app.core.config import TIMEZONE
 _FORMATO = "%Y-%m-%d %H:%M:%S"
 
 
+def ahora_utc() -> datetime:
+    """Instante actual en UTC, **sin zona**, para las columnas que guardan UTC.
+
+    Sin zona a propósito, y esto no es pereza: todas las filas que ya existen son
+    naive, y las columnas son `DateTime` sin `timezone=True`. Devolver un
+    datetime CON zona haría que un valor recién creado no se pudiera comparar con
+    uno leído de la base —`TypeError: can't compare offset-naive and offset-aware`—
+    y el fallo no aparecería en el momento de guardar, sino más tarde y lejos.
+
+    Sustituye a `datetime.utcnow()`, deprecado desde Python 3.12 y marcado para
+    eliminación. El comportamiento es idéntico; lo que cambia es que ya no
+    depende de una función que va a desaparecer.
+
+    Si algún día se migra a datetimes con zona, **este es el sitio**: cambiar
+    aquí, migrar las filas y revisar las comparaciones contra los `datetime.now()`
+    locales. Por eso existe la función en vez de repetir la expresión.
+    """
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def ahora_local() -> datetime:
+    """Instante actual en hora local, **sin zona**.
+
+    Es `datetime.now()` con nombre. Existe para que el modelo diga con qué reloj
+    trabaja cada columna en vez de dejarlo a la arqueología: en un sistema con
+    dos relojes, `default=ahora_local` frente a `default=ahora_utc` es la única
+    documentación que nadie puede dejar desactualizada.
+    """
+    return datetime.now()
+
+
 def _zona() -> timezone | ZoneInfo:
     """La zona configurada, o UTC si el nombre no existe en el sistema.
 
@@ -57,7 +90,7 @@ def utc_a_local(momento: datetime | None) -> datetime | None:
     """Interpreta `momento` como UTC y lo devuelve en la zona configurada.
 
     Acepta datetimes SIN zona (que es como los guarda SQLAlchemy con
-    `default=datetime.utcnow`) y también con zona, por si algún día se migra.
+    `default=ahora_utc`) y también con zona, por si algún día se migra.
     """
     if momento is None:
         return None

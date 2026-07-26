@@ -138,3 +138,100 @@ def test_sin_limite_lo_dice():
     from app.core.tiempo import describir_vencimiento
 
     assert describir_vencimiento(_Entrega(None)) == "Sin límite"
+
+
+# ---------------------------------------------------------------------------
+# Los dos relojes, como funciones con nombre
+#
+# `datetime.utcnow()` está deprecado desde Python 3.12 y marcado para
+# eliminación. Sustituirlo NO era mecánico: la mitad de las columnas guardan UTC
+# y una guarda hora local, así que un reemplazo uniforme habría corrido esa
+# columna cinco horas. Estas pruebas fijan cuál es cuál.
+# ---------------------------------------------------------------------------
+
+
+def test_ahora_utc_es_naive_y_marca_utc():
+    """Naive a propósito: las filas que ya existen lo son y las columnas no
+    llevan `timezone=True`. Devolver un valor CON zona rompería cualquier
+    comparación contra un valor leído de la base."""
+    momento = tiempo.ahora_utc()
+    assert momento.tzinfo is None, "con zona no se puede comparar con lo guardado"
+    referencia = datetime.now(timezone.utc).replace(tzinfo=None)
+    assert abs((referencia - momento).total_seconds()) < 5
+
+
+def test_ahora_local_es_naive_y_marca_hora_local():
+    momento = tiempo.ahora_local()
+    assert momento.tzinfo is None
+    assert abs((datetime.now() - momento).total_seconds()) < 5
+
+
+def test_los_dos_relojes_no_son_el_mismo():
+    """El corazón del asunto. Si alguien 'simplifica' haciendo que ambas
+    devuelvan lo mismo, el desfase desaparece sin que falle nada más — y las
+    fechas empiezan a mentir cinco horas."""
+    import os
+    if datetime.now().utcoffset() == timedelta(0) or os.environ.get("TZ") == "UTC":
+        pytest.skip("la máquina está en UTC: aquí los dos relojes coinciden")
+    diferencia = abs((tiempo.ahora_utc() - tiempo.ahora_local()).total_seconds())
+    assert diferencia > 60, "UTC y hora local no pueden ser el mismo instante"
+
+
+def test_ninguna_columna_del_modelo_usa_la_api_deprecada():
+    """Registrar cerca de donde se violaría: esta prueba es la que impide que
+    `datetime.utcnow` vuelva a entrar, no un comentario que hay que recordar."""
+    import ast
+    from pathlib import Path
+
+    # Por AST y no buscando la cadena: los docstrings de `tiempo.py` EXPLICAN
+    # esta migración y citan `datetime.utcnow()` a propósito. Un detector de
+    # texto los marcaría, y la forma de callarlo sería borrar la explicación.
+    raiz = Path(__file__).resolve().parent.parent
+    culpables = []
+    for py in raiz.rglob("*.py"):
+        if any(p in py.parts for p in (".venv", "venv", "node_modules", "__pycache__")):
+            continue
+        try:
+            arbol = ast.parse(py.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue
+        for nodo in ast.walk(arbol):
+            if isinstance(nodo, ast.Attribute) and nodo.attr == "utcnow":
+                culpables.append(f"{py.relative_to(raiz)}:{nodo.lineno}")
+    assert not culpables, (
+        "datetime.utcnow() está deprecado y marcado para eliminación; "
+        f"usa app.core.tiempo.ahora_utc(). Reintroducido en: {culpables}"
+    )
+
+
+def test_fecha_programada_usa_el_reloj_local_y_las_demas_el_utc():
+    """La excepción del modelo, fijada por una prueba.
+
+    `EntregaEsperada.fecha_programada` guarda hora LOCAL: todos los sitios que
+    crean entregas la fijan a mano en local. Su default declaraba UTC, y quien
+    creyera esa declaración y 'corrigiera' la columna al mostrarla la correría
+    cinco horas en la dirección contraria.
+    """
+    from app.models import meta_tables as m
+
+    def default_de(modelo, columna):
+        # SQLAlchemy envuelve el callable para poder pasarle un contexto, así
+        # que `.arg` NO es la función que se declaró: es su envoltorio, y
+        # compararlo con `is` falla aunque todo esté bien. `functools.wraps`
+        # deja la original en `__wrapped__`.
+        arg = modelo.__table__.c[columna].default.arg
+        return getattr(arg, "__wrapped__", arg)
+
+    assert default_de(m.EntregaEsperada, "fecha_programada") is tiempo.ahora_local
+
+    for modelo, columna in (
+        (m.AuditLog, "timestamp"),
+        (m.Comentario, "fecha"),
+        (m.NotificacionApp, "fecha_creacion"),
+        (m.SolicitudNuevoInforme, "fecha_solicitud"),
+        (m.Informe, "fecha_creacion"),
+        (m.ConjuntoDatos, "fecha_creacion"),
+    ):
+        assert default_de(modelo, columna) is tiempo.ahora_utc, (
+            f"{modelo.__name__}.{columna} debe guardar UTC"
+        )

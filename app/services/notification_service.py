@@ -1,8 +1,8 @@
 """
 In-app notification service — creates and manages NotificacionApp records.
 """
-from datetime import datetime
 from app.core.database import get_db_session
+from app.core.tiempo import ahora_utc
 from app.models.meta_tables import NotificacionApp
 
 
@@ -19,7 +19,7 @@ class NotificationService:
                     titulo=titulo,
                     mensaje=mensaje,
                     leida=False,
-                    fecha_creacion=datetime.utcnow(),
+                    fecha_creacion=ahora_utc(),
                     url_destino=url_destino,
                     entidad_tipo=entidad_tipo,
                     entidad_id=entidad_id

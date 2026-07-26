@@ -5,6 +5,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from app.core.database import Base
+from app.core.tiempo import ahora_local, ahora_utc
 
 # =====================================================
 # VOCABULARIO DEL FLUJO
@@ -100,7 +101,7 @@ class NotificacionApp(Base):
     titulo = Column(String(200), nullable=False)
     mensaje = Column(Text, nullable=False)
     leida = Column(Boolean, default=False)
-    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+    fecha_creacion = Column(DateTime, default=ahora_utc)
     url_destino = Column(String(500), nullable=True)
     entidad_tipo = Column(String(50), nullable=True)
     entidad_id = Column(Integer, nullable=True)
@@ -153,7 +154,7 @@ class SolicitudNuevoInforme(Base):
     stakeholder_id = Column(Integer, ForeignKey("stakeholders.id"))
     titulo = Column(String(200))
     descripcion = Column(Text)
-    fecha_solicitud = Column(DateTime, default=datetime.utcnow)
+    fecha_solicitud = Column(DateTime, default=ahora_utc)
     estado = Column(String(50), default="PENDIENTE") 
     respuesta_admin = Column(Text, nullable=True)
     stakeholder = relationship("Stakeholder")
@@ -243,7 +244,7 @@ class ConjuntoDatos(Base):
     descripcion = Column(Text, nullable=True)
     responsable_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
     activo = Column(Boolean, default=True)
-    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+    fecha_creacion = Column(DateTime, default=ahora_utc)
 
     responsable = relationship("Usuario")
     informes = relationship("Informe", back_populates="conjunto_datos")
@@ -323,7 +324,7 @@ class Informe(Base):
     nombre = Column(String(200), unique=True, nullable=False)
     descripcion = Column(String(500))
     creador_id = Column(Integer, ForeignKey("usuarios.id"))
-    fecha_creacion = Column(DateTime, default=datetime.utcnow)
+    fecha_creacion = Column(DateTime, default=ahora_utc)
     recurrencia_json = Column(JSON, default=dict)
     datos_generales = Column(JSON, default=dict)
     activo = Column(Boolean, default=True)
@@ -456,7 +457,19 @@ class EntregaEsperada(Base):
     id = Column(Integer, primary_key=True, index=True)
     informe_id = Column(Integer, ForeignKey("cat_informes.id"))
     usuario_id = Column(Integer, ForeignKey("usuarios.id"), nullable=True)
-    fecha_programada = Column(DateTime, default=datetime.utcnow)
+    # HORA LOCAL, no UTC — es la excepción del modelo.
+    #
+    # Los cinco sitios que crean entregas la fijan a mano en local
+    # (`datetime.now()` en my_tasks, `dia_dt + 8h` en scheduler, `strptime` en
+    # entregas_manuales y el día del límite en el demo), así que este default
+    # nunca llega a usarse. Declaraba UTC de todas formas, y esa declaración era
+    # una trampa: quien la creyera y "corrigiera" la columna al mostrarla la
+    # correría cinco horas en la dirección contraria.
+    #
+    # Se deja default —y no se quita— porque `audit.py` hace
+    # `t.fecha_programada.date()` sin comprobar None: sin default, un inserto
+    # que la olvidara guardaría NULL y reventaría después, lejos de la causa.
+    fecha_programada = Column(DateTime, default=ahora_local)
 
     # Las DOS fechas de un vencimiento. Confundirlas es el defecto que este par
     # de columnas existe para impedir:
@@ -528,7 +541,7 @@ class Comentario(Base):
     entrega_id = Column(Integer, ForeignKey("entregas_esperadas.id"))
     autor_id = Column(Integer, ForeignKey("usuarios.id"))
     texto = Column(String(1000), nullable=False)
-    fecha = Column(DateTime, default=datetime.utcnow)
+    fecha = Column(DateTime, default=ahora_utc)
     entrega = relationship("EntregaEsperada", back_populates="mensajes_chat")
     autor = relationship("Usuario")
 
@@ -558,7 +571,7 @@ class AuditLog(Base):
     __tablename__ = "audit_logs"
 
     id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    timestamp = Column(DateTime, default=ahora_utc, nullable=False, index=True)
 
     # Tipo de evento: login_attempt, logout, session_timeout, permission_denied
     evento = Column(String(50), nullable=False, index=True)

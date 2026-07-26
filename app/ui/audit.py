@@ -148,7 +148,7 @@ def page_audit():
                 }
                 rows.append({
                     'id': log.id,
-                    # `AuditLog.timestamp` se guarda en UTC (`default=datetime.utcnow`)
+                    # `AuditLog.timestamp` se guarda en UTC (`default=ahora_utc`)
                     # y aquí se pintaba con `strftime` directo, o sea COMO SI
                     # fuera local: en Colombia, cada evento aparecía 5 horas en
                     # el futuro. La conversión arregla también las filas
