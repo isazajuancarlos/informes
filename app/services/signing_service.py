@@ -1,5 +1,11 @@
 """
-Firma de entregas con Quipu — PROTOTIPO.
+Firma de entregas con Quipu.
+
+Ya no es un prototipo: la columna existe (`EntregaEsperada.firma`), se firma al
+registrar la entrega dentro de su misma transacción (`app/ui/my_tasks.py`) y se
+verifica desde la auditoría (`app/ui/audit.py`). El instalador aplica la columna
+con `migrar_esquema.py` — NO con `migrate_firma.py`, que quedó obsoleta porque
+usaba sintaxis exclusiva de PostgreSQL y en SQLite nunca llegó a aplicarse.
 
 Firma post-cuántica verificable (Ed25519 + ML-DSA-87, vía `quipu-crypto`) de los
 campos auditables de una entrega. Da **integridad** y **no repudio** — encaja con
