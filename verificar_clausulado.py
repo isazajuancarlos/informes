@@ -13,6 +13,16 @@ que uno cree estar entregando.
 Este script no impide la divergencia; la vuelve **visible**. Es lo mínimo
 mientras los dos archivos existan por separado.
 
+Se comparan tres cosas, y la tercera es la que importa: qué cláusulas hay, cómo
+se titulan y **qué dicen**. Durante un tiempo solo se compararon las dos
+primeras, y eso dejaba pasar justo la divergencia peligrosa: dos cláusulas con
+el mismo número y el mismo título que dicen cosas distintas. En un contrato,
+«3.5 Ampliación del alcance» presente en ambos documentos no significa nada si
+el plazo o el procedimiento cambian de uno a otro — y era invisible.
+
+Del documento de trabajo se ignoran las notas ⚑ (van en blockquote) porque son
+internas por diseño, y los saltos de línea, que son formato.
+
     python verificar_clausulado.py
 
 Salida: 0 si concuerdan · 1 si el modelo se quedó atrás.
@@ -35,13 +45,55 @@ CORTE_INTERNO = "NOTAS AL REDACTOR"
 NUMERADA = re.compile(r"^\*\*(\d+(?:\.\d+)*)\.\s+([^.*]+)\.?\*\*", re.MULTILINE)
 
 
-def clausulas(ruta: Path, cortar_internas: bool) -> dict[str, str]:
+def _sin_material_interno(ruta: Path, cortar_internas: bool) -> str:
     texto = ruta.read_text(encoding="utf-8")
     if cortar_internas:
         corte = texto.find(CORTE_INTERNO)
         if corte != -1:
             texto = texto[:corte]
+    return texto
+
+
+def clausulas(ruta: Path, cortar_internas: bool) -> dict[str, str]:
+    """Número -> título."""
+    texto = _sin_material_interno(ruta, cortar_internas)
     return {n: t.strip() for n, t in NUMERADA.findall(texto)}
+
+
+def cuerpos(ruta: Path, cortar_internas: bool) -> dict[str, str]:
+    """Número -> texto normalizado de la cláusula.
+
+    Se descarta lo que es formato o material interno, para que la comparación
+    señale diferencias de CONTENIDO y no ruido tipográfico:
+
+      - las líneas en blockquote (`>`), que son las notas ⚑ del documento de
+        trabajo y no deben viajar al cliente;
+      - los separadores `---` y los encabezados `#`, que pertenecen a la
+        maquetación y aparecen al final de una cláusula solo según dónde caiga
+        la siguiente sección;
+      - los saltos de línea y los espacios repetidos.
+    """
+    texto = _sin_material_interno(ruta, cortar_internas)
+    marcas = list(NUMERADA.finditer(texto))
+    fuera: dict[str, str] = {}
+    for i, m in enumerate(marcas):
+        fin = marcas[i + 1].start() if i + 1 < len(marcas) else len(texto)
+        lineas = []
+        for linea in texto[m.start():fin].splitlines():
+            limpia = linea.strip()
+            if limpia.startswith(">") or limpia.startswith("#") or set(limpia) == {"-"}:
+                continue
+            lineas.append(limpia)
+        fuera[m.group(1)] = " ".join(" ".join(lineas).split())
+    return fuera
+
+
+def _primera_diferencia(a: str, b: str) -> str:
+    """Dónde se separan los dos textos, con contexto suficiente para leerlo."""
+    i = next((k for k in range(min(len(a), len(b))) if a[k] != b[k]), min(len(a), len(b)))
+    ini = max(0, i - 60)
+    return (f"     trabajo: …{a[ini:i + 80]}…\n"
+            f"     cliente: …{b[ini:i + 80]}…")
 
 
 def main() -> int:
@@ -76,11 +128,27 @@ def main() -> int:
         for n in distintas:
             print(f"  {n}\n     trabajo: {trabajo[n]}\n     cliente: {cliente[n]}")
 
-    if faltan or sobran or distintas:
-        print(f"\nDIVERGEN. Sincronice antes de entregar el clausulado.")
+    # El contenido, que es lo que el cliente firma. Una cláusula puede coincidir
+    # en número y título y decir otra cosa: eso es lo que hay que cazar.
+    cuerpo_trabajo = cuerpos(TRABAJO, cortar_internas=True)
+    cuerpo_cliente = cuerpos(CLIENTE, cortar_internas=True)
+    redactadas_distinto = sorted(
+        (n for n in set(cuerpo_trabajo) & set(cuerpo_cliente)
+         if cuerpo_trabajo[n] != cuerpo_cliente[n]),
+        key=_orden,
+    )
+    if redactadas_distinto:
+        print("\nMISMO TÍTULO, TEXTO DISTINTO — es la divergencia grave:")
+        for n in redactadas_distinto:
+            print(f"  {n}  {trabajo.get(n, '')}")
+            print(_primera_diferencia(cuerpo_trabajo[n], cuerpo_cliente[n]))
+
+    if faltan or sobran or distintas or redactadas_distinto:
+        print("\nDIVERGEN. Sincronice antes de entregar el clausulado.")
         return 1
 
-    print("Los dos documentos tienen el mismo clausulado numerado.")
+    print(f"Los dos documentos concuerdan: {len(trabajo)} cláusulas, "
+          "mismo número, mismo título y mismo texto.")
     return 0
 
 
