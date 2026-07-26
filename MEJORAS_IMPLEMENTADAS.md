@@ -1,4 +1,4 @@
-# MEJORAS IMPLEMENTADAS - Sistema de Gestión de Informes
+# MEJORAS IMPLEMENTADAS — SIGER
 
 **Fecha de Actualización:** 7 de Enero, 2026
 **Versión:** 2.0

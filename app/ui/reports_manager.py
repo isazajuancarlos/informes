@@ -2,10 +2,12 @@ from nicegui import ui
 from app.core.database import get_db_session
 from app.models.meta_tables import (
     Informe, Usuario, MetaVariable, ConfiguracionInformeVariable, Stakeholder,
-    ConjuntoDatos, UnidadOrganizacional, Participacion,
+    Participacion,
     ROL_ORIGEN, ROL_DESTINO, ROL_USUARIO,
+    AMBITO_FICHA,
 )
 from app.ui.ui_helpers import estado_vacio, ayuda
+from app.ui.asistente_cronograma import abrir_asistente
 from datetime import datetime
 from app.services.preview_calendario import proximos as _proximos_vencimientos
 from app.services.validar_regla import validar as _validar_regla
@@ -51,6 +53,227 @@ def _ajuste_desde_banderas(siguiente, anterior):
     return 'ninguno'
 
 
+#: Una parte del flujo puede ser INTERNA o EXTERNA, y el selector tiene que
+#: admitir las dos. Antes solo ofrecía terceros externos, y eso tenía una
+#: consecuencia medida: de los 397 informes de la base real, **208 son de envío
+#: interno**. Con un selector que solo admite externos, exigir destinatario
+#: haría que más de la mitad de la base no se pudiera registrar — y de paso
+#: dejaría sin usar el tipo de flujo «Envío Interno», que el propio modelo
+#: deduce de que NINGÚN destino sea externo.
+#:
+#: El modelo ya lo soporta: `Participacion` lleva `usuario_id` o
+#: `stakeholder_id`. Lo que faltaba era la pantalla.
+PREFIJO_INTERNO = "u"
+PREFIJO_EXTERNO = "s"
+
+
+def clave_de_parte(participacion) -> str:
+    """`Participacion` → la clave que usa el selector («u:12», «s:5»)."""
+    if participacion.stakeholder_id:
+        return f"{PREFIJO_EXTERNO}:{participacion.stakeholder_id}"
+    return f"{PREFIJO_INTERNO}:{participacion.usuario_id}"
+
+
+def descomponer_parte(clave: str):
+    """«s:5» → («s», 5). Devuelve `None` si la clave no se entiende.
+
+    Se devuelve `None` en vez de suponer un tipo: una clave ilegible que se
+    interpretara como interna crearía una participación de la persona
+    equivocada, y eso no se ve nunca — el informe queda creado y con partes que
+    nadie eligió.
+    """
+    try:
+        prefijo, ident = str(clave).split(":", 1)
+    except (ValueError, AttributeError):
+        return None
+    if prefijo not in (PREFIJO_INTERNO, PREFIJO_EXTERNO) or not ident.isdigit():
+        return None
+    return (prefijo, int(ident))
+
+
+def opciones_de_partes(usuarios, stakeholders) -> dict:
+    """Las opciones del selector, internas y externas en una sola lista.
+
+    Se marca cuál es cuál en la etiqueta: de eso depende el tipo de flujo del
+    informe, así que quien elige tiene que poder verlo sin abrir otra pantalla.
+    """
+    opciones = {f"{PREFIJO_EXTERNO}:{s.id}": f"{s.nombre} · externo"
+                + (f" ({s.tipo})" if s.tipo else "")
+                for s in stakeholders}
+    opciones.update({f"{PREFIJO_INTERNO}:{u.id}": f"{u.nombre} · interno"
+                     for u in usuarios})
+    return opciones
+
+
+def guardar_campos_del_informe(db, informe_id, valores) -> int:
+    """Escribe una fila POR CADA CAMPO QUE EL INFORME LLEVA, aunque esté vacío.
+
+    Guardar solo los rellenos —que es lo que hacía— borra la diferencia entre
+    «este campo no aplica a este informe» y «aplica y nadie lo ha contestado».
+    Y tiene un efecto más inmediato: un campo añadido a la ficha y dejado en
+    blanco desaparecía al guardar, así que añadirlo no servía de nada y quien lo
+    hiciera no entendería por qué.
+
+    Vive fuera de `guardar()` para poder comprobarse: dentro era un trozo de
+    cierre que ninguna prueba alcanzaba, y una mutación que lo rompía salía roja
+    por contaminación entre pruebas, no por detectarlo.
+    """
+    for var_id, valor in valores.items():
+        db.add(ConfiguracionInformeVariable(
+            informe_id=informe_id, variable_id=int(var_id),
+            valor_parametro=str(valor) if valor else None))
+    return len(valores)
+
+
+def faltan_campos(definiciones, valores) -> list[str]:
+    """Los campos marcados como obligatorios que vienen en blanco.
+
+    `es_obligatorio` estaba declarado desde el principio y **no lo miraba
+    nadie**: quien creaba un campo y lo marcaba obligatorio creía haber acotado
+    algo, y no había acotado nada. Una bandera que no bloquea es peor que no
+    tenerla, porque promete un control que no existe.
+
+    Recibe las definiciones ya leídas para poder comprobarse sin base de datos.
+    """
+    faltan = []
+    for definicion in definiciones:
+        if not definicion.get('obligatorio'):
+            continue
+        valor = valores.get(str(definicion['id']))
+        if valor is None or str(valor).strip() == '':
+            faltan.append(definicion['etiqueta'])
+    return faltan
+
+
+def _nombre_interno(etiqueta: str) -> str:
+    """«Aplicativo de Origen» → `aplicativo_de_origen`.
+
+    El nombre técnico se DERIVA del visible en vez de pedirlo aparte. Pedir dos
+    nombres para lo mismo obliga a inventarse un identificador a quien solo
+    quería añadir un campo, y garantiza que con el tiempo digan cosas distintas.
+    """
+    import re
+    import unicodedata
+
+    sin_tildes = unicodedata.normalize('NFKD', str(etiqueta or '')) \
+        .encode('ascii', 'ignore').decode()
+    limpio = re.sub(r'[^a-z0-9]+', '_', sin_tildes.lower()).strip('_')
+    return (limpio or 'campo')[:50]
+
+
+def flujo_derivado(datos: dict) -> str:
+    """El tipo de flujo, deducido de las partes. NUNCA se elige a mano.
+
+    Sale información si algún DESTINO es **externo**; entra si el origen lo es.
+    El matiz «externo» es todo: aquí se miraba `bool(destinatarios)`, y en
+    cuanto el selector empezó a admitir partes internas un informe entregado a
+    otra área de la propia entidad se habría marcado «Envío Externo». Es el
+    dato del que cuelga después todo el análisis de qué información sale de la
+    entidad.
+
+    Es la misma regla que `Informe.tipo_flujo` aplica sobre lo ya guardado; aquí
+    se aplica sobre lo que hay en pantalla, para que se vea antes de guardar.
+    """
+    sale = any(str(c).startswith(f"{PREFIJO_EXTERNO}:")
+               for c in datos.get('destinatarios') or [])
+    entra = bool(datos.get('origen_externo'))
+    if sale and entra:
+        return 'BIDIRECCIONAL'
+    if sale:
+        return 'ENVIO_EXTERNO'
+    if entra:
+        return 'RECEPCION_EXTERNA'
+    return 'ENVIO_INTERNO'
+
+
+def faltan_partes(datos: dict) -> list[str]:
+    """Qué le falta al flujo para que el informe pueda guardarse.
+
+    Un informe sin partes es un informe que no se le envía a nadie y que nadie
+    consume: el sistema lo programaría, generaría entregas, y no habría quien
+    las reciba ni quien reclame si no llegan. Se cae en cuanto alguien lo mira,
+    y por eso hay que impedirlo al crearlo, no descubrirlo después.
+
+    Se exigen las DOS —quién lo pide y quién lo recibe— porque son preguntas
+    distintas y la respuesta puede ser la misma entidad: el Ministerio que lo
+    exige suele ser también el que lo recibe, y entonces se marca en las dos.
+    Lo que no puede quedar es en blanco, porque en blanco no significa «no
+    aplica»: significa que nadie lo contestó.
+    """
+    faltan = []
+    if not datos.get('solicitantes'):
+        faltan.append(
+            "Falta quién solicita el informe. Si es una obligación de norma, "
+            "la parte que la exige suele ser también la que lo recibe: márquela "
+            "en las dos listas. Si no está en la lista, créela con «+ Nueva "
+            "parte».")
+    if not datos.get('destinatarios'):
+        faltan.append(
+            "Falta a quién se entrega el informe. Puede ser una parte interna "
+            "—un área de la propia entidad— o un tercero externo; de eso "
+            "depende que el flujo sea interno o externo.")
+    return faltan
+
+
+#: Campos de regla que las pestañas de esta pantalla NO saben representar.
+#:
+#: No es una lista de cosas pendientes: es el motivo por el que una regla creada
+#: con el asistente se guarda tal cual en vez de traducirse a los campos del
+#: formulario. La traducción PIERDE — `dias_corte: [7, 20]` vuelve como
+#: `dia_corte: 7` y la obligación pasa de veinticuatro entregas al año a doce,
+#: sin que nadie toque nada ni vea un aviso. Solo se descubre cuando lo pregunta
+#: un ente de control.
+CAMPOS_QUE_LAS_PESTANAS_NO_SABEN = {
+    'dias_corte', 'dia_semana_mes', 'semana_del_mes', 'cada_n_anios',
+    'cada_n_semanas', 'dia_habil_semana', 'omitir_festivos', 'fechas',
+}
+
+
+def excede_a_las_pestanas(regla: dict) -> bool:
+    """¿Esta regla se perdería al abrirla en las pestañas de siempre?"""
+    if (regla or {}).get('modo') == 'FECHAS':
+        return True
+    return any((regla or {}).get(c) for c in CAMPOS_QUE_LAS_PESTANAS_NO_SABEN)
+
+
+def _describir_regla(regla: dict) -> str:
+    """Una línea que dice qué es esta regla, sin inventarse nada.
+
+    Se recorre el camino del asistente AL REVÉS: se generan las fechas de un año
+    y se le pregunta al reconocedor qué patrón son. Así la frase que ve quien
+    abre un informe viejo es la misma que vería al crearlo, y no una segunda
+    redacción que con el tiempo diga otra cosa.
+
+    Si el reconocedor no encuentra un patrón exacto, se dice eso mismo en vez de
+    aproximar: una descripción aproximada de una obligación es una descripción
+    equivocada.
+    """
+    from datetime import date, timedelta
+
+    from app.services.inferir_periodicidad import inferir
+    from app.services.scheduler import GeneradorTareas
+
+    if (regla or {}).get('modo') == 'HOURLY':
+        return (f"Varias veces al día, de las {regla.get('hora_inicio')} a las "
+                f"{regla.get('hora_fin')}, cada {regla.get('intervalo_horas')} h")
+    try:
+        inicio = date.fromisoformat(str(regla.get('fecha_inicio')))
+    except (ValueError, TypeError):
+        return "Cronograma definido"
+
+    fechas = []
+    for i in range(366):
+        dia = inicio + timedelta(days=i)
+        fechas += [v.nominal
+                   for v in GeneradorTareas.obtener_vencimientos_para_fecha(dia, regla)]
+    if not fechas:
+        return "Cronograma definido — no genera vencimientos en el primer año"
+    inferencia = inferir(fechas)
+    if inferencia.periodicidad == "SIN_PATRON":
+        return f"Cronograma propio — {len(fechas)} vencimiento(s) en el primer año"
+    return inferencia.explicacion
+
+
 def _construir_regla(datos):
     """La configuración de periodicidad, tal como se guarda.
 
@@ -59,6 +282,12 @@ def _construir_regla(datos):
     fechas que el sistema luego no genera — y nadie sabría cuál de las dos está
     mal, que es peor que no tener vista previa.
     """
+    # Una regla del asistente se guarda VERBATIM. Reconstruirla desde los campos
+    # del formulario es exactamente lo que no se puede hacer: las pestañas no
+    # tienen dónde poner la mitad de lo que el asistente sabe expresar.
+    if datos.get('regla'):
+        return dict(datos['regla'])
+
     modo = datos['modo_tiempo']
     f_inicio = datos['fecha_inicio']
     if modo == 'CICLICO':
@@ -71,6 +300,9 @@ def _construir_regla(datos):
         return {"modo": "ESPECIFICO",
                 "meses": datos['tiempo_especifico']['meses_seleccionados'],
                 "dia_corte": int(datos['tiempo_especifico']['dia_corte'] or 1),
+                "dia_habil": int(datos['tiempo_especifico'].get('dia_habil') or 0),
+                "usar_ultimo_dia_en_meses_cortos": bool(
+                    datos['tiempo_especifico'].get('usar_ultimo_dia_en_meses_cortos')),
                 "es_ultimo_dia": datos['tiempo_especifico']['es_ultimo_dia'],
                 **_banderas_desde_ajuste(datos['tiempo_especifico']['ajuste'],
                                          "ajuste_habil", "ajuste_habil_anterior"),
@@ -115,19 +347,12 @@ def page_reports_manager():
         'responsables': [], 'extensiones': [],
         'solicitantes': [], 'destinatarios': [],
         # NUEVOS CAMPOS v3.0
-        'subsistema': '',
-        'conjunto_datos_id': None,
-        'unidad_id': None,
-        'tiene_acuerdo_confidencialidad': False,
-        'cargo_autorizador': '',
-        'url_plantilla': '',
-        'ruta_plantilla': '',
-        'justificacion_normatividad': '',
-        'aplicativo_origen': '',
         'modo_tiempo': 'CICLICO',
+        'regla': None,
+        'regla_resumen': '',
         'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
         'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
-        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
+        'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'usar_ultimo_dia_en_meses_cortos': False, 'ajuste': 'ninguno'},
         'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
         'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
         'variables_config': {}
@@ -163,19 +388,15 @@ def page_reports_manager():
         nuevo_informe.update({
             'nombre': '', 'descripcion': '', 'responsables': [], 'extensiones': [],
             'solicitantes': [], 'destinatarios': [],
-            'subsistema': '',
-            'conjunto_datos_id': None,
-            'unidad_id': None,
-            'tiene_acuerdo_confidencialidad': False,
-            'cargo_autorizador': '',
-            'url_plantilla': '',
-            'ruta_plantilla': '',
-            'justificacion_normatividad': '',
-            'aplicativo_origen': '',
             'modo_tiempo': 'CICLICO',
+            # La regla del asistente, cuando la hay. Cuando está puesta manda
+            # ella y las pestañas ni se muestran: dos fuentes para la misma
+            # obligación garantizan que una esté mal.
+            'regla': None,
+            'regla_resumen': '',
             'fecha_inicio': datetime.now().strftime('%Y-%m-%d'),
             'tiempo_ciclico': {'anos': 0, 'meses': 0, 'dias': 0, 'total_dias': 0, 'ajuste': 'ninguno'},
-            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'es_ultimo_dia': False, 'ajuste': 'ninguno'},
+            'tiempo_especifico': {'meses_seleccionados': [], 'dia_corte': 1, 'dia_habil': 0, 'es_ultimo_dia': False, 'usar_ultimo_dia_en_meses_cortos': False, 'ajuste': 'ninguno'},
             'tiempo_semanal': {'dias_seleccionados': [], 'ajuste': 'ninguno'},
             'tiempo_horas': {'hora_inicio': 8, 'hora_fin': 18, 'intervalo': 1},
             'variables_config': {}
@@ -191,20 +412,16 @@ def page_reports_manager():
             nuevo_informe['nombre'] = inf.nombre
             nuevo_informe['descripcion'] = inf.descripcion
             nuevo_informe['responsables'] = [str(u.id) for u in inf.responsables]
-            # Cargar Stakeholders
-            nuevo_informe['solicitantes'] = [str(s.id) for s in inf.solicitantes]
-            nuevo_informe['destinatarios'] = [str(s.id) for s in inf.destinatarios]
+            # Las partes del flujo, internas Y externas. Cargarlas desde
+            # `inf.solicitantes` / `inf.destinatarios` perdía las internas: esas
+            # dos propiedades filtran `externas=True` a propósito, porque el
+            # portal de terceros las usa para otra cosa.
+            nuevo_informe['solicitantes'] = [clave_de_parte(p)
+                                             for p in inf.partes(ROL_USUARIO)]
+            nuevo_informe['destinatarios'] = [clave_de_parte(p)
+                                              for p in inf.partes(ROL_DESTINO)]
 
             # Cargar nuevos campos v3.0 + v4.0 (tipo_flujo es derivado)
-            nuevo_informe['subsistema'] = inf.subsistema or ''
-            nuevo_informe['conjunto_datos_id'] = str(inf.conjunto_datos_id) if inf.conjunto_datos_id else None
-            nuevo_informe['unidad_id'] = inf.unidad_id
-            nuevo_informe['tiene_acuerdo_confidencialidad'] = inf.tiene_acuerdo_confidencialidad or False
-            nuevo_informe['cargo_autorizador'] = inf.cargo_autorizador or ''
-            nuevo_informe['url_plantilla'] = inf.url_plantilla or ''
-            nuevo_informe['ruta_plantilla'] = inf.ruta_plantilla or ''
-            nuevo_informe['justificacion_normatividad'] = inf.justificacion_normatividad or ''
-            nuevo_informe['aplicativo_origen'] = inf.aplicativo_origen or ''
 
             datos = inf.datos_generales or {}
             nuevo_informe['extensiones'] = datos.get('extensiones', [])
@@ -214,7 +431,16 @@ def page_reports_manager():
             modo = rec.get('modo', 'CICLICO')
             nuevo_informe['modo_tiempo'] = modo
             nuevo_informe['fecha_inicio'] = rec.get('fecha_inicio', datetime.now().strftime('%Y-%m-%d'))
-            
+
+            # Una regla que las pestañas no saben representar se queda ENTERA y
+            # no se reparte por los campos. Antes se repartía igualmente y lo
+            # que no cabía se perdía al guardar: abrir un informe quincenal para
+            # cambiarle el nombre lo convertía en mensual. Nadie lo veía, porque
+            # el efecto de una fecha que deja de generarse es que no pasa nada.
+            if excede_a_las_pestanas(rec):
+                nuevo_informe['regla'] = dict(rec)
+                nuevo_informe['regla_resumen'] = _describir_regla(rec)
+
             if modo == 'CICLICO':
                 total = int(rec.get('intervalo', 0))
                 nuevo_informe['tiempo_ciclico'].update({'total_dias': total, 'anos': total // 360, 'meses': (total % 360) // 30, 'dias': (total % 360) % 30, 'ajuste': _ajuste_desde_banderas(rec.get('mover_habil'), rec.get('mover_habil_anterior'))})
@@ -230,9 +456,30 @@ def page_reports_manager():
         if not nuevo_informe['nombre']: ui.notify('Nombre obligatorio', type='warning'); return
         if not nuevo_informe['extensiones']: ui.notify('Seleccione extensiones', type='warning'); return
 
-        modo = nuevo_informe['modo_tiempo']
-        f_inicio = nuevo_informe['fecha_inicio']
+        problemas_de_partes = faltan_partes(nuevo_informe)
+        if problemas_de_partes:
+            for problema in problemas_de_partes:
+                ui.notify(problema, type='negative', multi_line=True,
+                          classes='w-[420px]', timeout=8000)
+            return
 
+        with get_db_session() as db:
+            definiciones = [{'id': c.id, 'etiqueta': c.etiqueta_visual,
+                             'obligatorio': bool(c.es_obligatorio)}
+                            for c in db.query(MetaVariable).filter(
+                                (MetaVariable.activo == True)
+                                | (MetaVariable.activo.is_(None))).all()]
+        sin_contestar = faltan_campos(definiciones, nuevo_informe['variables_config'])
+        if sin_contestar:
+            ui.notify('Faltan campos obligatorios: ' + ', '.join(sin_contestar),
+                      type='negative', multi_line=True, classes='w-[420px]',
+                      timeout=8000)
+            return
+
+        # Aquí se leían `modo` y `f_inicio` sin usarlos para nada: quedaron de
+        # cuando esta función armaba la regla a mano. Ahora la arma
+        # `_construir_regla`, y dejarlos sugería que el modo del formulario
+        # decide algo cuando puede estar mandando el cronograma del asistente.
         rec_final = _construir_regla(nuevo_informe)
 
         # La regla se valida ANTES de guardar. Un barrido del motor encontró
@@ -259,17 +506,17 @@ def page_reports_manager():
                 inf = db.query(Informe).get(estado['id_edicion'])
                 inf.nombre = nuevo_informe['nombre']; inf.descripcion = nuevo_informe['descripcion']
                 inf.recurrencia_json = rec_final; inf.datos_generales = datos_gen
-                # Actualizar nuevos campos v3.0 + v4.0
+                # Los siete campos de ficha que se asignaban aquí —subsistema,
+                # cargo autorizador, plantillas, normatividad, aplicativo de
+                # origen— YA NO SE TOCAN: dejaron de ser columnas fijas y son
+                # campos definidos por el administrador.
+                #
+                # Y no basta con quitarlos del formulario: si se quedaran estas
+                # asignaciones, editar un informe para cambiarle el nombre
+                # habría escrito la cadena vacía en los siete y BORRADO lo que
+                # tenía. `migrar_campos_ficha.py` mueve los valores viejos.
+                #
                 # tipo_flujo no se asigna: lo determinan las partes del flujo.
-                inf.subsistema = nuevo_informe['subsistema'] if nuevo_informe['subsistema'] else None
-                inf.conjunto_datos_id = int(nuevo_informe['conjunto_datos_id']) if nuevo_informe['conjunto_datos_id'] else None
-                inf.tiene_acuerdo_confidencialidad = nuevo_informe['tiene_acuerdo_confidencialidad']
-                inf.cargo_autorizador = nuevo_informe['cargo_autorizador'] if nuevo_informe['cargo_autorizador'] else None
-                inf.url_plantilla = nuevo_informe['url_plantilla'] if nuevo_informe['url_plantilla'] else None
-                inf.ruta_plantilla = nuevo_informe['ruta_plantilla'] if nuevo_informe['ruta_plantilla'] else None
-                inf.justificacion_normatividad = nuevo_informe['justificacion_normatividad'] if nuevo_informe['justificacion_normatividad'] else None
-                inf.aplicativo_origen = nuevo_informe['aplicativo_origen'] if nuevo_informe['aplicativo_origen'] else None
-                inf.unidad_id = nuevo_informe.get('unidad_id')
                 inf.tipo_novedad = "Actualización"; inf.fecha_actualizacion = datetime.now()
                 # Las partes se reescriben enteras: una sola tabla que limpiar.
                 for p in list(inf.participaciones): db.delete(p)
@@ -284,14 +531,6 @@ def page_reports_manager():
                     recurrencia_json=rec_final,
                     datos_generales=datos_gen,
                     # Nuevos campos v3.0 + v4.0 (tipo_flujo es derivado, no se pasa)
-                    subsistema=nuevo_informe['subsistema'] if nuevo_informe['subsistema'] else None,
-                    conjunto_datos_id=int(nuevo_informe['conjunto_datos_id']) if nuevo_informe['conjunto_datos_id'] else None,
-                    tiene_acuerdo_confidencialidad=nuevo_informe['tiene_acuerdo_confidencialidad'],
-                    cargo_autorizador=nuevo_informe['cargo_autorizador'] if nuevo_informe['cargo_autorizador'] else None,
-                    url_plantilla=nuevo_informe['url_plantilla'] if nuevo_informe['url_plantilla'] else None,
-                    ruta_plantilla=nuevo_informe['ruta_plantilla'] if nuevo_informe['ruta_plantilla'] else None,
-                    justificacion_normatividad=nuevo_informe['justificacion_normatividad'] if nuevo_informe['justificacion_normatividad'] else None,
-                    aplicativo_origen=nuevo_informe['aplicativo_origen'] if nuevo_informe['aplicativo_origen'] else None,
                     unidad_id=nuevo_informe.get('unidad_id'),
                     activo=True,
                     tipo_novedad="Creación",
@@ -307,21 +546,308 @@ def page_reports_manager():
                     db.add(Participacion(informe_id=inf.id, usuario_id=int(uid),
                                          rol=ROL_ORIGEN, orden=orden))
 
-            for orden, sid in enumerate(nuevo_informe['solicitantes']):
-                if db.query(Stakeholder).get(int(sid)):
-                    db.add(Participacion(informe_id=inf.id, stakeholder_id=int(sid),
-                                         rol=ROL_USUARIO, orden=orden))
+            for rol, clave_lista in ((ROL_USUARIO, 'solicitantes'),
+                                     (ROL_DESTINO, 'destinatarios')):
+                for orden, clave in enumerate(nuevo_informe[clave_lista]):
+                    parte = descomponer_parte(clave)
+                    if parte is None:
+                        continue  # clave ilegible: no se adivina de quién es
+                    prefijo, ident = parte
+                    if prefijo == PREFIJO_EXTERNO:
+                        if db.query(Stakeholder).get(ident):
+                            db.add(Participacion(informe_id=inf.id,
+                                                 stakeholder_id=ident,
+                                                 rol=rol, orden=orden))
+                    elif db.query(Usuario).get(ident):
+                        db.add(Participacion(informe_id=inf.id, usuario_id=ident,
+                                             rol=rol, orden=orden))
 
-            for orden, did in enumerate(nuevo_informe['destinatarios']):
-                if db.query(Stakeholder).get(int(did)):
-                    db.add(Participacion(informe_id=inf.id, stakeholder_id=int(did),
-                                         rol=ROL_DESTINO, orden=orden))
-
-            for var_id, val in nuevo_informe['variables_config'].items():
-                if val: db.add(ConfiguracionInformeVariable(informe_id=inf.id, variable_id=int(var_id), valor_parametro=str(val)))
+            guardar_campos_del_informe(db, inf.id,
+                                       nuevo_informe['variables_config'])
             db.commit()
         
         ui.notify(f'Informe {msg}', type='positive'); ir_a_lista()
+
+    # --- LOS CAMPOS, DIBUJADOS DESDE LO QUE EL ADMINISTRADOR DEFINIÓ ---
+    def _pintar_campos(vacio: str):
+        """Un control por campo definido, del tipo que el campo declara.
+
+        Antes todos los campos se capturaban con un `ui.input` de texto, aunque
+        el campo dijera ser una fecha o una lista. El tipo estaba declarado y no
+        servía para nada: quien lo definía creía haber acotado el dato y no
+        había acotado nada.
+        """
+        with get_db_session() as db:
+            campos = db.query(MetaVariable) \
+                .filter((MetaVariable.activo == True) | (MetaVariable.activo.is_(None))) \
+                .order_by(MetaVariable.orden, MetaVariable.id).all()
+            campos = [{'id': c.id, 'etiqueta': c.etiqueta_visual,
+                       'tipo': c.tipo_dato, 'obligatorio': bool(c.es_obligatorio),
+                       'descripcion': c.descripcion,
+                       'opciones': c.lista_de_opciones} for c in campos]
+
+        valores = nuevo_informe['variables_config']
+
+        # Un campo del catálogo NO aparece en todos los informes: aparece en los
+        # que lo llevan. Antes se pintaban todos, así que crear un campo para un
+        # informe se lo imponía a los demás y con veinte campos definidos cada
+        # formulario tenía veinte casillas — casi todas en blanco.
+        #
+        # La excepción son los OBLIGATORIOS: si un campo es obligatorio, lo es
+        # para todos, y poder no ponerlo lo vaciaría de sentido.
+        del_informe = [c for c in campos
+                       if str(c['id']) in valores or c['obligatorio']]
+
+        if not del_informe:
+            ui.label(vacio).classes('text-xs text-slate-500')
+            return
+
+        for campo in del_informe:
+            clave = str(campo['id'])
+            valores.setdefault(clave, '')
+            etiqueta = campo['etiqueta'] + (' *' if campo['obligatorio'] else '')
+            with ui.row().classes('w-full items-center gap-2 no-wrap'):
+                control = _control_de_campo(campo, etiqueta, valores, clave)
+                control.classes('flex-1').props('outlined dense')
+                if campo['descripcion']:
+                    ayuda(campo['descripcion'])
+                if campo['obligatorio']:
+                    # No se puede quitar, y se dice por qué en vez de enseñar un
+                    # botón apagado.
+                    ui.icon('lock').classes('text-slate-300') \
+                        .tooltip('Obligatorio para todos los informes')
+                else:
+                    ui.button(icon='close',
+                              on_click=lambda _, k=clave: _quitar_campo(k)) \
+                        .props('flat dense round color=grey') \
+                        .tooltip('Quitar este campo de ESTE informe. El campo '
+                                 'sigue existiendo para los demás.')
+
+    def _quitar_campo(clave: str):
+        """Lo quita de este informe. NO lo borra del catálogo.
+
+        Son dos cosas distintas y confundirlas sería caro: borrar el campo se
+        hace en «Campos de los informes», y allí se impide si alguien lo tiene
+        contestado.
+        """
+        nuevo_informe['variables_config'].pop(clave, None)
+        render_ui()
+
+    def _control_de_campo(campo, etiqueta, valores, clave):
+        tipo = (campo['tipo'] or 'TEXTO').upper()
+        if campo['opciones'] or tipo == 'LISTA':
+            # Una lista sin opciones definidas sería un desplegable vacío: se
+            # deja escribir, que es mejor que un campo que no admite nada.
+            return ui.select(campo['opciones'], label=etiqueta, with_input=True,
+                             new_value_mode='add-unique').bind_value(valores, clave)
+        if tipo == 'BOOLEANO':
+            return ui.select({'': '—', 'Sí': 'Sí', 'No': 'No'}, label=etiqueta) \
+                .bind_value(valores, clave)
+        if tipo == 'FECHA':
+            return ui.input(etiqueta).props('type=date').bind_value(valores, clave)
+        if tipo in ('NUMERO', 'MONEDA'):
+            return ui.input(etiqueta).props('type=number').bind_value(valores, clave)
+        if tipo == 'HORA_MILITAR':
+            return ui.input(etiqueta).props('type=time').bind_value(valores, clave)
+        if tipo == 'TEXTO_LARGO':
+            return ui.textarea(etiqueta).bind_value(valores, clave)
+        return ui.input(etiqueta).bind_value(valores, clave)
+
+    # --- ALTA DE UN CAMPO SIN SALIR DEL FORMULARIO ---
+    nuevo_campo = {'etiqueta': '', 'tipo': 'TEXTO', 'opciones': '',
+                   'obligatorio': False, 'descripcion': ''}
+
+    TIPOS_DE_CAMPO = ['TEXTO', 'TEXTO_LARGO', 'NUMERO', 'FECHA', 'BOOLEANO',
+                      'LISTA', 'HORA_MILITAR', 'MONEDA']
+
+    def abrir_alta_campo():
+        nuevo_campo.update({'etiqueta': '', 'tipo': 'TEXTO', 'opciones': '',
+                            'obligatorio': False, 'descripcion': ''})
+        _pintar_catalogo()
+        dialogo_campo.open()
+
+    def campos_disponibles():
+        """Los del catálogo que este informe todavía no lleva.
+
+        Los obligatorios no salen: ya están en todos los informes por
+        definición, así que ofrecerlos sería ofrecer algo que no hace nada.
+        """
+        puestos = set(nuevo_informe['variables_config'])
+        with get_db_session() as db:
+            campos = db.query(MetaVariable) \
+                .filter((MetaVariable.activo == True) | (MetaVariable.activo.is_(None))) \
+                .order_by(MetaVariable.orden, MetaVariable.id).all()
+            return [{'id': c.id, 'etiqueta': c.etiqueta_visual, 'tipo': c.tipo_dato,
+                     'descripcion': c.descripcion}
+                    for c in campos
+                    if str(c.id) not in puestos and not c.es_obligatorio]
+
+    def _agregar_campo(id_campo):
+        """Lo añade a ESTE informe, en blanco. No crea nada."""
+        nuevo_informe['variables_config'].setdefault(str(id_campo), '')
+        dialogo_campo.close()
+        render_ui()
+
+    def _pintar_catalogo():
+        """La lista de lo que ya existe, para no volver a crearlo.
+
+        Va ARRIBA y la creación debajo, en ese orden y no al revés: un formulario
+        de creación en primer plano invita a escribir el nombre de un campo que
+        ya está, y entonces el catálogo se llena de «Subsistema», «SUBSISTEMA» y
+        «Sub-sistema», que son tres columnas para el mismo dato y ya no se puede
+        agrupar por ninguna.
+        """
+        catalogo.clear()
+        disponibles = campos_disponibles()
+        with catalogo:
+            if not disponibles:
+                ui.label('No hay más campos creados. Cree el primero abajo.') \
+                    .classes('text-xs text-slate-500')
+                return
+            ui.label(f'Ya existen {len(disponibles)} campo(s). Añada los que '
+                     f'necesite este informe:') \
+                .classes('text-xs font-bold text-slate-600')
+            with ui.column().classes('w-full gap-1 max-h-52 scroll-y'):
+                for campo in disponibles:
+                    with ui.row().classes(
+                            'w-full items-center justify-between no-wrap '
+                            'border rounded px-2 py-1 hover:bg-slate-50'):
+                        with ui.column().classes('gap-0'):
+                            ui.label(campo['etiqueta']).classes('text-sm')
+                            ui.label(campo['descripcion'] or campo['tipo']) \
+                                .classes('text-xs text-slate-400')
+                        ui.button('Añadir',
+                                  on_click=lambda _, i=campo['id']: _agregar_campo(i)) \
+                            .props('flat dense size=sm color=primary') \
+                            .mark(f"agregar-campo-{campo['id']}")
+
+    def guardar_campo():
+        etiqueta = (nuevo_campo['etiqueta'] or '').strip()
+        if not etiqueta:
+            ui.notify('El nombre del campo es obligatorio', type='warning')
+            return
+        interno = _nombre_interno(etiqueta)
+        with get_db_session() as db:
+            ya = db.query(MetaVariable).filter_by(nombre_interno=interno).first()
+            if ya:
+                # No se crea un duplicado ni se deja al usuario con un error
+                # seco: se añade el que ya está, que es lo que quería.
+                nuevo_informe['variables_config'].setdefault(str(ya.id), '')
+                ui.notify(f'«{ya.etiqueta_visual}» ya existía; se añadió ese.',
+                          type='info')
+                dialogo_campo.close()
+                render_ui()
+                return
+            campo = MetaVariable(
+                nombre_interno=interno, etiqueta_visual=etiqueta,
+                tipo_dato=nuevo_campo['tipo'], ambito=AMBITO_FICHA,
+                opciones=(nuevo_campo['opciones'] or '').strip() or None,
+                es_obligatorio=bool(nuevo_campo['obligatorio']),
+                descripcion=(nuevo_campo['descripcion'] or '').strip() or None,
+                activo=True, orden=0)
+            db.add(campo)
+            db.commit()
+            ident = campo.id
+        # Se crea Y se añade: quien lo crea desde aquí lo quiere en ESTE
+        # informe. Crearlo y que no apareciera obligaría a buscarlo en la lista
+        # que se acaba de mirar.
+        nuevo_informe['variables_config'].setdefault(str(ident), '')
+        ui.notify(f'Campo «{etiqueta}» creado y añadido', type='positive')
+        dialogo_campo.close()
+        render_ui()
+
+    with ui.dialog() as dialogo_campo, ui.card().classes('w-[520px] max-w-full'):
+        ui.label('Añadir un campo a la ficha') \
+            .classes('text-lg font-bold text-slate-800')
+        catalogo = ui.column().classes('w-full gap-1')
+        ui.separator().classes('my-2')
+        ui.label('…o cree uno que no exista').classes('text-sm font-bold text-slate-700')
+        ui.label('Queda disponible para TODOS los informes, no solo para este: '
+                 'es una manera de clasificar, no un dato suelto.') \
+            .classes('text-xs text-slate-500')
+        ui.input('Nombre del campo *').bind_value(nuevo_campo, 'etiqueta') \
+            .classes('w-full').mark('nombre-campo')
+        ui.select(TIPOS_DE_CAMPO, label='Tipo de dato') \
+            .bind_value(nuevo_campo, 'tipo').classes('w-full')
+        campo_opciones = ui.textarea('Opciones (una por línea)') \
+            .bind_value(nuevo_campo, 'opciones').classes('w-full')
+        campo_opciones.bind_visibility_from(
+            nuevo_campo, 'tipo', backward=lambda v: v == 'LISTA')
+        ui.input('Ayuda para quien lo rellene') \
+            .bind_value(nuevo_campo, 'descripcion').classes('w-full')
+        ui.switch('Obligatorio').bind_value(nuevo_campo, 'obligatorio')
+        with ui.row().classes('w-full justify-end mt-3 gap-2'):
+            ui.button('Cancelar', on_click=dialogo_campo.close).props('flat')
+            ui.button('Crear campo', icon='check', on_click=guardar_campo) \
+                .classes('bg-slate-900 text-white')
+
+    # --- ALTA DE UNA PARTE SIN SALIR DEL FORMULARIO ---
+    #
+    # Si «Solicitado por» y «Destinatarios» son obligatorios, tiene que poder
+    # crearse una parte desde aquí. Mandar a alguien a otra pantalla a mitad de
+    # un formulario largo le hace perder lo que llevaba escrito — y en una
+    # instalación recién hecha no hay ninguna parte, así que el primer informe
+    # sería imposible de guardar.
+    nueva_parte = {'nombre': '', 'tipo': 'Entidad', 'contacto_nombre': '',
+                   'email': '', 'destino': 'solicitantes'}
+
+    #: Tipos sugeridos, no cerrados: el campo admite escribir otro. Un catálogo
+    #: fijo aquí decidiría por el cliente qué clase de partes puede tener.
+    TIPOS_DE_PARTE = ['Entidad', 'Ente de control', 'Contratista', 'Proveedor',
+                      'Ciudadano', 'Área interna', 'Otro']
+
+    def abrir_alta_parte(destino: str):
+        nueva_parte.update({'nombre': '', 'tipo': 'Entidad',
+                            'contacto_nombre': '', 'email': '',
+                            'destino': destino})
+        dialogo_parte.open()
+
+    def guardar_parte():
+        nombre = (nueva_parte['nombre'] or '').strip()
+        if not nombre:
+            ui.notify('El nombre de la parte es obligatorio', type='warning')
+            return
+        with get_db_session() as db:
+            ya = db.query(Stakeholder).filter(Stakeholder.nombre == nombre).first()
+            if ya:
+                # No se crea una segunda: se usa la que hay. Dos partes con el
+                # mismo nombre son indistinguibles en cualquier informe futuro.
+                ident = ya.id
+                ui.notify(f'«{nombre}» ya existía; se usa esa.', type='info')
+            else:
+                parte = Stakeholder(nombre=nombre,
+                                    tipo=(nueva_parte['tipo'] or '').strip() or None,
+                                    contacto_nombre=(nueva_parte['contacto_nombre']
+                                                     or '').strip() or None,
+                                    email=(nueva_parte['email'] or '').strip() or None)
+                db.add(parte)
+                db.commit()
+                ident = parte.id
+                ui.notify(f'Parte «{nombre}» creada', type='positive')
+        clave = f'{PREFIJO_EXTERNO}:{ident}'
+        lista = nuevo_informe[nueva_parte['destino']]
+        if clave not in lista:
+            lista.append(clave)
+        dialogo_parte.close()
+        render_ui()
+
+    with ui.dialog() as dialogo_parte, ui.card().classes('w-[460px] max-w-full'):
+        ui.label('Nueva parte del flujo').classes('text-lg font-bold text-slate-800')
+        ui.label('Un tercero externo: la entidad que exige el informe, la que lo '
+                 'recibe, un ente de control. Las partes internas son los '
+                 'usuarios del sistema y se crean en «Gestor de Usuarios».') \
+            .classes('text-xs text-slate-500')
+        ui.input('Nombre *').bind_value(nueva_parte, 'nombre').mark('nombre-parte').classes('w-full')
+        ui.select(TIPOS_DE_PARTE, label='Tipo', new_value_mode='add-unique',
+                  with_input=True).bind_value(nueva_parte, 'tipo').classes('w-full') \
+            .tooltip('Puede escribir uno que no esté en la lista.')
+        ui.input('Persona de contacto').bind_value(nueva_parte, 'contacto_nombre') \
+            .classes('w-full')
+        ui.input('Correo').bind_value(nueva_parte, 'email').classes('w-full')
+        with ui.row().classes('w-full justify-end mt-3 gap-2'):
+            ui.button('Cancelar', on_click=dialogo_parte.close).props('flat')
+            ui.button('Crear y añadir', icon='check', on_click=guardar_parte) \
+                .classes('bg-slate-900 text-white')
 
     # --- MODALES ---
     with ui.dialog() as dialogo_detalle, ui.card().classes('w-[700px] max-w-full p-0'):
@@ -407,7 +933,7 @@ def page_reports_manager():
                 ui.label('Gestor de Informes').classes('text-2xl font-bold text-slate-800')
                 with ui.row().classes('gap-2'):
                     ui.input(placeholder='Buscar...', on_change=lambda e: render_ui()).bind_value(estado, 'filtro')
-                    ui.button('Nuevo', icon='add', on_click=ir_a_formulario_nuevo).classes('bg-slate-900 text-white')
+                    ui.button('Nuevo', icon='add', on_click=ir_a_formulario_nuevo).mark('nuevo-informe').classes('bg-slate-900 text-white')
 
             with get_db_session() as db:
                 query = db.query(Informe)
@@ -453,45 +979,123 @@ def page_reports_manager():
 
             with get_db_session() as db:
                 usuarios = db.query(Usuario).all()
-                vars_db = db.query(MetaVariable).all()
                 sh_db = db.query(Stakeholder).all()
                 
                 opciones_users = {str(u.id): u.nombre for u in usuarios}
-                # --- CARGAR TERCEROS PARA SELECTOR ---
-                opciones_sh = {str(s.id): f"{s.nombre} ({s.tipo})" for s in sh_db}
+                # Las partes del flujo: internas y externas en la misma lista.
+                opciones_partes = opciones_de_partes(usuarios, sh_db)
 
             with ui.row().classes('w-full gap-6'):
                 # COL 1
                 with ui.card().classes('w-1/2 p-4'):
                     ui.label('Datos Básicos').classes('text-lg font-bold text-blue-800')
-                    ui.input('Nombre').bind_value(nuevo_informe, 'nombre').classes('w-full')
+                    ui.input('Nombre').bind_value(nuevo_informe, 'nombre').mark('nombre-informe').classes('w-full')
                     ui.textarea('Descripción').bind_value(nuevo_informe, 'descripcion').classes('w-full')
 
                     ui.label('Formatos').classes('mt-2 text-sm font-bold')
-                    ui.select(['pdf', 'xlsx', 'xls', 'docx', 'zip'], multiple=True).bind_value(nuevo_informe, 'extensiones').classes('w-full')
+                    ui.select(['pdf', 'xlsx', 'xls', 'docx', 'zip'], multiple=True).bind_value(nuevo_informe, 'extensiones').mark('formatos-informe').classes('w-full')
 
                     ui.label('Responsables (Usuarios)').classes('mt-2 text-sm font-bold')
                     ui.select(opciones_users, multiple=True).bind_value(nuevo_informe, 'responsables').classes('w-full')
 
-                    # --- NUEVO: STAKEHOLDERS ---
+                    # --- LAS PARTES DEL FLUJO ---
+                    # Obligatorias las dos: un informe que nadie pide y que no
+                    # se le entrega a nadie generaría entregas sin quien las
+                    # reciba ni quien reclame si no llegan.
                     ui.separator().classes('my-2')
-                    ui.label('Solicitado por:').classes('text-sm font-bold')
-                    ui.select(opciones_sh, multiple=True, label='Seleccione Entidades').bind_value(nuevo_informe, 'solicitantes').classes('w-full')
+                    with ui.row().classes('items-center gap-0 no-wrap'):
+                        ui.label('Partes del flujo').classes('text-sm font-bold')
+                        ayuda('Una parte puede ser INTERNA —un área o una persona '
+                              'de la propia entidad— o EXTERNA —un tercero que no '
+                              'entra al sistema—. De eso depende el tipo de flujo, '
+                              'y por eso el selector marca cuál es cuál.\n\n'
+                              'La misma entidad puede ser las dos cosas: el '
+                              'ministerio que exige el informe suele ser también '
+                              'el que lo recibe.')
 
-                    ui.label('Destinatarios (Envío):').classes('text-sm font-bold')
-                    ui.select(opciones_sh, multiple=True, label='Seleccione Entidades').bind_value(nuevo_informe, 'destinatarios').classes('w-full')
+                    for etiqueta, clave, pista in (
+                            ('Solicitado por *', 'solicitantes',
+                             'Quién pide el informe, o qué norma lo exige'),
+                            ('Destinatarios (envío) *', 'destinatarios',
+                             'A quién se entrega')):
+                        ui.label(etiqueta).classes('text-sm font-bold mt-2')
+                        with ui.row().classes('w-full items-center gap-2 no-wrap'):
+                            ui.select(opciones_partes, multiple=True, with_input=True,
+                                      label=pista) \
+                                .bind_value(nuevo_informe, clave).classes('flex-1')
+                            ui.button(icon='person_add',
+                                      on_click=lambda _, k=clave: abrir_alta_parte(k)) \
+                                .props('flat dense round color=primary') \
+                                .mark(f'alta-parte-{clave}') \
+                                .tooltip('Crear una parte nueva sin salir de aquí')
+                    if not opciones_partes:
+                        # Sin partes en el sistema, los dos campos obligatorios
+                        # son imposibles de contestar. Se dice aquí, no al
+                        # intentar guardar.
+                        ui.label('Todavía no hay partes registradas: cree la '
+                                 'primera con el botón de al lado.') \
+                            .classes('text-xs text-amber-700')
 
                 # COL 2 (Tiempo)
                 with ui.card().classes('w-1/2 p-0 overflow-hidden border-t-4 border-purple-600'):
                     with ui.row().classes('items-center gap-0 no-wrap px-4 pt-3'):
                         ui.label('Cronograma').classes('font-bold text-purple-800 text-sm')
-                        ayuda('Define cuándo vence este informe. '
-                              'Cíclico: cada cierto intervalo (ej. cada 30 días). '
-                              'Específico: en meses y día de corte concretos (ej. día 7 de marzo y septiembre). '
-                              'Semanal: en días de la semana. '
-                              'Por Horas: varias veces al día. '
-                              'A Demanda: sin cronograma fijo, se genera cuando se solicita. '
-                              'Las casillas de "día hábil" mueven la fecha si cae en fin de semana o festivo.')
+                        ayuda('Define cuándo vence este informe.\n\n'
+                              'El camino recomendado es el asistente: se marcan '
+                              'las fechas en un calendario y el sistema dice qué '
+                              'periodicidad son. Quien crea una obligación tiene '
+                              'delante fechas —las de la norma o el contrato—, no '
+                              'un catálogo de periodicidades.\n\n'
+                              'Las pestañas son el modo manual, y no saben '
+                              'expresar todo lo que el motor admite: varios días '
+                              'al mes, «el último martes», cada N semanas o cada '
+                              'N años solo se pueden definir con el asistente.')
+
+                    # --- El asistente: el calendario pregunta, la lista responde
+                    def usar_regla_del_asistente(regla, resumen):
+                        nuevo_informe['regla'] = regla
+                        nuevo_informe['regla_resumen'] = resumen
+                        # La vigencia del cronograma manda sobre la del
+                        # formulario: son el mismo dato y tener dos sería
+                        # garantizar que uno esté mal.
+                        if regla.get('fecha_inicio'):
+                            nuevo_informe['fecha_inicio'] = regla['fecha_inicio']
+                        ui.notify('Cronograma definido', type='positive')
+                        render_ui()
+
+                    def quitar_regla():
+                        nuevo_informe['regla'] = None
+                        nuevo_informe['regla_resumen'] = ''
+                        render_ui()
+
+                    with ui.column().classes('w-full px-4 pt-3 gap-2'):
+                        if nuevo_informe.get('regla'):
+                            with ui.row().classes('w-full items-start gap-2 p-3 no-wrap '
+                                                  'bg-emerald-50 border border-emerald-200 rounded'):
+                                ui.icon('event_available').classes('text-emerald-600 mt-0.5')
+                                with ui.column().classes('gap-0 flex-1'):
+                                    ui.label(nuevo_informe.get('regla_resumen')
+                                             or 'Cronograma definido') \
+                                        .classes('text-sm font-bold text-emerald-900')
+                                    ui.label('Rige desde '
+                                             f"{nuevo_informe['regla'].get('fecha_inicio', '—')}") \
+                                        .classes('text-xs text-emerald-700')
+                            with ui.row().classes('w-full gap-2'):
+                                ui.button('Volver a definirlo', icon='edit_calendar',
+                                          on_click=lambda: abrir_asistente(
+                                              usar_regla_del_asistente,
+                                              nuevo_informe['regla'])).props('outline dense')
+                                ui.button('Quitar', icon='delete', on_click=quitar_regla) \
+                                    .props('flat dense color=grey')
+                        else:
+                            ui.button('Definir con el calendario', icon='edit_calendar',
+                                      on_click=lambda: abrir_asistente(
+                                          usar_regla_del_asistente)) \
+                                .classes('w-full bg-purple-700 text-white')
+                            ui.label('Se marcan las fechas y el sistema dice qué '
+                                     'periodicidad son. O úselo a mano, más abajo.') \
+                                .classes('text-xs text-slate-500')
+
                     with ui.tabs().classes('bg-slate-100 text-slate-600 w-full') as tabs:
                         t_cic = ui.tab('Cíclico'); t_esp = ui.tab('Específico'); t_sem = ui.tab('Semanal'); t_hor = ui.tab('Por Horas'); t_inm = ui.tab('A Demanda')
                     
@@ -504,10 +1108,6 @@ def page_reports_manager():
                     map_tabs = {'CICLICO': 'Cíclico', 'ESPECIFICO': 'Específico', 'SEMANAL': 'Semanal', 'HOURLY': 'Por Horas', 'INMEDIATO': 'A Demanda'}
                     tabs.set_value(map_tabs.get(curr, 'Cíclico'))
 
-                    # Fecha inicio compartida por todos los modos
-                    with ui.row().classes('w-full px-4 pt-4'):
-                        ui.input('Fecha Inicio', value=nuevo_informe['fecha_inicio'], on_change=refrescar_vista_previa).props('type="date"').bind_value(nuevo_informe, 'fecha_inicio').classes('w-full')
-
                     # --- Vista previa de los vencimientos --------------
                     # Definir la obligación era, hasta ahora, un acto a ciegas:
                     # se elegía periodicidad y ajuste, se guardaba, y las fechas
@@ -515,6 +1115,14 @@ def page_reports_manager():
                     # tareas. Una regla mal entendida no falla ruidosamente —
                     # genera fechas distintas de las que la persona creía, o
                     # ninguna.
+                    #
+                    # Esto va ANTES del campo de fecha de inicio, y no es
+                    # cosmético: aquel lo pasa como `on_change`, así que el
+                    # nombre tiene que existir ya. Estando después, abrir «Nuevo
+                    # Informe» reventaba con UnboundLocalError y el formulario
+                    # se quedaba a medio dibujar. Lo encontró
+                    # `tests/test_asistente_pantalla.py`, que es la primera
+                    # prueba que ABRE esta pantalla en vez de importarla.
                     contenedor_vista_previa = None  # se crea bajo las pestañas
 
                     def refrescar_vista_previa(*_):
@@ -543,7 +1151,11 @@ def page_reports_manager():
                                             'text-xs ' + ('text-amber-800' if v.se_ajusto
                                                           else 'text-slate-600'))
 
-                    with ui.tab_panels(tabs, value=tabs.value).classes('w-full p-4'):
+                    # Fecha inicio compartida por todos los modos
+                    with ui.row().classes('w-full px-4 pt-4') as fila_fecha_inicio:
+                        ui.input('Fecha Inicio', value=nuevo_informe['fecha_inicio'], on_change=refrescar_vista_previa).props('type="date"').bind_value(nuevo_informe, 'fecha_inicio').classes('w-full')
+
+                    with ui.tab_panels(tabs, value=tabs.value).classes('w-full p-4') as paneles:
                         with ui.tab_panel(t_cic):
                             with ui.row().classes('w-full gap-2'):
                                 ui.number('Años', format='%.0f', on_change=calcular_dias).bind_value(nuevo_informe['tiempo_ciclico'], 'anos').classes('w-1/3')
@@ -578,6 +1190,30 @@ def page_reports_manager():
                             with ui.row().classes('w-full gap-4 items-center'):
                                 ui.number('Día de corte', min=1, max=31, format='%.0f', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'dia_corte').classes('w-1/3')
                                 ui.checkbox('Último día del mes', on_change=refrescar_vista_previa).bind_value(nuevo_informe['tiempo_especifico'], 'es_ultimo_dia')
+                            # Febrero no tiene día 30. El sistema NO decide por
+                            # el administrador: bloquea al guardar y le devuelve
+                            # las tres salidas. Esta es una de ellas, y hay que
+                            # marcarla a propósito.
+                            ui.checkbox('Si el mes no tiene ese día, usar el último',
+                                        on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_especifico'],
+                                            'usar_ultimo_dia_en_meses_cortos') \
+                                .tooltip('Con día de corte 29, 30 o 31 hay meses que no lo '
+                                         'tienen. Marque esto para que en esos meses el '
+                                         'vencimiento sea el último día, o elija otro día '
+                                         'de corte.')
+                            # «Dentro de los primeros cinco días HÁBILES del mes
+                            # siguiente» es de las formas más frecuentes de fijar
+                            # un plazo en la norma, y no se puede expresar
+                            # moviendo una fecha: si el mes empieza en festivo,
+                            # el 5º hábil es el 8, no el 5 corrido al 8.
+                            ui.number('… o día HÁBIL del mes (0 = no usar)', min=0, max=23,
+                                      format='%.0f', on_change=refrescar_vista_previa) \
+                                .bind_value(nuevo_informe['tiempo_especifico'], 'dia_habil') \
+                                .classes('w-full') \
+                                .tooltip('Cuenta solo días hábiles: «el 5º día hábil del mes». '
+                                         'Distinto de poner 5 en el día de corte, que cuenta '
+                                         'días corridos. Si lo usa, el día de corte se ignora.')
                             ui.select(AJUSTE_HABIL, label='Si cae en día no hábil',
                                       on_change=refrescar_vista_previa) \
                                 .bind_value(nuevo_informe['tiempo_especifico'], 'ajuste') \
@@ -614,102 +1250,57 @@ def page_reports_manager():
                             ui.label('Este informe se genera a demanda.').classes('text-gray-500 italic')
                             ui.label('No tiene periodicidad automática. Las entregas se crean manualmente desde "Entregas Manuales".').classes('text-sm text-gray-400')
 
+                    # Con un cronograma del asistente puesto, el modo manual se
+                    # esconde entero. Tener las dos vías visibles a la vez sería
+                    # dejar en pantalla dos fuentes para la misma obligación, y
+                    # quien tocara las pestañas creería estar cambiando algo que
+                    # `_construir_regla` ya no mira.
+                    if nuevo_informe.get('regla'):
+                        tabs.visible = False
+                        paneles.visible = False
+                        fila_fecha_inicio.visible = False
+
                     contenedor_vista_previa = ui.column().classes('w-full px-4 pb-3')
                     refrescar_vista_previa()
 
-            # NUEVA SECCIÓN: CLASIFICACIÓN Y ORIGEN v3.0
-            with ui.row().classes('w-full gap-4 mt-4'):
-                with ui.card().classes('w-1/2 p-4 border-l-4 border-teal-500'):
-                    ui.label('Clasificación y Origen').classes('text-lg font-bold text-teal-800')
-
-                    # Tipo de Flujo: se MUESTRA, no se elige. Lo determinan las
-                    # partes (abajo: responsables, solicitantes, destinatarios).
-                    # Dejarlo elegible permitía marcar "Recepción Externa" un
-                    # informe cuyas partes eran todas internas.
-                    ETIQUETAS_FLUJO = {
-                        'ENVIO_INTERNO': 'Envío Interno',
-                        'ENVIO_EXTERNO': 'Envío Externo',
-                        'RECEPCION_EXTERNA': 'Recepción Externa',
-                        'BIDIRECCIONAL': 'Bidireccional',
-                    }
-
-                    def _flujo_derivado() -> str:
-                        sale = bool(nuevo_informe['destinatarios'])
-                        entra = nuevo_informe.get('origen_externo') or False
-                        if sale and entra:
-                            return 'BIDIRECCIONAL'
-                        if sale:
-                            return 'ENVIO_EXTERNO'
-                        if entra:
-                            return 'RECEPCION_EXTERNA'
-                        return 'ENVIO_INTERNO'
-
-                    with ui.row().classes('w-full items-center gap-2'):
-                        ui.label('Tipo de Flujo:').classes('text-sm text-gray-600')
-                        lbl_flujo = ui.label().classes('text-sm font-bold text-teal-700')
-                        ayuda('Se deduce de las partes: si hay destinatarios externos '
-                              'el informe sale; si el origen es un tercero, entra.')
-                    lbl_flujo.bind_text_from(
-                        nuevo_informe, 'destinatarios',
-                        backward=lambda _: ETIQUETAS_FLUJO[_flujo_derivado()])
-
-                    # Subsistema
-                    ui.input('Subsistema').bind_value(nuevo_informe, 'subsistema').classes('w-full').props('outlined')
-
-                    # Conjunto de Datos
-                    with get_db_session() as db2:
-                        conjuntos = db2.query(ConjuntoDatos).filter_by(activo=True).order_by(ConjuntoDatos.nombre).all()
-                        opciones_conjuntos = {str(c.id): c.nombre for c in conjuntos}
-                    opciones_conjuntos[''] = 'Sin asignar'
-                    ui.select(
-                        label='Conjunto de Datos',
-                        options=opciones_conjuntos,
-                        with_input=True
-                    ).bind_value(nuevo_informe, 'conjunto_datos_id').classes('w-full').props('outlined')
-
-                    # Unidad Organizacional (v4.0)
-                    with get_db_session() as db3:
-                        unidades = db3.query(UnidadOrganizacional).filter_by(activo=True).order_by(UnidadOrganizacional.nombre).all()
-                        opts_unidad = {None: '— Sin unidad —'}
-                        opts_unidad.update({u.id: u.nombre for u in unidades})
-                    ui.select(
-                        label='Unidad Responsable',
-                        options=opts_unidad,
-                    ).bind_value(nuevo_informe, 'unidad_id').classes('w-full').props('outlined')
-
-                    # Aplicativo Origen
-                    ui.input('Aplicativo/Herramienta Origen').bind_value(nuevo_informe, 'aplicativo_origen').classes('w-full').props('outlined')
-
-                with ui.card().classes('w-1/2 p-4 border-l-4 border-orange-500'):
-                    ui.label('Plantillas y Normatividad').classes('text-lg font-bold text-orange-800')
-
-                    # Plantillas
-                    ui.input('URL Plantilla').bind_value(nuevo_informe, 'url_plantilla').classes('w-full').props('outlined')
-                    ui.input('Ruta Plantilla (Filesystem)').bind_value(nuevo_informe, 'ruta_plantilla').classes('w-full').props('outlined')
-
-                    # Justificación
-                    ui.textarea('Justificación / Normatividad').bind_value(nuevo_informe, 'justificacion_normatividad').classes('w-full').props('outlined rows=3')
-
-                    # Acuerdo de Confidencialidad
-                    ui.separator().classes('my-2')
-                    with ui.row().classes('w-full items-center gap-2'):
-                        ui.checkbox('Requiere Acuerdo de Confidencialidad').bind_value(nuevo_informe, 'tiene_acuerdo_confidencialidad')
-
-                    ui.input('Cargo Autorizador').bind_value(nuevo_informe, 'cargo_autorizador').classes('w-full').props('outlined')
-
-            # COL 3 (Variables - Igual)
-            with ui.card().classes('w-full mt-4 p-4 bg-green-50'):
-                ui.label('Variables').classes('text-lg font-bold text-green-900')
-                with ui.column().classes('w-full gap-2'):
-                    for v in vars_db:
-                        with ui.row().classes('items-center justify-between border-b p-2'):
-                            checked = str(v.id) in nuevo_informe['variables_config'] and nuevo_informe['variables_config'][str(v.id)] is not None
-                            chk = ui.checkbox(v.etiqueta_visual, value=checked).classes('text-bold')
-                            ui.input(placeholder='Valor').bind_value(nuevo_informe['variables_config'], str(v.id)).bind_visibility_from(chk, 'value').classes('w-1/2')
-                            def up(e, vid=str(v.id)):
-                                if not e.value: nuevo_informe['variables_config'][vid] = None
-                                elif nuevo_informe['variables_config'].get(vid) is None: nuevo_informe['variables_config'][vid] = ""
-                            chk.on('change', up)
+            # ---- LA FICHA: LOS CAMPOS QUE EL ADMINISTRADOR DEFINA ----
+            #
+            # El esqueleto de un informe son TRES cosas: qué es (datos básicos),
+            # cuándo vence (cronograma) y cómo lo describe esta entidad (ficha).
+            # Nada más.
+            #
+            # Aquí llegó a haber dos tarjetas más. La primera traía nueve campos
+            # fijos copiados del Excel de un cliente. Al volverlos definibles
+            # quedó una «Clasificación» con el tipo de flujo, el conjunto de
+            # datos y la unidad — y seguía siendo estructura impuesta: se midió
+            # y NADA fuera de esta pantalla leía esas dos relaciones. La segunda
+            # separaba los campos en «ficha» y «datos de la entrega», una
+            # distinción que tampoco cambiaba nada: ningún camino de entrega lee
+            # los valores configurados. Dos secciones para lo mismo garantizan
+            # que una se quede atrás.
+            #
+            # El tipo de flujo no desaparece: lo siguen diciendo las partes, y
+            # se ve en la ficha técnica del informe. Lo que desaparece es
+            # mostrarlo aquí como si fuera un campo que se rellena.
+            with ui.card().classes('w-full mt-4 p-4 border-l-4 border-orange-500'):
+                with ui.row().classes('w-full items-center justify-between no-wrap'):
+                    with ui.row().classes('items-center gap-0 no-wrap'):
+                        ui.label('Ficha del informe') \
+                            .classes('text-lg font-bold text-orange-800')
+                        ayuda('Los campos de la ficha los define usted: subsistema, '
+                              'norma que lo exige, aplicativo de origen, lo que su '
+                              'entidad necesite. No viene ninguno impuesto.\n\n'
+                              'Se crean con el «+» y quedan disponibles para TODOS '
+                              'los informes.')
+                    ui.button(icon='add', on_click=abrir_alta_campo) \
+                        .props('flat dense round color=orange') \
+                        .mark('alta-campo-ficha') \
+                        .tooltip('Crear un campo nuevo sin salir de aquí')
+                _pintar_campos(
+                    'Este informe todavía no tiene campos de ficha. Con el «+» '
+                    'se añaden los que ya existen —para no volver a crearlos— o '
+                    'se crea uno nuevo. Los campos que describen un informe los '
+                    'decide cada entidad, no el programa.')
 
             ui.button('Guardar', on_click=guardar).classes('mt-6 w-full bg-slate-900 text-white')
 

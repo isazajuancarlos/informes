@@ -3,7 +3,7 @@ import os
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from app.core.database import get_db_session
-from app.models.meta_tables import MetaVariable, Usuario, MetaRegla
+from app.models.meta_tables import Usuario
 from app.services.auth import AuthService
 
 def inyectar_datos():
@@ -20,52 +20,16 @@ def inyectar_datos():
             db.commit()
             print("✅ Usuarios creados (admin@co.co / 123456).")
 
-        # 2. VARIABLES REUTILIZABLES (Catálogo)
-        if db.query(MetaVariable).count() == 0:
-            vars_base = [
-                MetaVariable(
-                    nombre_interno="hora_entrega", 
-                    etiqueta_visual="Hora de Entrega (HHMM)", 
-                    tipo_dato="HORA_MILITAR",
-                    descripcion="Hora en formato militar (0000-2359)"
-                ),
-                MetaVariable(
-                    nombre_interno="monto_gasto", 
-                    etiqueta_visual="Monto del Gasto", 
-                    tipo_dato="MONEDA",
-                    descripcion="Valor numérico positivo sin símbolos"
-                ),
-                MetaVariable(
-                    nombre_interno="observacion", 
-                    etiqueta_visual="Observaciones", 
-                    tipo_dato="TEXTO_ALFANUM",
-                    descripcion="Texto limpio sin caracteres especiales"
-                )
-            ]
-            db.add_all(vars_base)
-            db.commit()
-            print("✅ Variables creadas.")
-            
-            # 3. REGLAS ABSTRACTAS
-            # Recuperamos la variable para obtener su ID real
-            var_hora = db.query(MetaVariable).filter_by(nombre_interno="hora_entrega").first()
-            
-            if var_hora:
-                regla_hora = MetaRegla(
-                    nombre_regla="Validar Puntualidad",
-                    variable_id=var_hora.id,
-                    operador="LESS_THAN_OR_EQUAL", # <=
-                    
-                    # --- CORRECCIÓN AQUÍ ---
-                    valor_comparacion_json=None, # Antes decía valor_referencia_default
-                    # -----------------------
-                    
-                    tipo_consecuencia="NOTIFY_ROLE",
-                    payload_json={"mensaje_alerta": "Entrega tardía detectada", "rol_destino": "AUDITOR"}
-                )
-                db.add(regla_hora)
-                db.commit()
-                print("✅ Reglas base creadas.")
+        # Aquí se sembraban TRES variables de ejemplo —«Hora de Entrega»,
+        # «Monto del Gasto», «Observaciones»— con sus reglas. Eran el mismo
+        # problema que las nueve columnas fijas: el ejemplo de alguien
+        # convertido en el punto de partida de todos.
+        #
+        # Una instalación nueva arranca con los usuarios y NADA MÁS. La ficha de
+        # un informe empieza vacía porque los campos que describen un informe
+        # los decide cada entidad, y se crean desde la propia pantalla.
+        print("✅ Listo. Los campos de los informes se crean desde el sistema.")
+
 
 if __name__ == "__main__":
     inyectar_datos()

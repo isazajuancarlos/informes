@@ -2,9 +2,23 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## El nombre del producto
+
+Se llama **SIGER** — *Sistema Integral de Gestión de Informes*. La carpeta se
+llama `informes` y así se queda: el repositorio no es el producto.
+
+El nombre vive en **un solo sitio**, `app/core/config.py`
+(`NOMBRE_PRODUCTO` / `NOMBRE_LARGO`), y es configurable por entorno para que un
+cliente que lo instale en su casa pueda poner el suyo. **No se escribe a mano en
+ninguna pantalla**: llegó a estar en cinco sitios diciendo cinco cosas distintas
+—«SIGER» al entrar, «SISTEMA INTEGRAL» en la cabecera, «Sistema Gestión» en la
+pestaña del navegador, «Sistema de Gestión» en los correos y «Sistema de Gestión
+de Informes» en el clausulado— y no lo vio nadie porque nunca estuvieron en la
+misma frase. `tests/test_nombre_del_producto.py` impide que vuelvan a separarse.
+
 ## Project Overview
 
-This is a **Report Management System v4.0** ("Sistema Gestión de Informes") built with NiceGUI, FastAPI, SQLAlchemy, and PostgreSQL. It manages scheduled reports with dynamic variables, business rules validation, task assignment, stakeholder notifications, in-app notifications, organizational units, task delegation, and multi-language support (ES/EN). The system supports multiple user roles (ADMIN, OPERADOR, SUPERVISOR, TERCERO) with role-based access control.
+This is **SIGER** — Sistema Integral de Gestión de Informes, v4.0 — built with NiceGUI, FastAPI, SQLAlchemy, and PostgreSQL. It manages scheduled reports with dynamic variables, business rules validation, task assignment, stakeholder notifications, in-app notifications, organizational units, task delegation, and multi-language support (ES/EN). The system supports multiple user roles (ADMIN, OPERADOR, SUPERVISOR, TERCERO) with role-based access control.
 
 ## Development Commands
 
@@ -38,6 +52,12 @@ python migrar_esquema.py   # Adds missing columns. Idempotent, verified, both di
 
 Run it after every upgrade, before starting the app. It adds `firma`,
 `fecha_vencimiento_nominal` and `tipo_ajuste` to `entregas_esperadas`.
+
+On a **fresh** install the tables do not exist yet, so create the schema first
+(`python -m app.init_db`) and then migrate. The migration says so if you get the
+order wrong.
+
+The app listens on **port 8003** (`main.py`), not 8080.
 
 **Do not use `migrate_firma.py`**: it uses PostgreSQL-only syntax
 (`ADD COLUMN IF NOT EXISTS`, `information_schema`) and silently did nothing on

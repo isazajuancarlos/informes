@@ -31,7 +31,23 @@ from app.models.meta_tables import (  # noqa: E402
     NotificacionApp, Participacion, Stakeholder, UnidadOrganizacional, Usuario,
     ROL_DESTINO, ROL_EJECUTA, ROL_ORIGEN, ROL_SUPERVISA, ROL_USUARIO,
 )
-from app.services.calendar_engine import MotorReglasDinamicas  # noqa: E402
+from app.services.scheduler import GeneradorTareas  # noqa: E402
+
+
+def vencimientos_de(informe, desde, hasta):
+    """Los vencimientos de un informe, pedidos al MOTOR DE PRODUCCIÓN.
+
+    Es el mismo que usa el planificador. Una demo que calcule las fechas por su
+    cuenta enseña un sistema que no existe: antes usaba un segundo motor con
+    otro esquema de regla, y las reglas que mostraba habrían generado cero
+    tareas en la instalación del cliente.
+    """
+    salida, dia = [], desde
+    while dia <= hasta:
+        salida += GeneradorTareas.obtener_vencimientos_para_fecha(
+            dia, informe.recurrencia_json or {})
+        dia += timedelta(days=1)
+    return salida
 
 SEMILLA = 20260719  # reproducible: la misma demo en cada corrida
 HALLAZGOS: list[str] = []
@@ -107,13 +123,39 @@ REGLAS = [
 # --- Las obligaciones -------------------------------------------------
 # (nombre, descripción, conjunto, unidad, recurrencia, origen, destinos,
 #  usuarios, supervisor, extensiones, confidencial, autorizador)
+#: Las reglas se escriben en el MISMO formato que entiende el planificador de
+#: producción, y la demo genera sus entregas con ese planificador.
+#:
+#: Antes no era así, y la demo era un teatro: sus reglas usaban un esquema
+#: distinto (`freq`/`bymonthday`) que el planificador real ignora —generaban CERO
+#: vencimientos y el validador las habría rechazado—, y las entregas se
+#: insertaban a mano con fechas calculadas por un segundo motor de calendario.
+#: Se enseñaba a un cliente un sistema que, tal cual, no habría producido ni una
+#: sola tarea.
+MESES_TODOS = list(range(1, 13))
+MESES_TRIMESTRE = [3, 6, 9, 12]
+
+#: Cada obligación declara además `vencimientos_al_ano`: cuántos DEBE producir.
+#:
+#: Es una declaración de intención, deliberadamente separada de la regla. La
+#: primera versión de la prueba derivaba ese número de la propia regla —
+#: `len(regla["meses"])`— y por tanto no podía detectar que una obligación
+#: trimestral se volviera mensual: al cambiar la regla cambiaba también lo
+#: esperado. Una prueba circular pasa siempre, que es la peor manera de pasar.
+
+#: Vigencia de las obligaciones de la demo. Se fija lejos hacia atrás para que el
+#: histórico simulado quede dentro.
+INICIO = "2020-01-01"
+
 OBLIGACIONES = [
     dict(
         nombre="Reporte mensual de accidentalidad laboral",
         descripcion="Novedades de accidentes y enfermedad laboral del periodo.",
         conjunto="Seguridad y salud en el trabajo",
         unidad="Seguridad y Salud en el Trabajo",
-        recurrencia={"freq": "MONTHLY", "bymonthday": 5, "ajuste": "NEXT_WORKDAY"},
+        vencimientos_al_ano=12,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TODOS, "dia_corte": 5,
+                     "ajuste_habil": True, "fecha_inicio": INICIO},
         origen="sst@andina-demo.co",
         destinos_externos=["ARL Seguros del Norte"],
         usuarios_externos=[],
@@ -127,7 +169,9 @@ OBLIGACIONES = [
         descripcion="Balance y resultados del mes, en moneda de reporte del grupo.",
         conjunto="Información financiera",
         unidad="Financiera",
-        recurrencia={"freq": "MONTHLY", "bymonthday": 10, "ajuste": "NEXT_WORKDAY"},
+        vencimientos_al_ano=12,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TODOS, "dia_corte": 10,
+                     "ajuste_habil": True, "fecha_inicio": INICIO},
         origen="financiera@andina-demo.co",
         destinos_externos=["Grupo Nordkapp AB (casa matriz)"],
         usuarios_externos=[],
@@ -141,8 +185,9 @@ OBLIGACIONES = [
         descripcion="Certificación de indicadores financieros pactados con el banco.",
         conjunto="Información financiera",
         unidad="Financiera",
-        recurrencia={"freq": "MONTHLY", "interval": 3, "bymonthday": 15,
-                     "ajuste": "PREV_WORKDAY"},
+        vencimientos_al_ano=4,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TRIMESTRE, "dia_corte": 15,
+                     "ajuste_habil_anterior": True, "fecha_inicio": INICIO},
         origen="financiera@andina-demo.co",
         destinos_externos=["Banco de Occidente Andino"],
         usuarios_externos=[],
@@ -156,7 +201,9 @@ OBLIGACIONES = [
         descripcion="Cumplimiento de entregas pactado en contrato de suministro.",
         conjunto="Relación con clientes",
         unidad="Operaciones y Planta",
-        recurrencia={"freq": "MONTHLY", "bymonthday": 3, "ajuste": "NEXT_WORKDAY"},
+        vencimientos_al_ano=12,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TODOS, "dia_corte": 3,
+                     "ajuste_habil": True, "fecha_inicio": INICIO},
         origen="operaciones@andina-demo.co",
         destinos_externos=["Nordics Retail AB (cliente)"],
         usuarios_externos=[],
@@ -171,7 +218,9 @@ OBLIGACIONES = [
         descripcion="Ensayos de materia prima que el laboratorio remite a la planta.",
         conjunto="Calidad y producto",
         unidad="Aseguramiento de Calidad",
-        recurrencia={"freq": "MONTHLY", "bymonthday": 20, "ajuste": "NEXT_WORKDAY"},
+        vencimientos_al_ano=12,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TODOS, "dia_corte": 20,
+                     "ajuste_habil": True, "fecha_inicio": INICIO},
         origen_externo="LabAnalítica S.A.S.",
         destino_interno="calidad@andina-demo.co",
         usuarios_externos=[],
@@ -185,7 +234,9 @@ OBLIGACIONES = [
         descripcion="Acta mensual del comité; circula solo dentro de la empresa.",
         conjunto="Seguridad y salud en el trabajo",
         unidad="Seguridad y Salud en el Trabajo",
-        recurrencia={"freq": "MONTHLY", "bymonthday": 28, "ajuste": "PREV_WORKDAY"},
+        vencimientos_al_ano=12,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TODOS, "dia_corte": 28,
+                     "ajuste_habil_anterior": True, "fecha_inicio": INICIO},
         origen="sst@andina-demo.co",
         destinos_internos=["gerencia@andina-demo.co"],
         destinos_externos=[],
@@ -200,8 +251,9 @@ OBLIGACIONES = [
         descripcion="Tablero de no conformidades y acciones correctivas.",
         conjunto="Calidad y producto",
         unidad="Aseguramiento de Calidad",
-        recurrencia={"freq": "MONTHLY", "interval": 3, "bymonthday": 25,
-                     "ajuste": "NEXT_WORKDAY"},
+        vencimientos_al_ano=4,
+        recurrencia={"modo": "ESPECIFICO", "meses": MESES_TRIMESTRE, "dia_corte": 25,
+                     "ajuste_habil": True, "fecha_inicio": INICIO},
         origen="calidad@andina-demo.co",
         destinos_externos=[],
         usuarios_externos=["Ente certificador ISO"],
@@ -215,7 +267,9 @@ OBLIGACIONES = [
         descripcion="Consumos del periodo para el reporte de sostenibilidad del grupo.",
         conjunto="Sostenibilidad",
         unidad="Operaciones y Planta",
-        recurrencia={"freq": "WEEKLY", "byweekday": "MO", "ajuste": "NEXT_WORKDAY"},
+        vencimientos_al_ano=52,
+        recurrencia={"modo": "SEMANAL", "dias_semana": [0],
+                     "mover_habil": True, "fecha_inicio": INICIO},
         origen="operaciones@andina-demo.co",
         destinos_externos=["Grupo Nordkapp AB (casa matriz)"],
         usuarios_externos=[],
@@ -352,7 +406,6 @@ def construir(db, meses: int):
 def operar(db, personas, informes, meses: int):
     print(f"\n▶ 4/5  Operación simulada de {meses} meses")
     rnd = random.Random(SEMILLA)
-    motor = MotorReglasDinamicas("CO")
     hoy = datetime.now()
     desde = hoy - timedelta(days=30 * meses)
 
@@ -368,19 +421,17 @@ def operar(db, personas, informes, meses: int):
         titular = ejecutores[0] if ejecutores else None
         suplente = ejecutores[1] if len(ejecutores) > 1 else titular
 
-        fechas = []
-        for anio in sorted({desde.year, hoy.year}):
-            cal = motor.generar_calendario(inf.recurrencia_json, anio)
-            if isinstance(cal, dict):           # el motor devuelve dict en error
-                hallazgo(f"El calendario de «{inf.nombre[:40]}» falló: {cal.get('error')}")
-                continue
-            fechas.extend(cal)
+        vencimientos = vencimientos_de(inf, desde.date(),
+                                       (hoy + timedelta(days=45)).date())
+        if not vencimientos:
+            hallazgo(f"La regla de «{inf.nombre[:40]}» no genera NINGÚN "
+                     f"vencimiento en el planificador real.")
 
-        for item in fechas:
-            limite = datetime.combine(item["fecha_limite_real"], datetime.min.time())
+        for v in vencimientos:
+            limite = datetime.combine(v.limite, datetime.min.time())
             if not (desde <= limite <= hoy):
                 continue
-            if item["accion_tomada"] != "Sin cambios":
+            if v.se_movio:
                 ajustadas_por_festivo += 1
 
             # Quién responde: 1 de cada 8 veces contesta el suplente.
@@ -400,7 +451,10 @@ def operar(db, personas, informes, meses: int):
                 informe_id=inf.id,
                 usuario_id=responsable.id if responsable else None,
                 fecha_programada=limite - timedelta(days=3),
+                fecha_vencimiento_nominal=datetime.combine(v.nominal,
+                                                           datetime.min.time()),
                 fecha_limite_teorica=limite,
+                tipo_ajuste=v.ajuste,
                 fecha_entrega_real=entrega,
                 estado=estado,
             )
@@ -440,18 +494,18 @@ def operar(db, personas, informes, meses: int):
     # Entregas futuras: lo que el sistema tiene por delante.
     pendientes = 0
     for inf in informes:
-        cal = motor.generar_calendario(inf.recurrencia_json, hoy.year)
-        if isinstance(cal, dict):
-            continue
-        for item in cal:
-            limite = datetime.combine(item["fecha_limite_real"], datetime.min.time())
+        for v in vencimientos_de(inf, hoy.date(), (hoy + timedelta(days=45)).date()):
+            limite = datetime.combine(v.limite, datetime.min.time())
             if hoy < limite <= hoy + timedelta(days=45):
                 ejec = [p.usuario for p in inf.partes(ROL_EJECUTA) if not p.es_externa]
                 db.add(EntregaEsperada(
                     informe_id=inf.id,
                     usuario_id=ejec[0].id if ejec else None,
                     fecha_programada=limite - timedelta(days=3),
+                    fecha_vencimiento_nominal=datetime.combine(
+                        v.nominal, datetime.min.time()),
                     fecha_limite_teorica=limite,
+                    tipo_ajuste=v.ajuste,
                     estado="PENDIENTE",
                 ))
                 pendientes += 1

@@ -9,6 +9,7 @@ from app.models.meta_tables import EntregaEsperada, Usuario, Informe
 from app.services.email_service import EmailService
 from app.core.config import EMAIL_ENABLED, APP_BASE_URL
 import asyncio
+from app.core.config import NOMBRE_PRODUCTO
 
 class AlertService:
     """
@@ -187,7 +188,7 @@ class AlertService:
             print(f"⚠️ Would send SLA report to {email_supervisor}")
             return False
 
-        asunto = "📊 Reporte de SLA - Sistema de Gestión"
+        asunto = f"📊 Reporte de SLA - {NOMBRE_PRODUCTO}"
 
         html = f"""
         <h2>Reporte de Cumplimiento SLA</h2>

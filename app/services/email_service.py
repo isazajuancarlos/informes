@@ -4,6 +4,7 @@ from email.mime.multipart import MIMEMultipart
 from nicegui import run
 import os
 from app.core.config import SMTP_HOST, SMTP_PORT, SENDER_EMAIL, SENDER_PASSWORD, EMAIL_ENABLED, APP_BASE_URL
+from app.core.config import NOMBRE_PRODUCTO
 
 class EmailService:
     # --- CONFIGURACIÓN desde variables de entorno ---
@@ -11,7 +12,7 @@ class EmailService:
     SMTP_PORT = SMTP_PORT
     SENDER_EMAIL = SENDER_EMAIL
     SENDER_PASSWORD = SENDER_PASSWORD
-    DISPLAY_NAME = "Sistema de Gestión"
+    DISPLAY_NAME = NOMBRE_PRODUCTO
 
     # URL BASE DEL SISTEMA — configurable via APP_BASE_URL en .env
     BASE_URL = APP_BASE_URL

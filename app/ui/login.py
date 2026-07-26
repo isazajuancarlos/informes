@@ -3,6 +3,7 @@ from app.services.auth import AuthService
 from app.services.email_service import EmailService
 from app.core.database import get_db_session
 from app.services.session_manager import SessionManager, SecurityAudit
+from app.core.config import NOMBRE_PRODUCTO, NOMBRE_LARGO
 
 
 def page_login():
@@ -81,24 +82,49 @@ def page_login():
                 backdrop-filter: blur(12px);
                 border: 1px solid rgba(255,255,255,0.08);
             }
+
+            /* El panel de marca se mostraba con las clases `hidden lg:flex`, y
+               NO SE MOSTRABA NUNCA: media pantalla en negro y el nombre del
+               sistema invisible.
+
+               NiceGUI compila Tailwind EN EL NAVEGADOR, y ahí el orden en que
+               emite `.hidden` y `.lg\\:flex` no está garantizado; si `.hidden`
+               queda después, gana siempre. Medido con navegador real a 1440 px
+               de ancho —muy por encima del corte de 1024—: `display: none`.
+
+               Se controla aquí, que es donde el orden sí lo decidimos nosotros.
+               El `!important` no es pereza: compite contra utilidades generadas
+               en tiempo de ejecución cuya posición en la hoja no controlamos. */
+            .login-panel { display: none !important; }
+            @media (min-width: 1024px) {
+                .login-panel { display: flex !important; }
+            }
         </style>
     ''')
 
-    with ui.row().classes('w-full min-h-screen m-0 p-0'):
+    # `gap-0` y quitar el relleno de la página no son cosmética: la fila de
+    # NiceGUI trae 16 px de separación y la página 16 de relleno, así que dos
+    # columnas al 50 % suman 1424 px donde caben 1408 — y la segunda BAJA. Con
+    # el panel de marca oculto solo quedaba una columna, no había desbordamiento,
+    # y el fallo se disfrazaba de «media pantalla vacía a la derecha».
+    ui.query('.nicegui-content').classes('p-0 gap-0')
+
+    with ui.row().classes('w-full min-h-screen m-0 p-0 gap-0 no-wrap'):
 
         # ── Panel izquierdo (branding) ────────────────────────────────────
+        # Sin `hidden lg:flex`: lo decide el CSS de arriba. Ver el comentario.
         with ui.column().classes(
-            'hidden lg:flex w-1/2 min-h-screen login-panel '
+            'w-1/2 min-h-screen login-panel '
             'items-center justify-center p-12 gap-8'
         ):
             with ui.column().classes('items-center gap-6 max-w-sm'):
                 with ui.row().classes('items-center gap-3'):
                     ui.icon('analytics').classes('text-6xl text-blue-400')
-                    ui.label('SIGER').classes(
+                    ui.label(NOMBRE_PRODUCTO).classes(
                         'text-4xl font-black text-white tracking-wider'
                     )
 
-                ui.label('Sistema Integral de\nGestión de Informes').classes(
+                ui.label(NOMBRE_LARGO.replace(' de Gestión', '\nde Gestión')).classes(
                     'text-2xl font-light text-slate-300 text-center whitespace-pre-line'
                 )
 
@@ -127,7 +153,7 @@ def page_login():
                 with ui.column().classes('items-center gap-2 mb-8'):
                     with ui.row().classes('items-center gap-2 lg:hidden'):
                         ui.icon('analytics').classes('text-3xl text-blue-400')
-                        ui.label('SIGER').classes('text-2xl font-black text-white')
+                        ui.label(NOMBRE_PRODUCTO).classes('text-2xl font-black text-white')
                     ui.label('Iniciar sesión').classes(
                         'text-2xl font-bold text-white mt-2'
                     )

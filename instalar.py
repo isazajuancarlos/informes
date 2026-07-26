@@ -393,12 +393,8 @@ Necesitas el kit offline:
         aviso("Este perfil necesita un PostgreSQL en marcha y accesible.")
         aviso("Comprueba DATABASE_URL en .env antes de arrancar.")
 
-    paso("Preparando la base de datos y los datos iniciales…")
     entorno_hijo = {**os.environ, "DEPLOYMENT_PROFILE": perfil, "PYTHONPATH": str(RAIZ)}
-    if subprocess.run([str(python), "seed_data.py"], cwd=RAIZ, env=entorno_hijo).returncode == 0:
-        ok("Base de datos lista")
-    else:
-        aviso("No se pudieron sembrar los datos iniciales; revisa la conexión a la BD.")
+    preparar_base_de_datos(python, entorno_hijo)
 
     print()
     ok("Instalación terminada. Para arrancar el sistema:")
@@ -407,6 +403,58 @@ Necesitas el kit offline:
         print(f"      .venv\\Scripts\\python.exe main.py")
     else:
         print(f"      .venv/bin/python main.py")
+
+
+#: Los pasos de base de datos, EN ORDEN. El orden es el arreglo, no un detalle.
+PASOS_BASE_DE_DATOS = [
+    ("Creando el esquema de la base de datos…", ["-m", "app.init_db"],
+     "No se pudo crear el esquema de la base de datos.",
+     "Con el perfil `standalone` esto casi siempre es un problema de\n"
+     "permisos de escritura en la carpeta `storage/`.\n"
+     "Con `onprem` o `cloud`, revisa DATABASE_URL en el archivo .env."),
+    ("Actualizando el esquema…", ["migrar_esquema.py"],
+     "No se pudo actualizar el esquema de la base de datos.",
+     "Si es una instalación NUEVA esto no debería fallar; si estás\n"
+     "actualizando una anterior, el mensaje de arriba dice qué columna\n"
+     "no se pudo añadir."),
+    ("Moviendo los campos de ficha…", ["migrar_campos_ficha.py"],
+     "No se pudieron mover los campos de ficha.",
+     "Solo afecta a instalaciones ANTERIORES, que guardaban esos campos\n"
+     "en columnas fijas. En una instalación nueva no hay nada que mover\n"
+     "y este paso no hace nada."),
+    ("Sembrando los datos iniciales…", ["seed_data.py"],
+     "No se pudieron crear los usuarios iniciales.",
+     "El sistema quedó instalado pero SIN NINGÚN USUARIO, así que no se\n"
+     "puede entrar. Reintenta ejecutando `seed_data.py` a mano."),
+]
+
+
+def preparar_base_de_datos(python, entorno, ejecutar=None) -> None:
+    """Crea el esquema y siembra los datos, en ese orden, y ABORTA si algo falla.
+
+    Las dos cosas que arregla, y que estuvieron rotas a la vez:
+
+    **El orden.** `seed_data.py` inserta filas; si las tablas no existen todavía,
+    falla. En una instalación de verdad NUNCA existen —es la primera vez que se
+    toca esa base—, así que el asistente fallaba SIEMPRE. Corriendo los comandos
+    a mano, en cambio, funcionaba: quien lo probó creó el esquema antes sin darse
+    cuenta de que el asistente no lo hacía.
+
+    **Que fallar no fallaba.** El fallo se imprimía como un aviso de pasada, el
+    asistente se declaraba «terminado», devolvía 0 y a continuación anunciaba
+    «Usuario de ejemplo: admin@co.co / Contraseña: 123456». El cliente seguía el
+    manual, leía que todo había ido bien, y no podía entrar. Un asistente que
+    entrega un sistema sin usuarios tiene que decirlo y salir con error.
+
+    `ejecutar` se inyecta para poder probar el orden y el aborto sin montar un
+    entorno virtual de verdad.
+    """
+    ejecutar = ejecutar or (lambda cmd: subprocess.run(cmd, cwd=RAIZ, env=entorno))
+    for descripcion, argumentos, fallo, ayuda in PASOS_BASE_DE_DATOS:
+        paso(descripcion)
+        if ejecutar([str(python), *argumentos]).returncode != 0:
+            abortar(fallo, ayuda)
+    ok("Base de datos lista")
 
 
 # --- kit offline (lado proveedor) ---------------------------------------------

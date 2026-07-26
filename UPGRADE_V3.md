@@ -1,6 +1,6 @@
 # Guía de Actualización v2.0 → v3.0
 
-**Sistema Gestión de Informes - Actualización Mayor**
+**SIGER — Sistema Integral de Gestión de Informes · Actualización Mayor**
 
 Fecha: 8 de Enero, 2026
 Autor: Claude Code
@@ -555,4 +555,4 @@ Usar esta lista para verificar cada paso:
 
 **Versión del documento**: 1.0
 **Última actualización**: 8 de Enero, 2026
-**Compatibilidad**: Sistema Gestión Informes v2.0 → v3.0
+**Compatibilidad**: SIGER v2.0 → v3.0

@@ -1,4 +1,24 @@
 # Dependencias de desarrollo. Las de ejecución van en requirements.txt.
 #   pip install -r requirements.txt -r requirements-dev.txt
 -r requirements.txt
-pytest==8.3.4
+# El pin subió de 8.3.4 porque `pytest-asyncio` exige pytest>=8.4, y el CI se
+# cayó al resolver. En la máquina de aquí no se vio: instalar pytest-asyncio
+# ACTUALIZÓ pytest en silencio, así que la suite llevaba toda la sesión
+# corriendo sobre 9.1.1 mientras el fichero decía 8.3.4. Se fija lo que de
+# verdad se probó.
+pytest==9.1.1
+
+# El simulador de cliente de NiceGUI (`user`) es una fixture asíncrona. Sin esto
+# las pruebas de pantalla no salen en rojo: salen en ERROR de setup, que parece
+# un problema de entorno y se acaba ignorando.
+pytest-asyncio==1.4.0
+
+# Un navegador de verdad. `nicegui.testing` construye los elementos y los pulsa,
+# pero NO calcula CSS: para él una columna con `display:none` existe igual — y
+# ahí vivía, desde el primer commit, un login que dejaba media pantalla en negro
+# sin que ninguna de las 600 pruebas pudiera verlo.
+#
+# `tests/test_pantalla_visual.py` se omite solo si falta, así que instalarlo es
+# opcional en una máquina de desarrollo y obligatorio en el CI.
+#   pip install playwright && playwright install chromium
+playwright==1.61.0
