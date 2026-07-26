@@ -101,6 +101,36 @@ retiró el tramo de 9 USD.
 
 ---
 
+## Verificación posterior — 2026-07-26
+
+**Reproducido y contrastado contra datos nuevos.** Dos comprobaciones:
+
+1. **Reproducibilidad.** Correr `analisis_precios_secop.py --cache` sobre los
+   datos del 21 de julio devuelve, cifra por cifra, todo lo que dice este
+   documento. La afirmación de la cabecera es cierta y ahora está comprobada por
+   alguien distinto de quien la escribió.
+
+2. **Estabilidad frente a datos nuevos.** El universo de software creció en
+   **59 contratos** en cinco días (2.624 → 2.683 con valor legible). La mediana
+   pasó de $36,5M a **$36,0M**: una deriva del **−1,4 %**. Los percentiles en que
+   caen los precios propuestos casi no se mueven:
+
+   | Edición | 21-jul | 26-jul |
+   |---|---|---|
+   | Esencial | p12,4 | p12,7 |
+   | Profesional | p39,7 | p40,1 |
+   | Corporativa | p68,1 | p68,4 |
+
+   **El anclaje aguanta.** No es un número que valía para un día.
+
+> **Lo que salió mal al verificar, y se arregló.** La descarga completa se
+> interrumpió a mitad: quedó `software.pkl` del 26 y `personas.pkl` del 21, y
+> `--cache` habría mezclado ambas sin decirlo — percentiles de una foto que
+> nunca existió. El guion ahora **sella cada mitad con su fecha de descarga y
+> avisa si no coinciden**. La fecha va dentro del pickle y no en el `mtime` del
+> fichero: copiar o restaurar un `.pkl` le pone fecha de hoy a datos viejos, y
+> el aviso mentiría en la dirección tranquilizadora.
+
 ## Límites de este análisis, que hay que decir
 
 - **El filtro es por texto libre.** `descripcion_del_proceso` es como la entidad

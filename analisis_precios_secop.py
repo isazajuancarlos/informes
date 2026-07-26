@@ -32,6 +32,7 @@ medir, deja de ser una muestra.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import pickle
 import re
@@ -67,11 +68,38 @@ CAMPOS = ("valor_del_contrato,duraci_n_del_contrato,nombre_entidad,"
           "modalidad_de_contratacion,descripcion_del_proceso")
 
 
+#: Formato de la caché: {"descargado": ISO-8601, "filas": [...]}.
+#:
+#: La fecha va DENTRO del pickle y no se deduce del `mtime` del fichero. Parece
+#: un detalle y no lo es: copiar, restaurar o mover un `.pkl` le pone fecha de
+#: hoy a datos de la semana pasada, y entonces el aviso de mezcla miente en la
+#: dirección tranquilizadora. El `mtime` mide cuándo se escribió el archivo; lo
+#: que hace falta saber es cuándo se descargó el dato.
+def leer_cache(archivo):
+    contenido = pickle.load(archivo.open("rb"))
+    if isinstance(contenido, dict) and "filas" in contenido:
+        return contenido["filas"]
+    return contenido  # caché anterior al sello de fecha
+
+
+def fecha_cache(archivo) -> str:
+    contenido = pickle.load(archivo.open("rb"))
+    if isinstance(contenido, dict) and "descargado" in contenido:
+        return contenido["descargado"][:16].replace("T", " ")
+    return "sin fecha (caché anterior al sello)"
+
+
+def escribir_cache(archivo, filas) -> None:
+    pickle.dump({"descargado": dt.datetime.now().isoformat(timespec="seconds"),
+                 "filas": filas}, archivo.open("wb"))
+
+
 def descargar(where: str, etiqueta: str, usar_cache: bool) -> list[dict]:
     CACHE.mkdir(exist_ok=True)
     archivo = CACHE / f"{etiqueta}.pkl"
     if usar_cache and archivo.exists():
-        return pickle.load(archivo.open("rb"))
+        print(f"  caché de «{etiqueta}»: {fecha_cache(archivo)}", file=sys.stderr)
+        return leer_cache(archivo)
 
     filas, offset = [], 0
     while True:
@@ -99,7 +127,7 @@ def descargar(where: str, etiqueta: str, usar_cache: bool) -> list[dict]:
         if len(lote) < 500:
             break
         offset += 500
-    pickle.dump(filas, archivo.open("wb"))
+    escribir_cache(archivo, filas)
     return filas
 
 
@@ -155,6 +183,20 @@ def main() -> int:
     print("Descargando SECOP II…", file=sys.stderr)
     soft = descargar(FILTRO_SOFTWARE, "software", args.cache)
     pers = descargar(FILTRO_PERSONAS, "personas", args.cache)
+
+    # Si las dos mitades de la caché son de días distintos, se dice. No se
+    # aborta —comparar dos fotos puede ser justo lo que se quiere— pero un
+    # documento de precios no puede salir de una mezcla que nadie declaró.
+    if args.cache:
+        fechas = {e: fecha_cache(CACHE / f"{e}.pkl") for e in ("software", "personas")
+                  if (CACHE / f"{e}.pkl").exists()}
+        if len({v[:10] for v in fechas.values()}) > 1:
+            print("\n  AVISO: las dos mitades de la caché son de días distintos.",
+                  file=sys.stderr)
+            for e, v in fechas.items():
+                print(f"         {e}: {v}", file=sys.stderr)
+            print("         Los percentiles saldrán de una foto que nunca existió.\n",
+                  file=sys.stderr)
 
     # --- 1. Software de seguimiento -------------------------------------
     vs = valores(soft)
