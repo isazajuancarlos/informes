@@ -11,6 +11,7 @@ mod alertas;
 mod autz;
 mod config;
 mod db;
+mod estadisticas;
 mod estaticos;
 mod firma;
 mod importar;

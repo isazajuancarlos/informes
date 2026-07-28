@@ -250,4 +250,21 @@ export class Api {
   stakeholders() {
     return this.get<OpcionParte[]>('/api/stakeholders');
   }
+
+  estadisticas() {
+    return this.get<Estadisticas>('/api/estadisticas');
+  }
+}
+
+/** Resumen de cumplimiento, ya recortado por el alcance del actor en el servidor. */
+export interface Estadisticas {
+  total: number;
+  pendientes: number;
+  cumplidas: number;
+  extemporaneas: number;
+  incumplidas: number;
+  proximas_7d: number;
+  vencidas: number;
+  /** Cumplidas sobre lo ya vencido, 0..100; `null` si nada ha vencido aún. */
+  tasa_cumplimiento: number | null;
 }
