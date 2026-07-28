@@ -68,3 +68,6 @@ licencia.quipu
 # Descarga de SECOP II para el anclaje de precios. Se regenera con
 # `python analisis_precios_secop.py`; versionarla ataría el análisis a una foto.
 .cache_secop/
+
+# Rust
+rust/target/
