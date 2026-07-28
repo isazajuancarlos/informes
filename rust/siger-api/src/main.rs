@@ -15,6 +15,7 @@ mod estaticos;
 mod firma;
 mod importar;
 mod informes;
+mod participacion;
 mod planificador;
 mod rutas;
 mod sesion;

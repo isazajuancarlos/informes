@@ -60,6 +60,12 @@ pub fn router(estado: Estado) -> Router {
             "/api/informes/{id}",
             get(crate::informes::detalle).put(crate::informes::actualizar),
         )
+        .route(
+            "/api/informes/{id}/participacion",
+            get(crate::participacion::listar).put(crate::participacion::reemplazar),
+        )
+        .route("/api/usuarios", get(crate::participacion::usuarios))
+        .route("/api/stakeholders", get(crate::participacion::stakeholders))
         .with_state(estado)
 }
 
