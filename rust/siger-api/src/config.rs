@@ -62,6 +62,15 @@ pub struct Config {
     /// más. Una lista vacía significa «cualquiera», y hay que escribirla
     /// explícitamente: el permiso amplio se pide, no se hereda de un descuido.
     pub extensiones: Vec<String>,
+
+    /// Clave de firma de entregas (hex), perfil de custodia `entorno`. `None`
+    /// desactiva la firma CON GRACIA: la entrega se registra igual, sin firma —
+    /// la ausencia de firma nunca impide cumplir. Es un secreto, pero opcional:
+    /// no firmar es una postura válida, a diferencia del secreto de sesión.
+    pub firma_sk_hex: Option<String>,
+    /// Clave de verificación (hex), pública. Sin ella no se puede verificar lo
+    /// firmado, pero sí seguir firmando.
+    pub firma_vk_hex: Option<String>,
 }
 
 fn opcional(clave: &str) -> Option<String> {
@@ -112,6 +121,9 @@ impl Config {
                 .map(|e| e.trim().to_lowercase())
                 .filter(|e| !e.is_empty())
                 .collect(),
+            // Firma opcional (perfil `entorno`): sin clave, se registra sin firmar.
+            firma_sk_hex: opcional("QUIPU_SIGNING_KEY"),
+            firma_vk_hex: opcional("QUIPU_VERIFYING_KEY"),
         })
     }
 }

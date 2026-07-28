@@ -39,6 +39,7 @@ pub fn router(estado: Estado) -> Router {
         .route("/api/sesion", post(abrir_sesion).delete(cerrar_sesion))
         .route("/api/yo", get(yo))
         .route("/api/entregas", get(listar_entregas))
+        .route("/api/entregas/{id}/verificar", get(verificar_entrega))
         .route(
             "/api/entregas/{id}/archivo",
             get(descargar_archivo)
@@ -297,6 +298,86 @@ async fn descargar_archivo(
         .into_response())
 }
 
+/// Verifica la firma de una entrega. Reconstruye lo que se firmó desde la base y
+/// el archivo actual, y comprueba la firma. Distingue firma inválida/forjada de
+/// entrega alterada tras firmarse — que es justo lo que un ente de control
+/// pregunta. Es una lectura: cualquiera que pueda ver la entrega puede auditarla.
+async fn verificar_entrega(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let no_existe = || Error(StatusCode::NOT_FOUND, "la entrega no existe".into());
+
+    const COLS: &str = "fecha_limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, \
+                        estado, fecha_entrega_real, archivo_nombre, firma";
+    let (sql, param) = match actor.alcance() {
+        Alcance::Todas => (format!("SELECT {COLS} FROM entregas e WHERE e.id = ?"), None),
+        Alcance::DeUsuario(u) => (
+            format!("SELECT {COLS} FROM entregas e WHERE e.id = ? AND e.usuario_id = ?"),
+            Some(u),
+        ),
+        Alcance::DeStakeholder(s) => (
+            format!(
+                "SELECT {COLS} FROM entregas e WHERE e.id = ? AND EXISTS \
+                 (SELECT 1 FROM participacion p WHERE p.informe_id = e.informe_id \
+                  AND p.stakeholder_id = ?)"
+            ),
+            Some(s),
+        ),
+        Alcance::Ninguna => return Err(no_existe()),
+    };
+
+    type Fila = (
+        String,         // fecha_limite
+        i64,            // informe_id
+        Option<i64>,    // usuario_id
+        String,         // fecha_nominal
+        String,         // tipo_ajuste
+        String,         // estado
+        Option<String>, // fecha_entrega_real
+        Option<String>, // archivo_nombre
+        Option<String>, // firma
+    );
+    let mut q = sqlx::query_as::<_, Fila>(&sql).bind(id);
+    if let Some(p) = param {
+        q = q.bind(p);
+    }
+    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma) =
+        q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+
+    let Some(firma) = firma else {
+        return Ok(Json(serde_json::json!({ "verificada": false, "motivo": "sin firma" })));
+    };
+
+    // El sha256 se recalcula del archivo AHORA: si el documento cambió tras
+    // firmarse, el hash difiere y la verificación lo delata como alteración.
+    let sha = match &archivo_nombre {
+        Some(n) => match ruta_de_entrega(&e.cfg.dir_entregas, id, n) {
+            Some(ruta) => tokio::fs::read(&ruta).await.ok().map(|d| crate::firma::sha256_hex(&d)),
+            None => None,
+        },
+        None => None,
+    };
+
+    let (ok, motivo) = crate::firma::verificar(
+        &crate::firma::Auditable {
+            id,
+            informe_id,
+            usuario_id,
+            fecha_limite: &limite,
+            fecha_entrega: fecha_entrega.as_deref(),
+            estado: &estado,
+            archivo_sha256: sha.as_deref(),
+            fecha_vencimiento_nominal: &fecha_nominal,
+            tipo_ajuste: &tipo_ajuste,
+        },
+        &firma,
+        e.cfg.firma_vk_hex.as_deref(),
+    );
+    Ok(Json(serde_json::json!({ "verificada": ok, "motivo": motivo })))
+}
+
 /// `<almacén>/<id>/<nombre>`, y solo si el resultado sigue dentro del almacén.
 ///
 /// Un nombre con `..`, con separadores o con raíz absoluta se rechaza en vez de
@@ -333,7 +414,7 @@ fn extension_de(nombre: &str, permitidas: &[String]) -> Option<String> {
     }
     let con_punto = format!(".{ext}");
     // Lista vacía significa «cualquiera», y hay que escribirla explícitamente.
-    if permitidas.is_empty() || permitidas.iter().any(|p| *p == con_punto) {
+    if permitidas.is_empty() || permitidas.contains(&con_punto) {
         Some(ext)
     } else {
         None
@@ -359,22 +440,27 @@ async fn subir_archivo(
 ) -> Result<Json<serde_json::Value>, Error> {
     let no_existe = || Error(StatusCode::NOT_FOUND, "la entrega no existe".into());
 
-    // Pertenencia primero: si no le corresponde, no se lee ni un byte.
+    // Pertenencia primero: si no le corresponde, no se lee ni un byte. Se traen
+    // de una vez todos los campos que la firma necesita: el nominal, el informe y
+    // el ajuste son parte de lo que se acredita, no solo la fecha límite.
+    const COLS: &str = "fecha_limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste";
     let (sql, param) = match actor.alcance() {
-        Alcance::Todas => ("SELECT fecha_limite FROM entregas WHERE id = ?", None),
+        Alcance::Todas => (format!("SELECT {COLS} FROM entregas WHERE id = ?"), None),
         Alcance::DeUsuario(u) => (
-            "SELECT fecha_limite FROM entregas WHERE id = ? AND usuario_id = ?",
+            format!("SELECT {COLS} FROM entregas WHERE id = ? AND usuario_id = ?"),
             Some(u),
         ),
         // Un tercero no entrega: recibe. Darle la subida porque «también ve la
         // entrega» confundiría ver con hacer.
         Alcance::DeStakeholder(_) | Alcance::Ninguna => return Err(no_existe()),
     };
-    let mut q = sqlx::query_as::<_, (String,)>(sql).bind(id);
+    let mut q =
+        sqlx::query_as::<_, (String, i64, Option<i64>, String, String)>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (limite,) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste) =
+        q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
 
     let mal = |m: &str| Error(StatusCode::BAD_REQUEST, m.to_string());
     let Some(parte) = partes
@@ -428,15 +514,35 @@ async fn subir_archivo(
         .unwrap_or(false);
     let estado = if vencida { "EXTEMPORANEO" } else { "CUMPLIDO" };
 
-    // La firma va a ir DENTRO de esta misma transacción cuando Quipu esté
-    // portado, por la razón de siempre: una segunda pasada puede no llegar a
-    // ocurrir y dejaría entregas firmables sin firmar sin que nadie lo note.
+    // La firma va DENTRO de esta misma sentencia (una sola UPDATE es atómica),
+    // por la razón de siempre: una segunda pasada puede no llegar a ocurrir y
+    // dejaría entregas firmables sin firmar sin que nadie lo note. Se firma lo
+    // que se GUARDA —el mismo estado, la misma fecha de entrega y el hash del
+    // archivo escrito—, no una versión aparte que podría no coincidir.
+    let sha = crate::firma::sha256_hex(&datos);
+    let entrega_real = Utc::now().to_rfc3339();
+    let firma_blob = crate::firma::firmar(
+        &crate::firma::Auditable {
+            id,
+            informe_id,
+            usuario_id,
+            fecha_limite: &limite,
+            fecha_entrega: Some(&entrega_real),
+            estado,
+            archivo_sha256: Some(&sha),
+            fecha_vencimiento_nominal: &fecha_nominal,
+            tipo_ajuste: &tipo_ajuste,
+        },
+        e.cfg.firma_sk_hex.as_deref(),
+    );
+
     let filas = sqlx::query(
-        "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ? WHERE id = ?",
+        "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ?, firma = ? WHERE id = ?",
     )
     .bind(&nombre)
     .bind(estado)
-    .bind(Utc::now().to_rfc3339())
+    .bind(&entrega_real)
+    .bind(&firma_blob)
     .bind(id)
     .execute(&e.bd)
     .await?
@@ -451,7 +557,8 @@ async fn subir_archivo(
 
     auditar(&e.bd, "entrega_registrada", Some(&actor.email), Some(&nombre)).await;
     Ok(Json(serde_json::json!({
-        "ok": true, "estado": estado, "archivo": nombre, "bytes": datos.len()
+        "ok": true, "estado": estado, "archivo": nombre, "bytes": datos.len(),
+        "firmada": firma_blob.is_some()
     })))
 }
 

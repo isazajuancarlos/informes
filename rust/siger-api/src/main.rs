@@ -11,6 +11,7 @@ mod autz;
 mod config;
 mod db;
 mod estaticos;
+mod firma;
 mod planificador;
 mod rutas;
 mod sesion;
@@ -73,6 +74,17 @@ fn subcomando() -> Option<std::process::ExitCode> {
         let mut bytes = [0u8; 48];
         rand::thread_rng().fill_bytes(&mut bytes);
         println!("{}", URL_SAFE_NO_PAD.encode(bytes));
+        return Some(std::process::ExitCode::SUCCESS);
+    }
+
+    if std::env::args().nth(1).as_deref() == Some("generar-claves-firma") {
+        // Las claves de firma de entregas (perfil de custodia `entorno`). Salen
+        // del MISMO código que firma, por la misma razón que el hash: una clave
+        // hecha por otra herramienta podría no encajar con el verificador. La
+        // firma es opcional; sin estas variables, la entrega se registra sin firma.
+        let (vk, sk) = crate::firma::generar_claves();
+        println!("QUIPU_VERIFYING_KEY={vk}");
+        println!("QUIPU_SIGNING_KEY={sk}");
         return Some(std::process::ExitCode::SUCCESS);
     }
 

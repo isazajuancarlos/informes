@@ -32,6 +32,9 @@ password-hash = { version = "0.5", features = ["std"] }
 # la guarda y la devuelve, y el JavaScript no puede leerla.
 hmac = "0.12"
 sha2 = "0.10"
+# Firma post-cuántica de las entregas (Ed25519 + ML-DSA-87). Xiliux es titular de
+# Quipu (doble licencia), así que su AGPL no obliga a nada aquí.
+quipu = "0.10"
 base64 = "0.22"
 rand = "0.8"
 
