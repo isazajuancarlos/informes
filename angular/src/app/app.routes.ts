@@ -22,6 +22,11 @@ export const routes: Routes = [
     loadComponent: () => import('./paginas/entregas').then((m) => m.Entregas),
   },
   {
+    path: 'notificaciones',
+    canActivate: [guardaSesion],
+    loadComponent: () => import('./paginas/notificaciones').then((m) => m.Notificaciones),
+  },
+  {
     path: 'estadisticas',
     canActivate: [guardaSesion],
     loadComponent: () => import('./paginas/estadisticas').then((m) => m.EstadisticasPagina),

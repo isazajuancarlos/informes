@@ -37,6 +37,20 @@ export interface Entrega {
    *  concuerda con la extensión (marcado para revisión); `true` = concuerda;
    *  `null` = sin archivo o tipo no determinable. */
   archivo_valido: boolean | null;
+  /** Estado de la justificación de un incumplimiento (#163): null sin justificar,
+   *  'PENDIENTE' esperando revisión, 'ACEPTADA' / 'RECHAZADA'. */
+  justificacion_estado: 'PENDIENTE' | 'ACEPTADA' | 'RECHAZADA' | null;
+}
+
+/** Una notificación interna del flujo del supervisor (#163). */
+export interface Notificacion {
+  id: number;
+  tipo: string;
+  titulo: string;
+  mensaje: string;
+  entrega_id: number | null;
+  leida: boolean;
+  momento: string;
 }
 
 export interface FilaPrevia {
@@ -253,6 +267,34 @@ export class Api {
 
   estadisticas() {
     return this.get<Estadisticas>('/api/estadisticas');
+  }
+
+  // --- Flujo del supervisor (#163) ------------------------------------------
+
+  notificaciones() {
+    return this.get<Notificacion[]>('/api/notificaciones');
+  }
+
+  marcarLeida(id: number) {
+    return this.http
+      .post<{ ok: boolean }>(`/api/notificaciones/${id}/leida`, {}, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  justificar(entregaId: number, texto: string) {
+    return this.http
+      .post<{ ok: boolean; estado: string }>(`/api/entregas/${entregaId}/justificacion`, { texto }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  revisar(entregaId: number, aceptar: boolean, retroalimentacion: string) {
+    return this.http
+      .post<{ ok: boolean; estado: string }>(
+        `/api/entregas/${entregaId}/revision`,
+        { aceptar, retroalimentacion },
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
   }
 }
 

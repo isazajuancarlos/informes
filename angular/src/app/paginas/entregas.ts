@@ -29,6 +29,7 @@ import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
 
 import { Api, Entrega } from '../nucleo/api';
+import { Sesion } from '../nucleo/sesion';
 
 type Orden = 'fecha_limite' | 'informe' | 'estado';
 
@@ -129,6 +130,20 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
                 report_problem
               </mat-icon>
             }
+            @if (e.justificacion_estado) {
+              <mat-chip class="just {{ e.justificacion_estado.toLowerCase() }}">{{ etiquetaJust(e.justificacion_estado) }}</mat-chip>
+            }
+            <div class="acc-just">
+              @if (puedeJustificar(e)) {
+                <button mat-stroked-button (click)="justificar(e)">
+                  <mat-icon>gavel</mat-icon> Justificar
+                </button>
+              }
+              @if (esSupervision() && e.justificacion_estado === 'PENDIENTE') {
+                <button mat-stroked-button (click)="revisar(e, true)">Aceptar</button>
+                <button mat-stroked-button (click)="revisar(e, false)">Rechazar</button>
+              }
+            </div>
           </td>
         </ng-container>
 
@@ -175,6 +190,12 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
     .tabla { width: 100%; margin-top: 1rem; }
     .revisar { color: var(--mat-sys-tertiary); vertical-align: middle;
                margin-left: .35rem; font-size: 1.15rem; height: 1.15rem; width: 1.15rem; }
+    .just { font-size: .72rem; margin-left: .35rem; }
+    .just.pendiente { --mdc-chip-label-text-color: #f9a825; }
+    .just.aceptada { --mdc-chip-label-text-color: #2e7d32; }
+    .just.rechazada { --mdc-chip-label-text-color: #c62828; }
+    .acc-just { display: flex; gap: .35rem; flex-wrap: wrap; margin-top: .35rem; }
+    .acc-just button { font-size: .78rem; }
     th { cursor: pointer; user-select: none; }
     .vacio, .aviso {
       display: flex; align-items: center; gap: .75rem; padding: 2rem; margin-top: 1rem;
@@ -202,6 +223,7 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
 })
 export class Entregas {
   api = inject(Api);
+  private sesion = inject(Sesion);
 
   todas = signal<Entrega[]>([]);
   texto = signal('');
@@ -231,6 +253,51 @@ export class Entregas {
 
   constructor() {
     this.cargar();
+  }
+
+  // --- Flujo del supervisor (#163) ---
+  esSupervision() {
+    const r = this.sesion.actor()?.rol;
+    return r === 'Admin' || r === 'Supervisor';
+  }
+
+  /** El responsable puede justificar una entrega fuera de plazo o incumplida que
+   *  aún no tenga justificación en curso o aceptada. */
+  puedeJustificar(e: Entrega) {
+    return (
+      this.sesion.actor()?.rol === 'Operador' &&
+      (e.estado === 'EXTEMPORANEO' || e.estado === 'INCUMPLIDO') &&
+      e.justificacion_estado !== 'PENDIENTE' &&
+      e.justificacion_estado !== 'ACEPTADA'
+    );
+  }
+
+  etiquetaJust(s: 'PENDIENTE' | 'ACEPTADA' | 'RECHAZADA') {
+    return s === 'PENDIENTE' ? 'Justificación en revisión' : s === 'ACEPTADA' ? 'Justificada' : 'Justif. rechazada';
+  }
+
+  async justificar(e: Entrega) {
+    const texto = window.prompt(`Justificar «${e.informe}»: ¿por qué no se entregó a tiempo?`);
+    if (!texto || !texto.trim()) return;
+    try {
+      await firstValueFrom(this.api.justificar(e.id, texto.trim()));
+      this.mostrar('Justificación enviada; queda en revisión.', false);
+      await this.cargar();
+    } catch (err) {
+      this.mostrar((err as Error).message, true);
+    }
+  }
+
+  async revisar(e: Entrega, aceptar: boolean) {
+    const retro = window.prompt(`${aceptar ? 'Aceptar' : 'Rechazar'} la justificación de «${e.informe}». Retroalimentación (opcional):`);
+    if (retro === null) return; // canceló
+    try {
+      await firstValueFrom(this.api.revisar(e.id, aceptar, retro.trim()));
+      this.mostrar(aceptar ? 'Justificación aceptada.' : 'Justificación rechazada.', !aceptar);
+      await this.cargar();
+    } catch (err) {
+      this.mostrar((err as Error).message, true);
+    }
   }
 
   elegir(entrega: Entrega) {
