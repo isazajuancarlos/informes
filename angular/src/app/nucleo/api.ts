@@ -42,9 +42,13 @@ export interface FilaPrevia {
   se_movio: boolean;
 }
 
-/** El formato que el servidor ya entiende, el mismo que hay guardado. */
+/** El formato que el servidor ya entiende, el mismo que hay guardado.
+ *
+ *  `INMEDIATO` es «a solicitud»: el informe existe pero no vence por calendario.
+ *  No lo produce el constructor de reglas —no hay nada que construir—, pero sí
+ *  aparece en informes migrados, así que el tipo tiene que admitirlo. */
 export interface ReglaJson {
-  modo: 'CICLICO' | 'ESPECIFICO' | 'SEMANAL' | 'HOURLY' | 'FECHAS';
+  modo: 'CICLICO' | 'ESPECIFICO' | 'SEMANAL' | 'HOURLY' | 'FECHAS' | 'INMEDIATO';
   fecha_inicio?: string;
   intervalo?: number;
   meses?: number[];
@@ -58,6 +62,33 @@ export interface ReglaJson {
   mover_habil?: boolean;
   mover_habil_anterior?: boolean;
   omitir_festivos?: boolean;
+}
+
+/** Un informe en la lista de gestión. `modo` sale ya extraído de la regla. */
+export interface InformeFila {
+  id: number;
+  nombre: string;
+  descripcion: string | null;
+  activo: boolean;
+  modo: string | null;
+}
+
+/** El detalle, con la regla cruda para cargarla en el editor. */
+export interface InformeDetalle {
+  id: number;
+  nombre: string;
+  descripcion: string | null;
+  activo: boolean;
+  /** El JSON de la regla, tal como está guardado. */
+  recurrencia: string;
+}
+
+/** Lo que el formulario manda al crear o editar un informe. */
+export interface InformeEntrada {
+  nombre: string;
+  descripcion?: string | null;
+  recurrencia: ReglaJson;
+  activo?: boolean;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -139,6 +170,28 @@ export class Api {
         { regla, desde, hasta },
         { withCredentials: true },
       )
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  // --- Gestión de informes y sus reglas -------------------------------------
+
+  informes() {
+    return this.get<InformeFila[]>('/api/informes');
+  }
+
+  informeDetalle(id: number) {
+    return this.get<InformeDetalle>(`/api/informes/${id}`);
+  }
+
+  crearInforme(cuerpo: InformeEntrada) {
+    return this.http
+      .post<{ id: number }>('/api/informes', cuerpo, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  actualizarInforme(id: number, cuerpo: InformeEntrada) {
+    return this.http
+      .put<{ ok: boolean }>(`/api/informes/${id}`, cuerpo, { withCredentials: true })
       .pipe(catchError((e) => this.falla(e)));
   }
 }

@@ -35,6 +35,7 @@ import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
+import { Router } from '@angular/router';
 import { firstValueFrom } from 'rxjs';
 
 import { CalendarioMultiple } from '../comun/calendario-multiple';
@@ -75,6 +76,20 @@ const MESES_DE: Record<Periodicidad, number[]> = {
       Defina la regla y compruebe las fechas <strong>antes</strong> de guardarla. Las
       calcula el mismo motor que después genera las tareas.
     </p>
+
+    <!-- La identidad del informe. Va arriba y separada de la regla: el nombre y
+         la descripción son del informe, no de su periodicidad, y no cambian según
+         se describa o se marquen las fechas. -->
+    <div class="identidad">
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Nombre del informe</mat-label>
+        <input matInput [(ngModel)]="nombre" maxlength="200" (ngModelChange)="mensaje.set('')" />
+      </mat-form-field>
+      <mat-form-field appearance="outline" subscriptSizing="dynamic">
+        <mat-label>Descripción (opcional)</mat-label>
+        <input matInput [(ngModel)]="descripcion" />
+      </mat-form-field>
+    </div>
 
     <!-- Las dos maneras de preguntar, y están las dos a propósito.
 
@@ -158,9 +173,22 @@ const MESES_DE: Record<Periodicidad, number[]> = {
             <input matInput type="date" [(ngModel)]="desde" (ngModelChange)="cambio()" />
           </mat-form-field>
 
-          <button mat-flat-button (click)="calcular()" [disabled]="ocupado()">
-            <mat-icon>calculate</mat-icon> Ver las fechas
-          </button>
+          <div class="acciones">
+            <button mat-stroked-button (click)="calcular()" [disabled]="ocupado()">
+              <mat-icon>calculate</mat-icon> Ver las fechas
+            </button>
+            <button mat-flat-button (click)="guardar()"
+                    [disabled]="ocupado() || guardando() || !nombre().trim()">
+              <mat-icon>save</mat-icon> Guardar informe
+            </button>
+          </div>
+
+          @if (mensaje()) {
+            <p class="ok"><mat-icon>check_circle</mat-icon> {{ mensaje() }}</p>
+          }
+          @if (errorGuardar()) {
+            <p class="error"><mat-icon>error_outline</mat-icon> {{ errorGuardar() }}</p>
+          }
         </mat-card-content>
       </mat-card>
 
@@ -220,11 +248,16 @@ const MESES_DE: Record<Periodicidad, number[]> = {
     .limite { color: var(--mat-sys-tertiary); }
     .flecha { font-size: 1rem; height: 1rem; width: 1rem; vertical-align: middle; }
     .error { display: flex; align-items: center; gap: .4rem; color: var(--mat-sys-error); }
+    .ok { display: flex; align-items: center; gap: .4rem; color: var(--mat-sys-primary); }
     .cuenta { color: var(--mat-sys-on-surface-variant); }
+    .identidad { display: flex; gap: .75rem; flex-wrap: wrap; margin: .5rem 0 1rem; }
+    .identidad mat-form-field { flex: 1 1 16rem; }
+    .acciones { display: flex; gap: .5rem; flex-wrap: wrap; }
   `,
 })
 export class Cronograma {
   private api = inject(Api);
+  private router = inject(Router);
 
   readonly diasSemana = [
     { n: 0, etiqueta: 'Lun' }, { n: 1, etiqueta: 'Mar' }, { n: 2, etiqueta: 'Mié' },
@@ -240,6 +273,12 @@ export class Cronograma {
   ajuste = signal<'ninguno' | 'gracia' | 'anticipado' | 'omitir'>('gracia');
   desde = signal(new Date().toISOString().slice(0, 10));
   marcados = signal<number[]>([2]);
+
+  nombre = signal('');
+  descripcion = signal('');
+  guardando = signal(false);
+  mensaje = signal('');
+  errorGuardar = signal('');
 
   filas = signal<FilaPrevia[]>([]);
   ocupado = signal(false);
@@ -320,6 +359,37 @@ export class Cronograma {
     } finally {
       this.intentado.set(true);
       this.ocupado.set(false);
+    }
+  }
+
+  /** Guarda el informe con la regla que se acaba de definir. Es exactamente la
+   *  MISMA regla que la vista previa mostró: `construir()` es la única fuente, así
+   *  que lo que se guarda no puede diferir de lo que se vio. El servidor la vuelve
+   *  a validar con el motor y rechaza la que no pueda leer. */
+  async guardar() {
+    const nombre = this.nombre().trim();
+    if (!nombre) {
+      this.errorGuardar.set('El informe necesita un nombre.');
+      return;
+    }
+    this.guardando.set(true);
+    this.mensaje.set('');
+    this.errorGuardar.set('');
+    try {
+      const { id } = await firstValueFrom(
+        this.api.crearInforme({
+          nombre,
+          descripcion: this.descripcion().trim() || null,
+          recurrencia: this.construir(),
+        }),
+      );
+      // A la lista, donde el informe recién creado ya aparece: guardar y no ver
+      // el resultado deja la duda de si de verdad quedó.
+      await this.router.navigate(['/informes'], { queryParams: { nuevo: id } });
+    } catch (e) {
+      this.errorGuardar.set((e as Error).message);
+    } finally {
+      this.guardando.set(false);
     }
   }
 }

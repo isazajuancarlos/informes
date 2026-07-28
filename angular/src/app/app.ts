@@ -38,6 +38,7 @@ export class App {
 
   readonly menu: Entrada[] = [
     { ruta: '/entregas', titulo: 'Entregas', icono: 'assignment_turned_in' },
+    { ruta: '/informes', titulo: 'Informes', icono: 'description' },
     { ruta: '/cronograma', titulo: 'Cronograma', icono: 'event_repeat' },
   ];
 
