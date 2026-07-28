@@ -91,6 +91,36 @@ export interface InformeEntrada {
   activo?: boolean;
 }
 
+/** Los papeles de una parte en un informe. */
+export type RolParte = 'ORIGEN' | 'DESTINO' | 'USUARIO' | 'SUPERVISA' | 'EJECUTA';
+
+/** Una parte de un informe, con el nombre ya resuelto. */
+export interface Parte {
+  id: number;
+  usuario_id: number | null;
+  stakeholder_id: number | null;
+  nombre: string;
+  rol: RolParte;
+  es_principal: boolean;
+  orden: number;
+}
+
+/** Lo que el editor manda al asignar partes. */
+export interface ParteEntrada {
+  usuario_id?: number | null;
+  stakeholder_id?: number | null;
+  rol: RolParte;
+  es_principal?: boolean;
+  orden?: number;
+}
+
+/** Un usuario o stakeholder, para los selectores del editor de partes. */
+export interface OpcionParte {
+  id: number;
+  nombre: string;
+  detalle: string | null;
+}
+
 @Injectable({ providedIn: 'root' })
 export class Api {
   private http = inject(HttpClient);
@@ -193,5 +223,27 @@ export class Api {
     return this.http
       .put<{ ok: boolean }>(`/api/informes/${id}`, cuerpo, { withCredentials: true })
       .pipe(catchError((e) => this.falla(e)));
+  }
+
+  // --- Participación (quién interviene en un informe) -----------------------
+
+  participacion(informeId: number) {
+    return this.get<Parte[]>(`/api/informes/${informeId}/participacion`);
+  }
+
+  guardarParticipacion(informeId: number, partes: ParteEntrada[]) {
+    return this.http
+      .put<{ ok: boolean; partes: number }>(`/api/informes/${informeId}/participacion`, partes, {
+        withCredentials: true,
+      })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  usuarios() {
+    return this.get<OpcionParte[]>('/api/usuarios');
+  }
+
+  stakeholders() {
+    return this.get<OpcionParte[]>('/api/stakeholders');
   }
 }

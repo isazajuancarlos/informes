@@ -111,6 +111,16 @@ const NOMBRE_MODO: Record<string, string> = {
           </td>
         </ng-container>
 
+        <ng-container matColumnDef="acciones">
+          <th mat-header-cell *matHeaderCellDef></th>
+          <td mat-cell *matCellDef="let i">
+            <a mat-stroked-button [routerLink]="['/informes', i.id, 'partes']"
+               matTooltip="Quién interviene: responsable, supervisión, destino">
+              <mat-icon>groups</mat-icon> Partes
+            </a>
+          </td>
+        </ng-container>
+
         <tr mat-header-row *matHeaderRowDef="columnas"></tr>
         <tr mat-row *matRowDef="let fila; columns: columnas;"
             [class.recien]="fila.id === nuevo()"></tr>
@@ -137,7 +147,7 @@ export class Informes {
   private api = inject(Api);
   private router = inject(Router);
 
-  readonly columnas = ['nombre', 'modo', 'estado'];
+  readonly columnas = ['nombre', 'modo', 'estado', 'acciones'];
 
   todos = signal<InformeFila[]>([]);
   cargando = signal(true);

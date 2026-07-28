@@ -27,6 +27,11 @@ export const routes: Routes = [
     loadComponent: () => import('./paginas/informes').then((m) => m.Informes),
   },
   {
+    path: 'informes/:id/partes',
+    canActivate: [guardaSesion],
+    loadComponent: () => import('./paginas/partes').then((m) => m.Partes),
+  },
+  {
     path: 'cronograma',
     canActivate: [guardaSesion],
     loadComponent: () => import('./paginas/cronograma').then((m) => m.Cronograma),
