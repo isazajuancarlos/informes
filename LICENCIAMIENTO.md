@@ -297,7 +297,7 @@ software del cliente.**
 - [ ] Plantilla de cotización con las tres ediciones
 - [ ] Implementar `licencia.qlic` (§8)
 - [ ] CLA/DCO en Quipu antes de aceptar el primer PR externo
-- [ ] Minuta de servicios (Vía A) con cláusula expresa de reserva de PI a favor de Xiliux (ver §10.3 y #42)
+- [x] Minuta de servicios (Vía A) con arquitectura de PI en tres cubetas — `CONTRATO_SERVICIOS_DESARROLLO.md` (#42/#63)
 - [ ] Aprobar las tarifas del §10 y volcarlas a la plantilla de cotización
 
 ---

@@ -150,11 +150,19 @@ UNA en el Anexo 2:
   **La cesión se limita al foreground: NUNCA alcanza los Activos Preexistentes
   (8.1).**
 
-- **[ ] Modalidad A3 — Cotitularidad proporcional a los aportes** *(patrón SURA)*.
-  La titularidad del desarrollo a la medida corresponde a LAS PARTES en
-  proporción a sus aportes, **lo cual se regula y formaliza por escrito** en el
-  Anexo 3. Cada parte puede explotarlo [según lo allí pactado]; toda publicación
-  o divulgación requiere aprobación previa de ambas.
+- **[ ] Modalidad A3 — Cotitularidad proporcional a los aportes.** La titularidad
+  del desarrollo a la medida corresponde a LAS PARTES en proporción a sus aportes.
+  **El reparto y el derecho de cada parte a explotar el resultado se definen EN
+  ESTE CONTRATO (Anexo 3), no se aplazan.** Cada parte puede explotar el resultado
+  según lo pactado en el Anexo 3; la publicación o divulgación requiere aprobación
+  previa de ambas.
+
+  > **ADVERTENCIA (#63).** La minuta de SURA establece cotitularidad **con el
+  > reparto APLAZADO** a «un acuerdo posterior por escrito». Eso es **peor que una
+  > cesión**: deja a Xiliux de codueño de su propio desarrollo con un tercero, y el
+  > reparto que nunca se firma congela la explotación. **Si un CLIENTE propone una
+  > cláusula así, se rechaza o se exige definir el reparto AQUÍ.** A3 solo se acepta
+  > con el Anexo 3 diligenciado en la firma.
 
 **8.3. Datos del CONTRATANTE — siempre de EL CONTRATANTE.** Los datos que EL
 CONTRATANTE cargue u opere en la solución son de su exclusiva titularidad. EL
