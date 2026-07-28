@@ -12,6 +12,7 @@ mod config;
 mod db;
 mod estaticos;
 mod firma;
+mod importar;
 mod planificador;
 mod rutas;
 mod sesion;
@@ -29,6 +30,10 @@ async fn main() -> std::process::ExitCode {
     // —la forma de depuración— y se pierde entero el mensaje que dice qué falta
     // y cómo generarlo. Quien instala esto no lee Rust: lee la única línea que
     // le sale por pantalla, y esa línea tiene que servirle.
+    if std::env::args().nth(1).as_deref() == Some("importar") {
+        return importar_cmd().await;
+    }
+
     if let Some(codigo) = subcomando() {
         return codigo;
     }
@@ -89,6 +94,31 @@ fn subcomando() -> Option<std::process::ExitCode> {
     }
 
     None
+}
+
+/// `siger-api importar <db_origen> <db_destino>`: vuelca la base del sistema
+/// anterior al esquema nuevo. La base destino tiene que ser nueva; el volcado se
+/// niega a mezclar con datos existentes. Falla RUIDOSAMENTE ante cualquier dato
+/// que no encaje, y no escribe nada si algo falla (una sola transacción).
+async fn importar_cmd() -> std::process::ExitCode {
+    let (Some(origen), Some(destino)) = (std::env::args().nth(2), std::env::args().nth(3)) else {
+        eprintln!("uso: siger-api importar <db_origen> <db_destino>");
+        return std::process::ExitCode::FAILURE;
+    };
+    match importar::importar(&origen, &destino).await {
+        Ok(r) => {
+            println!(
+                "volcado a «{destino}»: {} usuarios, {} stakeholders, {} informes, \
+                 {} participaciones, {} entregas",
+                r.usuarios, r.stakeholders, r.informes, r.participacion, r.entregas
+            );
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("\nel volcado se detuvo sin escribir nada:\n  {e}\n");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {

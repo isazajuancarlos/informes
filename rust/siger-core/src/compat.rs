@@ -186,9 +186,45 @@ impl TryFrom<&ReglaJson> for Regla {
                     .filter_map(|s| NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok())
                     .collect(),
             ),
+            // El sistema anterior escribía `INMEDIATO`; se admiten también las dos
+            // formas del nombre nuevo. No fija días: es a solicitud.
+            "INMEDIATO" | "A_SOLICITUD" | "ASOLICITUD" => Patron::ASolicitud,
             otro => return Err(ErrorRegla::ModoDesconocido(otro.to_string())),
         };
 
         Ok(Regla { vigencia, patron, ajuste: j.ajuste() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn inmediato_del_sistema_viejo_se_lee_como_a_solicitud() {
+        // Los 16 informes «INMEDIATO» del catálogo real: existen, pero no vencen
+        // por calendario. Si esto se rompe, el volcado vuelve a fallar en ellos.
+        let rj: ReglaJson = serde_json::from_str(
+            r#"{"modo":"INMEDIATO","descripcion":"Por solicitud","fecha_inicio":"2026-01-01"}"#,
+        )
+        .unwrap();
+        let regla = Regla::try_from(&rj).unwrap();
+        assert_eq!(regla.patron, Patron::ASolicitud);
+    }
+
+    #[test]
+    fn el_nombre_nuevo_tambien_se_admite() {
+        for modo in ["A_SOLICITUD", "ASOLICITUD", "a_solicitud"] {
+            let rj = ReglaJson { modo: Some(modo.to_string()), ..Default::default() };
+            assert_eq!(Regla::try_from(&rj).unwrap().patron, Patron::ASolicitud);
+        }
+    }
+
+    #[test]
+    fn un_modo_de_verdad_desconocido_sigue_fallando() {
+        // La puerta no se abrió de más: un modo inventado sigue siendo un error,
+        // no cae a «a solicitud» por descarte.
+        let rj = ReglaJson { modo: Some("QUINCENAL_LUNAR".into()), ..Default::default() };
+        assert!(matches!(Regla::try_from(&rj), Err(ErrorRegla::ModoDesconocido(_))));
     }
 }

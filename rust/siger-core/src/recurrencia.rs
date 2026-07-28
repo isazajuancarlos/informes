@@ -53,6 +53,12 @@ pub enum Patron {
     /// sigue ningún patrón se enumera, y así nadie se queda fuera por no encajar
     /// en una forma que se nos ocurrió.
     Fechas(Vec<NaiveDate>),
+    /// A solicitud: el informe existe pero no vence nunca por calendario. Sus
+    /// entregas se crean a mano cuando alguien las pide. No es «sin regla» —eso
+    /// sería un vacío—: es una regla que dice, explícitamente, que no hay
+    /// periodicidad. El sistema anterior la llamaba `INMEDIATO`, y sin ella 16
+    /// informes reales no tendrían dónde vivir.
+    ASolicitud,
 }
 
 /// El día del mes se fija de **una** de estas maneras, nunca de dos.
@@ -150,6 +156,10 @@ impl Motor {
             Patron::Horario { hora_inicio, hora_fin, intervalo_horas } => {
                 self.horario(fecha, *hora_inicio, *hora_fin, *intervalo_horas)
             }
+            // A solicitud no fija ningún día: el planificador no le crea entregas
+            // automáticas, exactamente como el sistema anterior, donde estos
+            // informes tenían cero entregas esperadas.
+            Patron::ASolicitud => Vec::new(),
         }
     }
 
