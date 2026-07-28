@@ -1,0 +1,588 @@
+[
+ {
+  "caso": "lunes_6jul",
+  "seleccion": [
+   "2026-07-06"
+  ],
+  "esperado": [
+   {
+    "periodicidad": "DIARIA",
+    "nombre": "Diaria",
+    "dice": "todos los días desde esa fecha",
+    "regla": {
+     "modo": "CICLICO",
+     "intervalo": 1,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-07",
+     "2026-07-08",
+     "2026-07-09"
+    ]
+   },
+   {
+    "periodicidad": "SEMANAL",
+    "nombre": "Semanal",
+    "dice": "todas las semanas, lunes",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      0
+     ],
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-13",
+     "2026-07-20",
+     "2026-07-27"
+    ]
+   },
+   {
+    "periodicidad": "CADA_N_SEMANAS",
+    "nombre": "Cada varias semanas",
+    "dice": "cada dos semanas, lunes",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      0
+     ],
+     "cada_n_semanas": 2,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-20",
+     "2026-08-03",
+     "2026-08-17"
+    ]
+   },
+   {
+    "periodicidad": "MENSUAL",
+    "nombre": "Mensual",
+    "dice": "el día 6 de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dia_corte": 6,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-08-06",
+     "2026-09-06",
+     "2026-10-06"
+    ]
+   },
+   {
+    "periodicidad": "MENSUAL",
+    "nombre": "Mensual",
+    "dice": "el 1º lunes de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dia_semana_mes": 0,
+     "semana_del_mes": 1,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-08-03",
+     "2026-09-07",
+     "2026-10-05"
+    ]
+   },
+   {
+    "periodicidad": "MENSUAL",
+    "nombre": "Mensual",
+    "dice": "el 4º día hábil de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dia_habil": 4,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-08-06",
+     "2026-09-04",
+     "2026-10-06"
+    ]
+   },
+   {
+    "periodicidad": "ANUAL",
+    "nombre": "Anual",
+    "dice": "cada 6 de julio",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      7
+     ],
+     "dia_corte": 6,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2027-07-06",
+     "2028-07-06"
+    ]
+   },
+   {
+    "periodicidad": "SIN_PATRON",
+    "nombre": "Fechas sueltas, sin patrón",
+    "dice": "solo esa fecha",
+    "regla": {
+     "modo": "FECHAS",
+     "fechas": [
+      "2026-07-06"
+     ],
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06"
+    ]
+   }
+  ]
+ },
+ {
+  "caso": "dia15_marzo",
+  "seleccion": [
+   "2026-03-15"
+  ],
+  "esperado": [
+   {
+    "periodicidad": "DIARIA",
+    "nombre": "Diaria",
+    "dice": "todos los días desde esa fecha",
+    "regla": {
+     "modo": "CICLICO",
+     "intervalo": 1,
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15",
+     "2026-03-16",
+     "2026-03-17",
+     "2026-03-18"
+    ]
+   },
+   {
+    "periodicidad": "SEMANAL",
+    "nombre": "Semanal",
+    "dice": "todas las semanas, domingo",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      6
+     ],
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15",
+     "2026-03-22",
+     "2026-03-29",
+     "2026-04-05"
+    ]
+   },
+   {
+    "periodicidad": "CADA_N_SEMANAS",
+    "nombre": "Cada varias semanas",
+    "dice": "cada dos semanas, domingo",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      6
+     ],
+     "cada_n_semanas": 2,
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15",
+     "2026-03-29",
+     "2026-04-12",
+     "2026-04-26"
+    ]
+   },
+   {
+    "periodicidad": "MENSUAL",
+    "nombre": "Mensual",
+    "dice": "el día 15 de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dia_corte": 15,
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15",
+     "2026-04-15",
+     "2026-05-15",
+     "2026-06-15"
+    ]
+   },
+   {
+    "periodicidad": "MENSUAL",
+    "nombre": "Mensual",
+    "dice": "el 3º domingo de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dia_semana_mes": 6,
+     "semana_del_mes": 3,
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15",
+     "2026-04-19",
+     "2026-05-17",
+     "2026-06-21"
+    ]
+   },
+   {
+    "periodicidad": "ANUAL",
+    "nombre": "Anual",
+    "dice": "cada 15 de marzo",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      3
+     ],
+     "dia_corte": 15,
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15",
+     "2027-03-15",
+     "2028-03-15"
+    ]
+   },
+   {
+    "periodicidad": "SIN_PATRON",
+    "nombre": "Fechas sueltas, sin patrón",
+    "dice": "solo esa fecha",
+    "regla": {
+     "modo": "FECHAS",
+     "fechas": [
+      "2026-03-15"
+     ],
+     "fecha_inicio": "2026-03-15"
+    },
+    "proximas": [
+     "2026-03-15"
+    ]
+   }
+  ]
+ },
+ {
+  "caso": "quincena_ene_mar",
+  "seleccion": [
+   "2026-01-15",
+   "2026-03-15"
+  ],
+  "esperado": [
+   {
+    "periodicidad": "DIARIA",
+    "nombre": "Diaria",
+    "dice": "todos los días desde esa fecha",
+    "regla": {
+     "modo": "CICLICO",
+     "intervalo": 1,
+     "fecha_inicio": "2026-01-15"
+    },
+    "proximas": [
+     "2026-01-15",
+     "2026-01-16",
+     "2026-01-17",
+     "2026-01-18"
+    ]
+   },
+   {
+    "periodicidad": "SEMANAL",
+    "nombre": "Semanal",
+    "dice": "todas las semanas, jueves y domingo",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      3,
+      6
+     ],
+     "fecha_inicio": "2026-01-15"
+    },
+    "proximas": [
+     "2026-01-15",
+     "2026-01-18",
+     "2026-01-22",
+     "2026-01-25"
+    ]
+   },
+   {
+    "periodicidad": "CADA_N_SEMANAS",
+    "nombre": "Cada varias semanas",
+    "dice": "cada dos semanas, jueves y domingo",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      3,
+      6
+     ],
+     "cada_n_semanas": 2,
+     "fecha_inicio": "2026-01-15"
+    },
+    "proximas": [
+     "2026-01-15",
+     "2026-01-18",
+     "2026-01-29",
+     "2026-02-01"
+    ]
+   },
+   {
+    "periodicidad": "MENSUAL",
+    "nombre": "Mensual",
+    "dice": "el día 15 de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dia_corte": 15,
+     "fecha_inicio": "2026-01-15"
+    },
+    "proximas": [
+     "2026-01-15",
+     "2026-02-15",
+     "2026-03-15",
+     "2026-04-15"
+    ]
+   },
+   {
+    "periodicidad": null,
+    "nombre": "Periodicidad propia",
+    "dice": "en enero y marzo, el día 15",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      3
+     ],
+     "dia_corte": 15,
+     "fecha_inicio": "2026-01-15"
+    },
+    "proximas": [
+     "2026-01-15",
+     "2026-03-15",
+     "2027-01-15",
+     "2027-03-15"
+    ]
+   },
+   {
+    "periodicidad": "SIN_PATRON",
+    "nombre": "Fechas sueltas, sin patrón",
+    "dice": "solo esas 2 fechas",
+    "regla": {
+     "modo": "FECHAS",
+     "fechas": [
+      "2026-01-15",
+      "2026-03-15"
+     ],
+     "fecha_inicio": "2026-01-15"
+    },
+    "proximas": [
+     "2026-01-15",
+     "2026-03-15"
+    ]
+   }
+  ]
+ },
+ {
+  "caso": "dos_lunes",
+  "seleccion": [
+   "2026-07-06",
+   "2026-07-13"
+  ],
+  "esperado": [
+   {
+    "periodicidad": "DIARIA",
+    "nombre": "Diaria",
+    "dice": "todos los días desde esa fecha",
+    "regla": {
+     "modo": "CICLICO",
+     "intervalo": 1,
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-07",
+     "2026-07-08",
+     "2026-07-09"
+    ]
+   },
+   {
+    "periodicidad": "SEMANAL",
+    "nombre": "Semanal",
+    "dice": "todas las semanas, lunes",
+    "regla": {
+     "modo": "SEMANAL",
+     "dias_semana": [
+      0
+     ],
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-13",
+     "2026-07-20",
+     "2026-07-27"
+    ]
+   },
+   {
+    "periodicidad": "QUINCENAL",
+    "nombre": "Quincenal",
+    "dice": "los días 6, 13 de cada mes",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12
+     ],
+     "dias_corte": [
+      6,
+      13
+     ],
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-13",
+     "2026-08-06",
+     "2026-08-13"
+    ]
+   },
+   {
+    "periodicidad": null,
+    "nombre": "Periodicidad propia",
+    "dice": "cada año, en julio, los días 6, 13",
+    "regla": {
+     "modo": "ESPECIFICO",
+     "meses": [
+      7
+     ],
+     "dias_corte": [
+      6,
+      13
+     ],
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-13",
+     "2027-07-06",
+     "2027-07-13"
+    ]
+   },
+   {
+    "periodicidad": "SIN_PATRON",
+    "nombre": "Fechas sueltas, sin patrón",
+    "dice": "solo esas 2 fechas",
+    "regla": {
+     "modo": "FECHAS",
+     "fechas": [
+      "2026-07-06",
+      "2026-07-13"
+     ],
+     "fecha_inicio": "2026-07-06"
+    },
+    "proximas": [
+     "2026-07-06",
+     "2026-07-13"
+    ]
+   }
+  ]
+ }
+]

@@ -26,8 +26,11 @@
 pub mod calendario;
 pub mod compat;
 pub mod fechas;
+pub mod inferencia;
 pub mod patrones;
 pub mod recurrencia;
+
+pub use inferencia::{inferir, Inferencia};
 
 pub use calendario::{Calendario, ErrorCalendario};
 pub use compat::{ErrorRegla, ReglaJson};
