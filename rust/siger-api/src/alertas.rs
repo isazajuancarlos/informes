@@ -80,6 +80,24 @@ fn transporte(c: &ConfigCorreo) -> Result<AsyncSmtpTransport<Tokio1Executor>, St
     Ok(base.build())
 }
 
+/// Envía un correo suelto a un destinatario. Lo usa el flujo del supervisor
+/// (#163) para la «copia al correo» de una notificación interna. Devuelve si se
+/// envió; nunca propaga —un correo caído no puede tumbar la operación—.
+pub async fn enviar(c: &ConfigCorreo, destinatario: &str, asunto: &str, cuerpo: &str) -> bool {
+    let (Ok(desde), Ok(para)) = (c.desde.parse::<Mailbox>(), destinatario.parse::<Mailbox>()) else {
+        return false;
+    };
+    let t = match transporte(c) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
+    let Ok(msg) = Message::builder().from(desde).to(para).subject(asunto).body(cuerpo.to_string())
+    else {
+        return false;
+    };
+    t.send(msg).await.is_ok()
+}
+
 /// Los correos a los que avisar de una entrega, según la política configurada.
 /// Devuelve direcciones únicas y válidas; una dirección nula o vacía no cuenta.
 async fn destinatarios(

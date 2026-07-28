@@ -67,6 +67,14 @@ pub fn router(estado: Estado) -> Router {
         .route("/api/usuarios", get(crate::participacion::usuarios))
         .route("/api/stakeholders", get(crate::participacion::stakeholders))
         .route("/api/estadisticas", get(crate::estadisticas::resumen))
+        .route("/api/notificaciones", get(crate::flujo::listar_notificaciones))
+        .route("/api/notificaciones/{id}/leida", post(crate::flujo::marcar_leida))
+        .route(
+            "/api/entregas/{id}/comentarios",
+            get(crate::flujo::listar_comentarios),
+        )
+        .route("/api/entregas/{id}/justificacion", post(crate::flujo::justificar))
+        .route("/api/entregas/{id}/revision", post(crate::flujo::revisar))
         .with_state(estado)
 }
 

@@ -218,4 +218,22 @@ impl Config {
             correo: correo_desde_entorno()?,
         })
     }
+
+    /// Configuración mínima para pruebas: base en memoria, sin firma ni correo.
+    #[cfg(test)]
+    pub fn de_prueba() -> Self {
+        Self {
+            url_bd: "sqlite::memory:".into(),
+            puerto: 0,
+            secreto_sesion: vec![0u8; MINIMO_SECRETO],
+            pais_iso: "CO".into(),
+            minutos_sesion: 60,
+            dir_entregas: "/tmp".into(),
+            max_mb: 50,
+            extensiones: vec![],
+            firma_sk_hex: None,
+            firma_vk_hex: None,
+            correo: None,
+        }
+    }
 }

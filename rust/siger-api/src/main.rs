@@ -14,6 +14,7 @@ mod db;
 mod estadisticas;
 mod estaticos;
 mod firma;
+mod flujo;
 mod importar;
 mod informes;
 mod participacion;
