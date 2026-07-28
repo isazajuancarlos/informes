@@ -123,6 +123,12 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
           <th mat-header-cell *matHeaderCellDef (click)="ordenarPor('estado')">Estado</th>
           <td mat-cell *matCellDef="let e">
             <mat-chip [class]="'estado ' + e.estado.toLowerCase()">{{ e.estado }}</mat-chip>
+            @if (e.archivo_valido === false) {
+              <mat-icon class="revisar"
+                        matTooltip="El contenido del archivo no concuerda con su extensión. Se registró, pero conviene revisarlo.">
+                report_problem
+              </mat-icon>
+            }
           </td>
         </ng-container>
 
@@ -167,6 +173,8 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
   styles: `
     .cabecera { display: flex; align-items: center; gap: 1rem; justify-content: space-between; }
     .tabla { width: 100%; margin-top: 1rem; }
+    .revisar { color: var(--mat-sys-tertiary); vertical-align: middle;
+               margin-left: .35rem; font-size: 1.15rem; height: 1.15rem; width: 1.15rem; }
     th { cursor: pointer; user-select: none; }
     .vacio, .aviso {
       display: flex; align-items: center; gap: .75rem; padding: 2rem; margin-top: 1rem;

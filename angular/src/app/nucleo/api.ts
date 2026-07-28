@@ -33,6 +33,10 @@ export interface Entrega {
   estado: 'PENDIENTE' | 'CUMPLIDO' | 'EXTEMPORANEO' | 'INCUMPLIDO';
   archivo_nombre: string | null;
   tiene_firma: boolean;
+  /** Factor de calificación por contenido (#165): `false` = el contenido no
+   *  concuerda con la extensión (marcado para revisión); `true` = concuerda;
+   *  `null` = sin archivo o tipo no determinable. */
+  archivo_valido: boolean | null;
 }
 
 export interface FilaPrevia {
