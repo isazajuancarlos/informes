@@ -697,4 +697,24 @@ mod tests {
         let r = ruta_de_entrega("storage/entregas", 7, "informe.pdf").unwrap();
         assert_eq!(r, Path::new("storage/entregas/7/informe.pdf"));
     }
+
+    #[test]
+    fn la_extension_es_el_segundo_limite_de_la_subida() {
+        // El límite de formato de #158: del nombre del cliente se toma SOLO la
+        // extensión, en minúsculas, y solo si está admitida.
+        let solo_pdf = vec![".pdf".to_string()];
+        assert_eq!(extension_de("informe.PDF", &solo_pdf).as_deref(), Some("pdf"));
+        assert_eq!(extension_de("virus.exe", &solo_pdf), None);
+        // La extensión es lo que va tras el ÚLTIMO punto: `.tar.gz` es `gz`.
+        assert_eq!(extension_de("copia.tar.gz", &[".gz".to_string()]).as_deref(), Some("gz"));
+        // Lista vacía = cualquiera, pero hay que escribirla; y sin punto no hay
+        // extensión que tomar.
+        assert_eq!(extension_de("cualquiera.csv", &[]).as_deref(), Some("csv"));
+        assert_eq!(extension_de("sinextension", &[]), None);
+        // Una «extensión» con separadores, espacios o demasiado larga no es una
+        // extensión: no se sanea, se rechaza.
+        assert_eq!(extension_de("x.p df", &[]), None);
+        assert_eq!(extension_de("x.exageradamente_larga", &[]), None);
+        assert_eq!(extension_de("x.pd/f", &[]), None);
+    }
 }
