@@ -13,6 +13,7 @@ mod db;
 mod estaticos;
 mod firma;
 mod importar;
+mod informes;
 mod planificador;
 mod rutas;
 mod sesion;

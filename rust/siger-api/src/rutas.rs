@@ -52,12 +52,21 @@ pub fn router(estado: Estado) -> Router {
         )
         .route("/api/periodicidad/previsualizar", post(previsualizar))
         .route("/api/planificador/generar", post(generar_ahora))
+        .route(
+            "/api/informes",
+            get(crate::informes::listar).post(crate::informes::crear),
+        )
+        .route(
+            "/api/informes/{id}",
+            get(crate::informes::detalle).put(crate::informes::actualizar),
+        )
         .with_state(estado)
 }
 
 // --- Errores -----------------------------------------------------------------
 
-pub struct Error(StatusCode, String);
+#[derive(Debug)]
+pub struct Error(pub StatusCode, pub String);
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
@@ -655,7 +664,7 @@ async fn previsualizar(
     ))
 }
 
-async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle: Option<&str>) {
+pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle: Option<&str>) {
     // Que falle el registro no puede tumbar la operación, pero tampoco puede
     // pasar en silencio: se anota en el log del proceso.
     if let Err(e) = sqlx::query("INSERT INTO auditoria (momento, evento, email, detalle) VALUES (?, ?, ?, ?)")
