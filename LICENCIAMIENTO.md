@@ -297,3 +297,143 @@ software del cliente.**
 - [ ] Plantilla de cotización con las tres ediciones
 - [ ] Implementar `licencia.qlic` (§8)
 - [ ] CLA/DCO en Quipu antes de aceptar el primer PR externo
+- [ ] Minuta de servicios (Vía A) con cláusula expresa de reserva de PI a favor de Xiliux (ver §10.3 y #42)
+- [ ] Aprobar las tarifas del §10 y volcarlas a la plantilla de cotización
+
+---
+
+## 10. Catálogo de operaciones: la Vía A, los servicios derivados y la base de costo
+
+Esta sección completa dos cosas que el modelo daba por supuestas: la **tarifa
+vigente** que la §4.6 cobra sin definir, y la **base de costo** interna —el
+piso—, que hasta ahora solo tenía techo (el ancla de mercado de la §5). Y añade
+la operación que la estrategia de dos vías (#42) vuelve central: el **desarrollo
+a la medida (Vía A)**.
+
+Las cifras son propuesta anclada, no dogma: se recalculan con tres números —el
+valor de la hora, las horas productivas al mes y el opex real—.
+
+### 10.1. La base de costo (el piso)
+
+Costo mensual cargado de un desarrollador (Xiliux, 2026, cifras verificadas):
+
+| Componente (mensual) | COP |
+|---|---:|
+| Valor del trabajo (senior fullstack CO, central) | 7.000.000 |
+| Seguridad social independiente (IBC 40% → salud 12,5% + pensión 16% + ARL) | 813.000 |
+| Herramientas de IA (plan USD 200 × TRM 3.206) | 641.000 |
+| Operativos (VPS + dominios + infraestructura) | 250.000 |
+| **Costo mensual cargado** | **8.704.000** |
+
+**Costo-hora cargado ≈ $60.000/h** (de $54.400 a 160 h/mes hasta $72.500 a 120 h
+de fundador solo). NO paga *parafiscales* (SENA/ICBF/caja): son aporte del
+empleador, y aquí no hay nómina. Este es el suelo bajo el que ningún precio de
+servicio puede caer sin perder plata.
+
+### 10.2. Tarifa de servicios (la «tarifa vigente» de §4.6)
+
+| Servicio | Tarifa (antes de IVA) |
+|---|---:|
+| Desarrollo a la medida (estándar) | **$140.000/h** |
+| Consultoría / diagnóstico técnico-jurídico | **$200.000/h** |
+
+$140.000/h es ~2,3× el costo cargado: cubre el tiempo NO facturable (un fundador
+solo no factura las 160 h), el margen y los impuestos. Equivale a ~USD 44/h,
+dentro del mercado senior colombiano. **Bolsa de horas** prepago, con descuento
+por volumen: 40 h $5,2M · 100 h $12M · 200 h $22M.
+
+### 10.3. Vía A: desarrollo a la medida, y la palanca de PI
+
+Aquí la #42 determina la #36. El precio del MISMO desarrollo cambia según quién
+se queda la propiedad intelectual, y esa palanca es deliberada:
+
+| Modalidad | Qué recibe el cliente | Tarifa | Por qué |
+|---|---|---:|---|
+| **A1 — Xiliux retiene la PI** | licencia de uso del resultado | **$140.000/h** | el resultado se vuelve inventario de catálogo (Vía B) y se recupera con reventas. Es la modalidad que se quiere. |
+| **A2 — cesión EXCLUSIVA al cliente** | propiedad plena del resultado | **+50–80% → $210.000–250.000/h** | Xiliux renuncia al lucro cesante de TODAS las reventas futuras: se rompe el volante para ese desarrollo, y eso se cobra. |
+
+**Se cotizan siempre las dos**, para que el cliente vea el costo de exigir
+exclusividad —y casi siempre elija A1—. Recordatorio jurídico de #42: en A1 la
+minuta DEBE llevar cláusula expresa de reserva de PI a favor de Xiliux; sin ella,
+el art. 20 de la Ley 23/1982 (modif. art. 28 Ley 1450/2011) **presume la
+transferencia al encargante**, y A1 se convierte en A2 sin haberla cobrado.
+
+### 10.4. Servicios derivados (precios de referencia)
+
+Se cotizan aparte (§4.6), nunca se regalan, y aplican tanto a un producto vendido
+(Vía B) como a un desarrollo (Vía A):
+
+| Servicio | Base | Precio referencia (antes de IVA) |
+|---|---|---:|
+| Implementación y parametrización | 24–40 h | $3,5M – $6M |
+| Migración de datos | 12–24 h (existe la herramienta `importar`, costo marginal bajo) | $1,8M – $4M |
+| Capacitación | sesión de 4 h | $650.000 / sesión |
+| Mantenimiento y actualizaciones | anual, sobre precio de lista | **~20%** del precio de lista (1er año incluido, §3.3/§5) |
+| Personalización / desarrollo evolutivo | por horas | $140.000/h |
+| Integración con sistemas del cliente | por horas | $140.000/h |
+| Hosting / operación en la nube (§4.7) | infra + operación | costo de infra + $400.000–$1.200.000/mes según carga; se cruza con la perpetua ~año 3 |
+
+### 10.5. Impuestos
+
+Los precios de esta sección y de las ediciones (§4.4) son **antes de IVA**. El
+desarrollo de software y el licenciamiento causan **IVA 19%** en Colombia salvo
+exención específica. La renta se liquida sobre el ingreso neto del independiente.
+(Confirmar el régimen tributario concreto de la persona natural antes de emitir
+la primera factura.)
+
+### 10.6. La lógica del volante, en una línea
+
+La Vía A se cobra barata cuando Xiliux retiene la PI **a propósito**: cada
+desarrollo así financiado engorda el catálogo que la Vía B revende con margen
+casi puro. El precio no solo cobra el trabajo: **empuja la estrategia**.
+
+### 10.7. Estimación por requerimientos y complejidad — y el límite del contrato
+
+Un desarrollo NO se cotiza como una bolsa opaca. Se cotiza como un **conjunto de
+requerimientos**, cada uno clasificado por complejidad. El precio es la suma; el
+**número y la complejidad acordados son el alcance del contrato**, y ahí está el
+límite que protege de lo que mata los proyectos a precio fijo: el *scope creep*.
+
+Una sola escala de cuatro niveles (la misma que gobierna el soporte, §10.8):
+
+| Complejidad | Qué es | Esfuerzo | Precio @ $140.000/h |
+|---|---|---|---:|
+| **Leve** | un campo, una validación, un reporte simple, un ajuste de interfaz | 4–12 h | $0,56M – $1,68M |
+| **Moderado** | una funcionalidad con lógica propia, un formulario completo, una integración simple | 16–40 h | $2,24M – $5,6M |
+| **Grave** | un subsistema pequeño, lógica compleja, varias pantallas o una integración no trivial | 48–100 h | $6,72M – $14M |
+| **Crítico** | un módulo nuevo, algo con seguridad/criptografía, alta incertidumbre o integración pesada | 120–240 h | $16,8M – $33,6M |
+
+**Precio del proyecto = Σ (requerimiento × su complejidad).** La cotización lista
+los requerimientos con su nivel, y eso es lo que se firma.
+
+**El límite contractual, que es el punto:**
+
+- **Control de cambios.** Un requerimiento NUEVO —o uno que al detallarse sube de
+  nivel— no entra «de gratis»: va por adenda con nueva estimación. La minuta lo
+  dice expresamente. Sin esta cláusula, el precio fijo se vuelve trabajo infinito.
+- **Revisiones incluidas.** Dos rondas de ajuste por requerimiento entran en el
+  precio; a partir de la tercera se factura por horas. Evita el «una cosita más»
+  perpetuo.
+- **Tope por fase.** Un número máximo de requerimientos por entrega, para que el
+  proyecto tenga fin y se pueda cerrar, cobrar y liberar el producto (Vía B).
+- **Clasificación acordada por escrito.** El nivel de cada requerimiento se pacta
+  ANTES, no se discute al entregar. Un desacuerdo de nivel es control de cambios,
+  no una pelea de facturación.
+
+### 10.8. La misma escala, en el soporte: el SLA
+
+Los cuatro niveles reaparecen en el mantenimiento (§10.4) como **severidad del
+incidente**, y fijan los tiempos de respuesta. Es lo que convierte «soporte» en
+algo medible y cobrable, no en una promesa vaga:
+
+| Severidad | Ejemplo | Respuesta | Solución objetivo |
+|---|---|---|---|
+| **Crítico** | sistema caído, no se puede operar, o compromiso de datos | 4 h hábiles | prioridad máxima, sin cola |
+| **Grave** | una función principal no opera y no hay alternativa | 1 día hábil | siguiente ciclo prioritario |
+| **Moderado** | una función secundaria falla pero hay como seguir | 3 días hábiles | ciclo ordinario |
+| **Leve** | cosmético, consulta o mejora menor | 5 días hábiles | siguiente versión |
+
+Los tiempos son del plan de mantenimiento estándar; un SLA más exigente (p. ej.
+respuesta de 1 h al crítico, cobertura 24/7) es un nivel de soporte superior y se
+cotiza aparte. La regla de fondo no cambia (§8): la licencia y el SLA se hacen
+cumplir por **contrato**, nunca rompiendo el software del cliente.
