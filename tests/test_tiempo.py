@@ -171,7 +171,11 @@ def test_los_dos_relojes_no_son_el_mismo():
     devuelvan lo mismo, el desfase desaparece sin que falle nada más — y las
     fechas empiezan a mentir cinco horas."""
     import os
-    if datetime.now().utcoffset() == timedelta(0) or os.environ.get("TZ") == "UTC":
+    # `datetime.now()` es naive y su `.utcoffset()` es None: hay que hacerlo
+    # aware con `.astimezone()` para leer el offset local REAL. En un runner en
+    # UTC (como el CI) da timedelta(0) y el test se salta, que es lo correcto:
+    # ahí los dos relojes coinciden legítimamente y no hay desfase que medir.
+    if datetime.now().astimezone().utcoffset() == timedelta(0) or os.environ.get("TZ") == "UTC":
         pytest.skip("la máquina está en UTC: aquí los dos relojes coinciden")
     diferencia = abs((tiempo.ahora_utc() - tiempo.ahora_local()).total_seconds())
     assert diferencia > 60, "UTC y hora local no pueden ser el mismo instante"
