@@ -1,0 +1,40 @@
+[package]
+name = "siger-api"
+description = "API y servidor de SIGER: un solo binario que trae dentro la interfaz, las migraciones y el motor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+siger-core = { path = "../siger-core" }
+
+axum = "0.8"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
+
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "sqlite", "postgres", "chrono", "macros", "migrate",
+] }
+
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Identidad. Argon2id, el mismo esquema que ya usa la cadena de Python: una
+# migración de contraseñas no puede obligar a los usuarios a volver a crearlas.
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["std"] }
+
+# Cookie de sesión firmada. No es un token que viaje al JavaScript: el navegador
+# la guarda y la devuelve, y el JavaScript no puede leerla.
+hmac = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+
+rust-embed = { version = "8", features = ["mime-guess"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

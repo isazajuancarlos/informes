@@ -1,0 +1,47 @@
+// Tema de la aplicación.
+//
+// Dos decisiones que no son de gusto:
+//
+// 1. **La tipografía es la del sistema.** El tema de Material pide Roboto, que
+//    el andamiaje trae de Google Fonts. Dos de los tres perfiles se instalan sin
+//    internet, así que esa fuente no llegaría nunca y el navegador caería a otra
+//    de todos modos — con el retardo y la petición fallida de propina.
+//
+// 2. **Modo claro y oscuro**, resuelto por `mat.theme` con la preferencia del
+//    sistema. Quien revisa entregas a las seis de la mañana en una oficina a
+//    media luz no debería tener que configurar nada.
+@use '@angular/material' as mat;
+
+html {
+  height: 100%;
+  color-scheme: light dark;
+
+  @include mat.theme(
+    (
+      color: (
+        primary: mat.$azure-palette,
+        tertiary: mat.$orange-palette,
+      ),
+      typography: (
+        plain-family: system-ui,
+        brand-family: system-ui,
+      ),
+      density: 0,
+    )
+  );
+}
+
+body {
+  margin: 0;
+  background: var(--mat-sys-surface);
+  color: var(--mat-sys-on-surface);
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+// Foco visible. El andamiaje de Material lo deja al navegador, y con teclado
+// —que es como trabaja quien registra cien entregas al día— el recorrido se
+// pierde de vista.
+:focus-visible {
+  outline: 2px solid var(--mat-sys-primary);
+  outline-offset: 2px;
+}

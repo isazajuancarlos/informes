@@ -1,0 +1,54 @@
+<!--
+  El marco de la aplicación.
+
+  Solo aparece cuando hay sesión: la pantalla de acceso ocupa el ancho completo,
+  sin barra ni menú, porque enseñar un menú a quien no ha entrado promete cosas
+  que no puede hacer.
+-->
+@if (sesion.dentro()) {
+  <mat-sidenav-container class="marco">
+    <mat-sidenav #lateral mode="side" [opened]="anchaLaPantalla()" class="lateral">
+      <div class="marca">
+        <span class="nombre">SIGER</span>
+        <span class="largo">Sistema Integral de Gestión de Informes</span>
+      </div>
+      <mat-nav-list>
+        @for (entrada of menu; track entrada.ruta) {
+          <a mat-list-item [routerLink]="entrada.ruta" routerLinkActive
+             #activo="routerLinkActive" [activated]="activo.isActive">
+            <mat-icon matListItemIcon>{{ entrada.icono }}</mat-icon>
+            <span matListItemTitle>{{ entrada.titulo }}</span>
+          </a>
+        }
+      </mat-nav-list>
+    </mat-sidenav>
+
+    <mat-sidenav-content>
+      <mat-toolbar class="barra">
+        <button mat-icon-button (click)="lateral.toggle()" aria-label="Menú">
+          <mat-icon>menu</mat-icon>
+        </button>
+        <span class="titulo">{{ tituloActual() }}</span>
+        <span class="empuje"></span>
+
+        <button mat-button [matMenuTriggerFor]="cuenta" class="cuenta">
+          <span class="iniciales">{{ sesion.iniciales() }}</span>
+          <span class="quien">{{ sesion.actor()?.nombre }}</span>
+        </button>
+        <mat-menu #cuenta="matMenu">
+          <div class="detalle-cuenta">
+            <strong>{{ sesion.actor()?.email }}</strong>
+            <span>{{ sesion.actor()?.rol }}</span>
+          </div>
+          <button mat-menu-item (click)="sesion.salir()">
+            <mat-icon>logout</mat-icon> Salir
+          </button>
+        </mat-menu>
+      </mat-toolbar>
+
+      <main class="contenido"><router-outlet /></main>
+    </mat-sidenav-content>
+  </mat-sidenav-container>
+} @else {
+  <router-outlet />
+}
