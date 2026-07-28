@@ -82,3 +82,6 @@ angular/.angular/
 # interfaz distinta de la del código que lo acompaña.
 rust/siger-api/estaticos/*
 !rust/siger-api/estaticos/.gitkeep
+
+# Base de demostración: se regenera con `python rust/sembrar_demo.py`.
+rust/demo/
