@@ -15,7 +15,7 @@
  * cien veces al día y que antes costaban una recarga cada una.
  */
 import { DatePipe } from '@angular/common';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, ElementRef, computed, inject, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { MatButtonModule } from '@angular/material/button';
 import { MatCardModule } from '@angular/material/card';
@@ -136,6 +136,14 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
                  [attr.aria-label]="'Descargar ' + e.archivo_nombre">
                 <mat-icon>download</mat-icon>
               </a>
+            } @else if (e.estado === 'PENDIENTE' || e.estado === 'INCUMPLIDO') {
+              <!-- El nombre del archivo NO viaja como destino: solo aporta la
+                   extensión. El servidor construye el nombre desde el id. -->
+              <button mat-stroked-button type="button" [disabled]="subiendo() === e.id"
+                      (click)="elegir(e)">
+                <mat-icon>upload</mat-icon>
+                {{ subiendo() === e.id ? 'Enviando…' : 'Entregar' }}
+              </button>
             }
           </td>
         </ng-container>
@@ -143,6 +151,17 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
         <tr mat-header-row *matHeaderRowDef="columnas"></tr>
         <tr mat-row *matRowDef="let fila; columns: columnas"></tr>
       </table>
+    }
+
+    <!-- Un solo selector de archivo para toda la tabla: uno por fila multiplica
+         los elementos ocultos por el número de entregas sin dar nada a cambio. -->
+    <input #selector type="file" hidden (change)="subir($event)" />
+
+    @if (aviso()) {
+      <div class="aviso-flotante" [class.malo]="avisoMalo()" role="status">
+        <mat-icon>{{ avisoMalo() ? 'error_outline' : 'check_circle' }}</mat-icon>
+        {{ aviso() }}
+      </div>
     }
   `,
   styles: `
@@ -163,6 +182,14 @@ type Orden = 'fecha_limite' | 'informe' | 'estado';
     .estado.cumplido      { --mdc-chip-label-text-color: #1b5e20; }
     .estado.extemporaneo  { --mdc-chip-label-text-color: #b26a00; }
     .estado.incumplido    { --mdc-chip-label-text-color: #b71c1c; }
+    .aviso-flotante {
+      position: fixed; right: 1.5rem; bottom: 1.5rem; z-index: 10;
+      display: flex; align-items: center; gap: .5rem;
+      padding: .9rem 1.1rem; border-radius: .5rem; max-width: 28rem;
+      background: var(--mat-sys-inverse-surface); color: var(--mat-sys-inverse-on-surface);
+      box-shadow: 0 4px 16px rgb(0 0 0 / .3);
+    }
+    .aviso-flotante.malo { background: var(--mat-sys-error); color: var(--mat-sys-on-error); }
   `,
 })
 export class Entregas {
@@ -188,8 +215,58 @@ export class Entregas {
     return [...filtradas].sort((a, b) => String(a[campo]).localeCompare(String(b[campo])));
   });
 
+  readonly selector = viewChild.required<ElementRef<HTMLInputElement>>('selector');
+  subiendo = signal<number | null>(null);
+  aviso = signal('');
+  avisoMalo = signal(false);
+  private destino: Entrega | null = null;
+
   constructor() {
     this.cargar();
+  }
+
+  elegir(entrega: Entrega) {
+    this.destino = entrega;
+    const campo = this.selector().nativeElement;
+    // Se limpia antes de abrir: sin esto, elegir dos veces el MISMO archivo no
+    // dispara `change` la segunda vez y el botón parece no hacer nada.
+    campo.value = '';
+    campo.click();
+  }
+
+  async subir(evento: Event) {
+    const archivo = (evento.target as HTMLInputElement).files?.[0];
+    const entrega = this.destino;
+    if (!archivo || !entrega) return;
+
+    this.subiendo.set(entrega.id);
+    try {
+      const respuesta = await firstValueFrom(this.api.subirArchivo(entrega.id, archivo));
+      // El estado lo decide el SERVIDOR comparando con la fecha límite. Suponer
+      // «CUMPLIDO» aquí pintaría de verde una entrega que el servidor acaba de
+      // marcar extemporánea.
+      this.mostrar(
+        respuesta.estado === 'EXTEMPORANEO'
+          ? `Registrada FUERA DE PLAZO: ${entrega.informe}`
+          : `Entrega registrada: ${entrega.informe}`,
+        respuesta.estado === 'EXTEMPORANEO',
+      );
+      await this.cargar();
+    } catch (e) {
+      // El motivo viene del servidor —formato no admitido, tamaño— y se enseña
+      // tal cual: un «no se pudo subir» genérico obliga a adivinar cuál de las
+      // dos reglas se incumplió.
+      this.mostrar((e as Error).message, true);
+    } finally {
+      this.subiendo.set(null);
+      this.destino = null;
+    }
+  }
+
+  private mostrar(texto: string, malo: boolean) {
+    this.aviso.set(texto);
+    this.avisoMalo.set(malo);
+    setTimeout(() => this.aviso.set(''), malo ? 9000 : 4000);
   }
 
   async cargar() {

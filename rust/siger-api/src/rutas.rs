@@ -12,7 +12,7 @@ use std::path::{Component, Path, PathBuf};
 
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
-    extract::{FromRequestParts, Path as RutaParam, State},
+    extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path as RutaParam, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -33,13 +33,24 @@ pub struct Estado {
 }
 
 pub fn router(estado: Estado) -> Router {
+    let tope_mb = estado.cfg.max_mb;
     Router::new()
         .route("/api/salud", get(salud))
         .route("/api/sesion", post(abrir_sesion).delete(cerrar_sesion))
         .route("/api/yo", get(yo))
         .route("/api/entregas", get(listar_entregas))
-        .route("/api/entregas/{id}/archivo", get(descargar_archivo))
+        .route(
+            "/api/entregas/{id}/archivo",
+            get(descargar_archivo)
+                .post(subir_archivo)
+                // El tope del cuerpo se aplica AQUÍ, no en una comprobación
+                // después de leerlo: un archivo de 2 GB que se rechaza tras
+                // cargarlo en memoria ya hizo el daño. Axum corta la petición al
+                // pasarse, y el cliente recibe 413.
+                .layer(DefaultBodyLimit::max(tope_mb * 1024 * 1024)),
+        )
         .route("/api/periodicidad/previsualizar", post(previsualizar))
+        .route("/api/planificador/generar", post(generar_ahora))
         .with_state(estado)
 }
 
@@ -303,6 +314,170 @@ pub fn ruta_de_entrega(almacen: &str, id: i64, nombre: &str) -> Option<PathBuf> 
     } else {
         None
     }
+}
+
+// --- Subida -------------------------------------------------------------------
+
+/// La extensión que declara el nombre del cliente, si es aceptable.
+///
+/// **Del nombre que manda el navegador se toma ESTO y nada más.** El nombre
+/// completo no se usa ni saneado: sanear deja abierta la pregunta de si el saneo
+/// fue completo, y en la versión anterior esa pregunta se contestó mal —
+/// `os.path.join(carpeta, nombre_del_cliente)` con un `../` sale del almacén.
+/// Construir el nombre en el servidor no deja pregunta que contestar.
+fn extension_de(nombre: &str, permitidas: &[String]) -> Option<String> {
+    let ext = nombre.rsplit_once('.')?.1.to_lowercase();
+    // Una «extensión» con separadores, puntos o rarezas no es una extensión.
+    if ext.is_empty() || ext.len() > 8 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    let con_punto = format!(".{ext}");
+    // Lista vacía significa «cualquiera», y hay que escribirla explícitamente.
+    if permitidas.is_empty() || permitidas.iter().any(|p| *p == con_punto) {
+        Some(ext)
+    } else {
+        None
+    }
+}
+
+/// Registrar la entrega subiendo su archivo.
+///
+/// Lo que hace distinto a lo anterior:
+///
+///   - el **nombre lo construye el servidor** desde el id de la entrega;
+///   - la **extensión** se compara con las admitidas, y la lista vacía hay que
+///     pedirla;
+///   - el **tamaño** lo corta el límite del cuerpo, antes de leer nada;
+///   - la **pertenencia** se comprueba con el alcance del actor, en la consulta;
+///   - el **estado** sale de comparar con la fecha límite, no de lo que diga el
+///     cliente: CUMPLIDO o EXTEMPORÁNEO no son opciones de un formulario.
+async fn subir_archivo(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+    mut partes: Multipart,
+) -> Result<Json<serde_json::Value>, Error> {
+    let no_existe = || Error(StatusCode::NOT_FOUND, "la entrega no existe".into());
+
+    // Pertenencia primero: si no le corresponde, no se lee ni un byte.
+    let (sql, param) = match actor.alcance() {
+        Alcance::Todas => ("SELECT fecha_limite FROM entregas WHERE id = ?", None),
+        Alcance::DeUsuario(u) => (
+            "SELECT fecha_limite FROM entregas WHERE id = ? AND usuario_id = ?",
+            Some(u),
+        ),
+        // Un tercero no entrega: recibe. Darle la subida porque «también ve la
+        // entrega» confundiría ver con hacer.
+        Alcance::DeStakeholder(_) | Alcance::Ninguna => return Err(no_existe()),
+    };
+    let mut q = sqlx::query_as::<_, (String,)>(sql).bind(id);
+    if let Some(p) = param {
+        q = q.bind(p);
+    }
+    let (limite,) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+
+    let mal = |m: &str| Error(StatusCode::BAD_REQUEST, m.to_string());
+    let Some(parte) = partes
+        .next_field()
+        .await
+        .map_err(|_| mal("no se pudo leer el archivo"))?
+    else {
+        return Err(mal("la petición no traía ningún archivo"));
+    };
+
+    let nombre_cliente = parte.file_name().unwrap_or_default().to_string();
+    let Some(ext) = extension_de(&nombre_cliente, &e.cfg.extensiones) else {
+        return Err(mal(&format!(
+            "formato no admitido. Se aceptan: {}",
+            if e.cfg.extensiones.is_empty() { "cualquiera".into() } else { e.cfg.extensiones.join(", ") }
+        )));
+    };
+
+    let datos = parte.bytes().await.map_err(|_| {
+        // Aquí cae también el archivo que se pasó del tope: axum corta el flujo.
+        Error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("el archivo supera el máximo de {} MB", e.cfg.max_mb),
+        )
+    })?;
+    if datos.is_empty() {
+        return Err(mal("el archivo está vacío"));
+    }
+
+    // El nombre lo pone el servidor. Lleva el id y el instante para que dos
+    // envíos de la misma entrega no se pisen y quede rastro de cuál es cuál.
+    let nombre = format!("entrega-{id}-{}.{ext}", Utc::now().format("%Y%m%d-%H%M%S"));
+    let ruta = ruta_de_entrega(&e.cfg.dir_entregas, id, &nombre)
+        .ok_or_else(|| Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into()))?;
+
+    if let Some(carpeta) = ruta.parent() {
+        tokio::fs::create_dir_all(carpeta).await.map_err(|err| {
+            tracing::error!("no se pudo crear {}: {err}", carpeta.display());
+            Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo guardar el archivo".into())
+        })?;
+    }
+    tokio::fs::write(&ruta, &datos).await.map_err(|err| {
+        tracing::error!("no se pudo escribir {}: {err}", ruta.display());
+        Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo guardar el archivo".into())
+    })?;
+
+    // CUMPLIDO o EXTEMPORÁNEO lo decide la fecha, no quien entrega.
+    let hoy = Utc::now().date_naive();
+    let vencida = chrono::NaiveDate::parse_from_str(&limite, "%Y-%m-%d")
+        .map(|l| hoy > l)
+        .unwrap_or(false);
+    let estado = if vencida { "EXTEMPORANEO" } else { "CUMPLIDO" };
+
+    // La firma va a ir DENTRO de esta misma transacción cuando Quipu esté
+    // portado, por la razón de siempre: una segunda pasada puede no llegar a
+    // ocurrir y dejaría entregas firmables sin firmar sin que nadie lo note.
+    let filas = sqlx::query(
+        "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ? WHERE id = ?",
+    )
+    .bind(&nombre)
+    .bind(estado)
+    .bind(Utc::now().to_rfc3339())
+    .bind(id)
+    .execute(&e.bd)
+    .await?
+    .rows_affected();
+
+    if filas == 0 {
+        // La entrega desapareció entre la comprobación y ahora. El archivo
+        // escrito se retira: dejarlo sería basura que nadie va a reclamar.
+        let _ = tokio::fs::remove_file(&ruta).await;
+        return Err(no_existe());
+    }
+
+    auditar(&e.bd, "entrega_registrada", Some(&actor.email), Some(&nombre)).await;
+    Ok(Json(serde_json::json!({
+        "ok": true, "estado": estado, "archivo": nombre, "bytes": datos.len()
+    })))
+}
+
+// --- Planificador bajo demanda ------------------------------------------------
+
+/// Generar las entregas ahora, sin esperar al reloj.
+///
+/// Solo administración: es la orden que se da tras crear o corregir una regla, y
+/// no tendría sentido que quien no puede tocar reglas pudiera dispararla.
+async fn generar_ahora(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+    if !matches!(actor.rol, Rol::Admin) {
+        return Err(Error(StatusCode::FORBIDDEN, "solo administración".into()));
+    }
+    let calendario = siger_core::Calendario::de_pais(&e.cfg.pais_iso, 2000, 2100)
+        .map_err(|err| Error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
+    let motor = siger_core::Motor::nuevo(calendario);
+    let r = crate::planificador::generar(&e.bd, &motor, Utc::now().date_naive()).await?;
+    Ok(Json(serde_json::json!({
+        "informes_revisados": r.informes_revisados,
+        "entregas_creadas": r.entregas_creadas,
+        // Las reglas que no se pudieron leer VIAJAN en la respuesta. Que el
+        // resumen diga «0 creadas» sin decir que tres reglas están rotas es la
+        // clase de silencio que este sistema persigue.
+        "reglas_ilegibles": r.reglas_ilegibles.iter().map(|(id, m)| serde_json::json!({"informe": id, "motivo": m})).collect::<Vec<_>>(),
+    }))
+    .into_response())
 }
 
 // --- Vista previa de una regla ------------------------------------------------

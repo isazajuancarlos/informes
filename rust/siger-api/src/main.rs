@@ -11,6 +11,7 @@ mod autz;
 mod config;
 mod db;
 mod estaticos;
+mod planificador;
 mod rutas;
 mod sesion;
 
@@ -103,6 +104,14 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     let bd = db::abrir(&cfg.url_bd).await?;
+
+    // El planificador arranca con la aplicación y vuelve a correr cada día.
+    // Generar al arrancar y no solo a medianoche es deliberado: una instalación
+    // que se apaga por las noches —un portátil en una oficina, que es justo el
+    // perfil `standalone`— no vería nunca la medianoche, y el sistema no crearía
+    // una sola tarea sin que nadie entendiera por qué.
+    planificador::arrancar_reloj(bd.clone(), motor);
+
     let puerto = cfg.puerto;
     let estado = rutas::Estado { bd, cfg };
 

@@ -112,6 +112,26 @@ export class Api {
     return `/api/entregas/${entregaId}/archivo`;
   }
 
+  /**
+   * Registrar la entrega subiendo su archivo.
+   *
+   * Del nombre del archivo el servidor toma **solo la extensión**; el nombre con
+   * el que se guarda lo construye él desde el id. Por eso aquí no hay ningún
+   * campo de ruta ni de carpeta: no existe nada que el navegador pueda decir
+   * sobre dónde acaba el archivo.
+   */
+  subirArchivo(entregaId: number, archivo: File) {
+    const cuerpo = new FormData();
+    cuerpo.append('archivo', archivo, archivo.name);
+    return this.http
+      .post<{ ok: boolean; estado: string; archivo: string; bytes: number }>(
+        this.urlArchivo(entregaId),
+        cuerpo,
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
   previsualizar(regla: ReglaJson, desde: string, hasta: string) {
     return this.http
       .post<FilaPrevia[]>(

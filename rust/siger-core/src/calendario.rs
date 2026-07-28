@@ -205,7 +205,7 @@ fn al_lunes(fecha: NaiveDate) -> NaiveDate {
     fecha + Duration::days(corrimiento)
 }
 
-/// Primer año en que rige el festivo de Chiquinquirá.
+/// Primer año en que rige el festivo de Chiquinquirá (Ley 2578 de 2026).
 const ANIO_VIGENCIA_CHIQUINQUIRA: i32 = 2026;
 
 /// Festivos colombianos de `desde` a `hasta`, ambos incluidos.
@@ -224,16 +224,22 @@ pub fn festivos_co(desde: i32, hasta: i32) -> HashSet<NaiveDate> {
             salida.insert(al_lunes(dia(m, d)));
         }
 
-        // Nuestra Señora del Rosario de Chiquinquirá, 9 de julio. Es el festivo
-        // más reciente y por eso lleva año de vigencia: antes de 2026 no
-        // existía, y un calendario que lo aplicara hacia atrás daría por
-        // incumplida una entrega que en su día llegó a tiempo.
+        // Nuestra Señora del Rosario de Chiquinquirá, 9 de julio.
+        // **Ley 2578 de 2026** (sancionada el 1 de junio de 2026), que lo
+        // declara festivo nacional de obligatorio cumplimiento y remite
+        // expresamente a la Ley 51 de 1983 para el traslado — por eso en 2026 se
+        // observa el lunes 13.
         //
-        // El año sale MEDIDO del calendario anterior, no de memoria: la
-        // librería lo emite desde 2026 y no antes. Falta citar aquí la ley que
-        // lo creó — es el dato que convierte esta línea en verificable por un
-        // tercero, y el que habrá que revisar cuando el Congreso toque el
-        // calendario otra vez.
+        // Lleva año de vigencia porque antes de 2026 no existía: un calendario
+        // que lo aplicara hacia atrás daría por incumplida una entrega que en su
+        // día llegó a tiempo.
+        //
+        // OJO, y es trabajo de abogado más que de programador: hay una demanda
+        // de inconstitucionalidad en curso contra esta ley. Si la Corte la
+        // tumba, esta línea cambia y con ella todas las fechas límite de julio.
+        // Es exactamente lo que paga la cuota de «actualizaciones normativas»:
+        // la regla vive en un sitio, con su norma citada, y se corrige en una
+        // línea el día que la norma cambie.
         if anio >= ANIO_VIGENCIA_CHIQUINQUIRA {
             salida.insert(al_lunes(dia(7, 9)));
         }

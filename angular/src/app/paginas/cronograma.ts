@@ -37,6 +37,7 @@ import { MatSelectModule } from '@angular/material/select';
 import { MatTooltipModule } from '@angular/material/tooltip';
 import { firstValueFrom } from 'rxjs';
 
+import { CalendarioMultiple } from '../comun/calendario-multiple';
 import { Api, FilaPrevia, ReglaJson } from '../nucleo/api';
 
 /** El vocabulario del usuario, no el del motor. Nadie define una obligación
@@ -54,6 +55,7 @@ const MESES_DE: Record<Periodicidad, number[]> = {
 @Component({
   selector: 'siger-cronograma',
   imports: [
+    CalendarioMultiple,
     DatePipe,
     FormsModule,
     MatButtonModule,
@@ -74,9 +76,29 @@ const MESES_DE: Record<Periodicidad, number[]> = {
       calcula el mismo motor que después genera las tareas.
     </p>
 
+    <!-- Las dos maneras de preguntar, y están las dos a propósito.
+
+         DESCRIBIR sirve cuando la obligación tiene forma conocida («el quinto
+         día hábil»). MARCAR sirve cuando no la tiene: quien crea la obligación
+         TIENE las fechas —están en la resolución, en el contrato— y lo que no
+         tiene es el nombre de la abstracción. -->
+    <mat-button-toggle-group [(ngModel)]="modo" (ngModelChange)="cambio()" class="modo">
+      <mat-button-toggle value="regla">Describir la regla</mat-button-toggle>
+      <mat-button-toggle value="fechas">Marcar las fechas</mat-button-toggle>
+    </mat-button-toggle-group>
+
     <div class="rejilla">
       <mat-card class="regla">
         <mat-card-content>
+          @if (modo() === 'fechas') {
+            <p class="nota">
+              Marque los días en que vence. Todavía <strong>no se deduce el
+              patrón</strong> —«esto es mensual, 5º hábil»—: esa lógica se porta
+              después. Por ahora la regla queda como la lista literal de lo
+              marcado, que reproduce exactamente esas fechas.
+            </p>
+            <siger-calendario-multiple [(marcadas)]="fechasMarcadas" />
+          } @else {
           <mat-form-field appearance="outline">
             <mat-label>Cada cuánto</mat-label>
             <mat-select [(ngModel)]="periodicidad" (ngModelChange)="cambio()">
@@ -128,6 +150,8 @@ const MESES_DE: Record<Periodicidad, number[]> = {
               <mat-option value="omitir">Ese día no hay obligación</mat-option>
             </mat-select>
           </mat-form-field>
+
+          }
 
           <mat-form-field appearance="outline">
             <mat-label>Rige desde</mat-label>
@@ -208,6 +232,8 @@ export class Cronograma {
     { n: 6, etiqueta: 'Dom' },
   ];
 
+  modo = signal<'regla' | 'fechas'>('regla');
+  fechasMarcadas = signal<string[]>([]);
   periodicidad = signal<Periodicidad>('mensual');
   formaDia = signal<'corte' | 'habil' | 'ultimo'>('corte');
   dia = signal(15);
@@ -236,6 +262,22 @@ export class Cronograma {
   }
 
   private construir(): ReglaJson {
+    if (this.modo() === 'fechas') {
+      // La lista literal reproduce lo marcado por construcción. No es un
+      // parche mientras llega la inferencia: es la salida de emergencia del
+      // diseño, para que ninguna obligación se quede sin poder registrarse por
+      // no encajar en una forma que se nos ocurrió.
+      //
+      // La vigencia la fija la PRIMERA fecha marcada, no el campo «rige desde».
+      // Con el campo mandando, marcar días de este mes anteriores a hoy devolvía
+      // cero vencimientos —correcto para el motor, incomprensible para quien
+      // acaba de marcarlos—: la vigencia recortaba justo lo que la persona
+      // señaló. En una lista explícita, decir «vence estos días» YA dice desde
+      // cuándo.
+      const marcadas = [...this.fechasMarcadas()].sort();
+      return { modo: 'FECHAS', fecha_inicio: marcadas[0] ?? this.desde(), fechas: marcadas };
+    }
+
     const base: ReglaJson = {
       modo: this.periodicidad() === 'semanal' ? 'SEMANAL' : 'ESPECIFICO',
       fecha_inicio: this.desde(),
@@ -264,11 +306,14 @@ export class Cronograma {
     this.ocupado.set(true);
     this.error.set('');
     try {
-      const desde = this.desde();
-      const hasta = new Date(new Date(desde).getTime() + 365 * 86_400_000)
+      // El rango de la consulta arranca donde arranca la regla; si no, una lista
+      // de fechas pasadas se consultaría desde hoy y saldría vacía.
+      const regla = this.construir();
+      const desde = regla.fecha_inicio ?? this.desde();
+      const hasta = new Date(new Date(desde + 'T00:00:00').getTime() + 365 * 86_400_000)
         .toISOString()
         .slice(0, 10);
-      this.filas.set(await firstValueFrom(this.api.previsualizar(this.construir(), desde, hasta)));
+      this.filas.set(await firstValueFrom(this.api.previsualizar(regla, desde, hasta)));
     } catch (e) {
       this.error.set((e as Error).message);
       this.filas.set([]);

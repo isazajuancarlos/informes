@@ -46,6 +46,22 @@ pub struct Config {
     /// Dónde se guardan los archivos de las entregas. Ninguna ruta que llegue
     /// del navegador se usa jamás: el servidor construye la ruta desde el id.
     pub dir_entregas: String,
+
+    /// Tamaño máximo de un archivo subido, en MB.
+    ///
+    /// En la versión anterior este ajuste existía en la configuración **y en la
+    /// pantalla de administración**, y no se leía en ninguna ruta de subida: el
+    /// administrador lo ajustaba creyendo que aplicaba. Aquí se aplica en el
+    /// límite del cuerpo de la petición, así que el archivo grande se corta
+    /// antes de llegar a memoria, no después.
+    pub max_mb: usize,
+
+    /// Extensiones admitidas, en minúsculas y con punto.
+    ///
+    /// Es un tope general del sistema; cada informe puede exigir menos, nunca
+    /// más. Una lista vacía significa «cualquiera», y hay que escribirla
+    /// explícitamente: el permiso amplio se pide, no se hereda de un descuido.
+    pub extensiones: Vec<String>,
 }
 
 fn opcional(clave: &str) -> Option<String> {
@@ -89,6 +105,13 @@ impl Config {
             minutos_sesion: numero("SIGER_MINUTOS_SESION", 60i64)?,
             dir_entregas: opcional("SIGER_DIR_ENTREGAS")
                 .unwrap_or_else(|| "storage/entregas".into()),
+            max_mb: numero("SIGER_MAX_MB", 50usize)?,
+            extensiones: opcional("SIGER_EXTENSIONES")
+                .unwrap_or_else(|| ".pdf,.xlsx,.docx,.zip,.csv,.xml".into())
+                .split(',')
+                .map(|e| e.trim().to_lowercase())
+                .filter(|e| !e.is_empty())
+                .collect(),
         })
     }
 }

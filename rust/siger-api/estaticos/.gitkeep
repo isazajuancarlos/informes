@@ -1,1 +1,1 @@
-La interfaz compilada de angular/ se copia aquí antes de construir el binario (npm run build && cp -r dist/siger-web/browser/. ../rust/siger-api/estaticos/).
+La interfaz compilada se copia aquí.
