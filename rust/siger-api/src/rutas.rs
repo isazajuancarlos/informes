@@ -210,13 +210,18 @@ pub struct EntregaVista {
     /// falta y dársela fue exactamente el fallo anterior.
     archivo_nombre: Option<String>,
     tiene_firma: bool,
+    /// Factor de calificación por contenido (#165): `Some(true)` el contenido
+    /// concuerda con la extensión, `Some(false)` NO concuerda —marcado para
+    /// revisión—, `None` sin archivo o tipo no determinable.
+    archivo_valido: Option<bool>,
 }
 
 /// El `WHERE` sale del alcance del actor, no de la petición. No hay parámetro
 /// `usuario_id` que un cliente pueda mandar: no existe.
 fn consulta_por_alcance(alcance: &Alcance) -> (String, Option<i64>) {
     const COLUMNAS: &str = "SELECT e.id, i.nombre AS informe, e.fecha_nominal, e.fecha_limite, \
-         e.tipo_ajuste, e.estado, e.archivo_nombre, (e.firma IS NOT NULL) AS tiene_firma \
+         e.tipo_ajuste, e.estado, e.archivo_nombre, (e.firma IS NOT NULL) AS tiene_firma, \
+         e.archivo_valido \
          FROM entregas e JOIN informes i ON i.id = e.informe_id ";
     const ORDEN: &str = " ORDER BY e.fecha_limite";
 
@@ -436,6 +441,37 @@ fn extension_de(nombre: &str, permitidas: &[String]) -> Option<String> {
     }
 }
 
+/// Verifica que el CONTENIDO del archivo concuerda con la extensión declarada,
+/// por sus magic bytes (#165). Es un FACTOR de calificación, no una compuerta:
+///
+///   - `Some(true)`: el tipo detectado concuerda con la extensión.
+///   - `Some(false)`: se detectó un tipo y es OTRO — se marca para revisión.
+///   - `None`: el tipo no es determinable (CSV, XML, TXT no tienen firma), así
+///     que no se afirma ni se niega — no se inventa un veredicto que no se tiene.
+fn verifica_contenido(ext: &str, datos: &[u8]) -> Option<bool> {
+    let detectada = infer::get(datos)?.extension();
+    Some(concuerda(ext, detectada))
+}
+
+/// ¿La extensión declarada es compatible con el tipo detectado? Lenient a
+/// propósito, para NO marcar archivos legítimos: los ofimáticos abiertos son ZIP
+/// por dentro y `infer` puede verlos como `zip` o como su tipo específico, y
+/// `jpg`/`jpeg` son el mismo. Solo se marca un desajuste CLARO.
+fn concuerda(declarada: &str, detectada: &str) -> bool {
+    if declarada == detectada {
+        return true;
+    }
+    const OFIMATICA: &[&str] = &["docx", "xlsx", "pptx", "zip"];
+    if OFIMATICA.contains(&declarada) && OFIMATICA.contains(&detectada) {
+        return true;
+    }
+    const JPG: &[&str] = &["jpg", "jpeg"];
+    if JPG.contains(&declarada) && JPG.contains(&detectada) {
+        return true;
+    }
+    false
+}
+
 /// Registrar la entrega subiendo su archivo.
 ///
 /// Lo que hace distinto a lo anterior:
@@ -529,6 +565,12 @@ async fn subir_archivo(
         .unwrap_or(false);
     let estado = if vencida { "EXTEMPORANEO" } else { "CUMPLIDO" };
 
+    // El contenido se verifica contra la extensión (#165). Es un FACTOR: no
+    // impide registrar la entrega —un archivo raro no puede causar el
+    // incumplimiento que pretende evitar—, pero si no concuerda queda marcado
+    // para que un supervisor lo revise.
+    let archivo_valido = verifica_contenido(&ext, &datos);
+
     // La firma va DENTRO de esta misma sentencia (una sola UPDATE es atómica),
     // por la razón de siempre: una segunda pasada puede no llegar a ocurrir y
     // dejaría entregas firmables sin firmar sin que nadie lo note. Se firma lo
@@ -552,12 +594,14 @@ async fn subir_archivo(
     );
 
     let filas = sqlx::query(
-        "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ?, firma = ? WHERE id = ?",
+        "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ?, firma = ?, \
+         archivo_valido = ? WHERE id = ?",
     )
     .bind(&nombre)
     .bind(estado)
     .bind(&entrega_real)
     .bind(&firma_blob)
+    .bind(archivo_valido)
     .bind(id)
     .execute(&e.bd)
     .await?
@@ -570,10 +614,16 @@ async fn subir_archivo(
         return Err(no_existe());
     }
 
+    if archivo_valido == Some(false) {
+        auditar(&e.bd, "entrega_contenido_no_concuerda", Some(&actor.email), Some(&nombre)).await;
+    }
     auditar(&e.bd, "entrega_registrada", Some(&actor.email), Some(&nombre)).await;
     Ok(Json(serde_json::json!({
         "ok": true, "estado": estado, "archivo": nombre, "bytes": datos.len(),
-        "firmada": firma_blob.is_some()
+        "firmada": firma_blob.is_some(),
+        // El front avisa cuando el contenido no concuerda con la extensión, sin
+        // rechazar la entrega: quedó registrada y marcada para revisión.
+        "archivo_valido": archivo_valido
     })))
 }
 
@@ -722,5 +772,27 @@ mod tests {
         assert_eq!(extension_de("x.p df", &[]), None);
         assert_eq!(extension_de("x.exageradamente_larga", &[]), None);
         assert_eq!(extension_de("x.pd/f", &[]), None);
+    }
+
+    #[test]
+    fn el_contenido_concuerda_o_se_marca_o_no_se_sabe() {
+        // Un PDF de verdad concuerda con .pdf y NO con .png (se marcaría).
+        let pdf = b"%PDF-1.5\n%\xe2\xe3\xcf\xd3\nrest";
+        assert_eq!(verifica_contenido("pdf", pdf), Some(true));
+        assert_eq!(verifica_contenido("png", pdf), Some(false));
+        // Un PNG de verdad: concuerda con .png.
+        let png = b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01";
+        assert_eq!(verifica_contenido("png", png), Some(true));
+        // Un CSV no tiene magic bytes: no se puede saber -> None, NO se marca.
+        assert_eq!(verifica_contenido("csv", b"nombre,valor\n1,2\n"), None);
+    }
+
+    #[test]
+    fn la_compatibilidad_de_tipos_es_lenient_para_no_marcar_lo_legitimo() {
+        assert!(concuerda("pdf", "pdf"));
+        assert!(!concuerda("pdf", "png")); // desajuste claro -> se marca
+        assert!(concuerda("xlsx", "zip")); // ofimática abierta es zip por dentro
+        assert!(concuerda("jpg", "jpeg"));
+        assert!(!concuerda("xlsx", "pdf")); // desajuste claro
     }
 }
