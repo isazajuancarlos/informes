@@ -30,6 +30,44 @@ pub enum ErrorConfig {
     NoEsNumero(&'static str, String),
     #[error("el calendario no se pudo construir: {0}")]
     Calendario(#[from] siger_core::ErrorCalendario),
+    #[error(
+        "las alertas están activas (ALERTAS_ACTIVAS=true) pero falta {0}. Una alerta \
+         sin servidor de correo es una alerta que no llega: o se configura entera, o se \
+         apaga. Ponga {0} o quite ALERTAS_ACTIVAS."
+    )]
+    CorreoIncompleto(&'static str),
+}
+
+/// Cómo cifra el canal SMTP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TlsCorreo {
+    /// STARTTLS sobre el puerto de envío (587). Lo normal en producción.
+    StartTls,
+    /// TLS implícito (465).
+    Directo,
+    /// Sin cifrar. SOLO para un buzón local de pruebas: jamás contra un servidor
+    /// real, donde las credenciales viajarían en claro.
+    Ninguno,
+}
+
+/// Configuración del correo de alertas. Solo existe si las alertas están activas;
+/// si están, todos sus campos esenciales son obligatorios (se falla al arrancar,
+/// no al primer envío, cuando ya nadie mira).
+#[derive(Debug, Clone)]
+pub struct ConfigCorreo {
+    pub host: String,
+    pub puerto: u16,
+    pub usuario: Option<String>,
+    pub clave: Option<String>,
+    /// El remitente de las alertas (`From`).
+    pub desde: String,
+    pub tls: TlsCorreo,
+    /// Cuántos días antes del límite se avisa de la proximidad.
+    pub dias_proximidad: i64,
+    /// A quién se avisa. Configurable; por defecto, a los tres.
+    pub a_operador: bool,
+    pub a_supervision: bool,
+    pub a_tercero: bool,
 }
 
 /// Bytes mínimos del secreto de sesión. 32 es el tamaño de la salida de
@@ -71,6 +109,58 @@ pub struct Config {
     /// Clave de verificación (hex), pública. Sin ella no se puede verificar lo
     /// firmado, pero sí seguir firmando.
     pub firma_vk_hex: Option<String>,
+
+    /// Correo de alertas. `None` = dormido: no se envía nada. Es la postura por
+    /// defecto, para que una instalación nueva no intente mandar correos antes de
+    /// que alguien decida por dónde. Se enciende con `ALERTAS_ACTIVAS=true`.
+    pub correo: Option<ConfigCorreo>,
+}
+
+fn booleano(clave: &str, defecto: bool) -> bool {
+    match opcional(clave) {
+        None => defecto,
+        Some(v) => matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "si" | "sí" | "yes"),
+    }
+}
+
+/// Construye la configuración de correo si las alertas están activas. Falla
+/// ruidosamente si están activas pero incompletas: lo esencial es el host y el
+/// remitente. Usuario y clave son opcionales —un relé interno puede no pedir
+/// autenticación—, pero si no hay a quién avisar (los tres destinatarios en
+/// falso) tampoco tiene sentido, y se dice.
+fn correo_desde_entorno() -> Result<Option<ConfigCorreo>, ErrorConfig> {
+    if !booleano("ALERTAS_ACTIVAS", false) {
+        return Ok(None);
+    }
+    let host = opcional("SMTP_HOST").ok_or(ErrorConfig::CorreoIncompleto("SMTP_HOST"))?;
+    let desde = opcional("SMTP_DESDE").ok_or(ErrorConfig::CorreoIncompleto("SMTP_DESDE"))?;
+    let tls = match opcional("SMTP_TLS").unwrap_or_else(|| "starttls".into()).trim().to_lowercase().as_str() {
+        "starttls" => TlsCorreo::StartTls,
+        "directo" | "tls" => TlsCorreo::Directo,
+        "ninguno" | "none" => TlsCorreo::Ninguno,
+        otro => return Err(ErrorConfig::NoEsNumero("SMTP_TLS", otro.to_string())),
+    };
+    let puerto = numero("SMTP_PUERTO", if tls == TlsCorreo::Directo { 465u16 } else { 587 })?;
+
+    let a_operador = booleano("ALERTAS_A_OPERADOR", true);
+    let a_supervision = booleano("ALERTAS_A_SUPERVISION", true);
+    let a_tercero = booleano("ALERTAS_A_TERCERO", true);
+    if !(a_operador || a_supervision || a_tercero) {
+        return Err(ErrorConfig::CorreoIncompleto("al menos un destinatario (ALERTAS_A_*)"));
+    }
+
+    Ok(Some(ConfigCorreo {
+        host,
+        puerto,
+        usuario: opcional("SMTP_USUARIO"),
+        clave: opcional("SMTP_CLAVE"),
+        desde,
+        tls,
+        dias_proximidad: numero("ALERTAS_DIAS_PROXIMIDAD", 3i64)?,
+        a_operador,
+        a_supervision,
+        a_tercero,
+    }))
 }
 
 fn opcional(clave: &str) -> Option<String> {
@@ -124,6 +214,8 @@ impl Config {
             // Firma opcional (perfil `entorno`): sin clave, se registra sin firmar.
             firma_sk_hex: opcional("QUIPU_SIGNING_KEY"),
             firma_vk_hex: opcional("QUIPU_VERIFYING_KEY"),
+            // Alertas dormidas por defecto; se encienden con ALERTAS_ACTIVAS.
+            correo: correo_desde_entorno()?,
         })
     }
 }

@@ -165,15 +165,16 @@ pub async fn importar(origen: &str, destino: &str) -> Result<Resumen, ErrorImpor
     // 2) stakeholders. El origen no marca interno/externo; que tenga un usuario
     //    asociado es lo más cercano a «interno». (Hoy son cero filas; el mapeo
     //    existe para no fallar si mañana no lo son.)
-    for fila in sqlx::query("SELECT id, nombre, usuario_id FROM stakeholders ORDER BY id")
+    for fila in sqlx::query("SELECT id, nombre, email, usuario_id FROM stakeholders ORDER BY id")
         .fetch_all(&src)
         .await?
     {
         let externo = if fila.get::<Option<i64>, _>("usuario_id").is_some() { 0 } else { 1 };
-        sqlx::query("INSERT INTO stakeholders (id, nombre, externo) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO stakeholders (id, nombre, externo, email) VALUES (?, ?, ?, ?)")
             .bind(fila.get::<i64, _>("id"))
             .bind(fila.get::<String, _>("nombre"))
             .bind(externo)
+            .bind(fila.get::<Option<String>, _>("email"))
             .execute(&mut *tx)
             .await?;
         r.stakeholders += 1;

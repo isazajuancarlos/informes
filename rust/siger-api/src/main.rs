@@ -7,6 +7,7 @@
 //! Sin Python, sin `pip`, sin Node y sin base de datos que administrar. El
 //! cliente copia un archivo y lo ejecuta; la base se crea y se migra sola.
 
+mod alertas;
 mod autz;
 mod config;
 mod db;
@@ -33,6 +34,10 @@ async fn main() -> std::process::ExitCode {
     // le sale por pantalla, y esa línea tiene que servirle.
     if std::env::args().nth(1).as_deref() == Some("importar") {
         return importar_cmd().await;
+    }
+
+    if std::env::args().nth(1).as_deref() == Some("alertas") {
+        return alertas_cmd().await;
     }
 
     if let Some(codigo) = subcomando() {
@@ -122,6 +127,36 @@ async fn importar_cmd() -> std::process::ExitCode {
     }
 }
 
+/// `siger-api alertas`: corre UNA pasada de alertas ahora, con la configuración
+/// del entorno. Útil para operar («manda los avisos pendientes ya») y para probar
+/// contra un buzón local. Si las alertas no están activas, lo dice y no hace nada.
+async fn alertas_cmd() -> std::process::ExitCode {
+    let cfg = match config::Config::desde_entorno() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\nno se pudo leer la configuración:\n  {e}\n");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let Some(correo) = cfg.correo.clone() else {
+        println!("las alertas están dormidas (ALERTAS_ACTIVAS no está activo); no se envía nada.");
+        return std::process::ExitCode::SUCCESS;
+    };
+    let bd = match db::abrir(&cfg.url_bd).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("no se pudo abrir la base: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let r = alertas::correr(&bd, &correo, chrono::Utc::now().date_naive()).await;
+    println!(
+        "alertas: {} de proximidad, {} de incumplimiento, {} fallidas, {} sin destinatario",
+        r.proximidad, r.incumplimiento, r.fallidas, r.sin_destinatario
+    );
+    std::process::ExitCode::SUCCESS
+}
+
 async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -153,7 +188,7 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
     // que se apaga por las noches —un portátil en una oficina, que es justo el
     // perfil `standalone`— no vería nunca la medianoche, y el sistema no crearía
     // una sola tarea sin que nadie entendiera por qué.
-    planificador::arrancar_reloj(bd.clone(), motor);
+    planificador::arrancar_reloj(bd.clone(), motor, cfg.correo.clone());
 
     let puerto = cfg.puerto;
     let estado = rutas::Estado { bd, cfg };

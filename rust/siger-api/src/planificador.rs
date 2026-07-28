@@ -155,7 +155,7 @@ pub async fn generar(bd: &SqlitePool, motor: &Motor, hoy: NaiveDate) -> Result<R
 /// que se apaga por las noches —un portátil en una oficina, que es justo el
 /// perfil `standalone`— no vería nunca la medianoche, y el sistema no crearía
 /// una sola tarea sin que nadie entendiera por qué.
-pub fn arrancar_reloj(bd: SqlitePool, motor: Motor) {
+pub fn arrancar_reloj(bd: SqlitePool, motor: Motor, correo: Option<crate::config::ConfigCorreo>) {
     tokio::spawn(async move {
         loop {
             let hoy = Utc::now().date_naive();
@@ -175,6 +175,17 @@ pub fn arrancar_reloj(bd: SqlitePool, motor: Motor) {
                 }
                 Err(e) => tracing::error!("planificador: falló la generación — {e}"),
             }
+
+            // Las alertas van DESPUÉS de generar, nunca antes: un correo caído no
+            // puede impedir que las tareas existan. Solo si el correo está activo.
+            if let Some(c) = &correo {
+                let a = crate::alertas::correr(&bd, c, hoy).await;
+                tracing::info!(
+                    "alertas: {} de proximidad, {} de incumplimiento, {} fallidas, {} sin destinatario",
+                    a.proximidad, a.incumplimiento, a.fallidas, a.sin_destinatario
+                );
+            }
+
             tokio::time::sleep(std::time::Duration::from_secs(24 * 60 * 60)).await;
         }
     });

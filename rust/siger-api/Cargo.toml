@@ -38,6 +38,13 @@ quipu = "0.10"
 base64 = "0.22"
 rand = "0.8"
 
+# Correo de alertas (#151.5). rustls, no native-tls: sin dependencias del sistema
+# que compilar en la máquina del cliente. STARTTLS en producción; en localhost,
+# texto plano para poder probar contra un buzón local sin certificados.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport", "builder", "tokio1", "tokio1-rustls-tls", "hostname",
+] }
+
 rust-embed = { version = "8", features = ["mime-guess"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
