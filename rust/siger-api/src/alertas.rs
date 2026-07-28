@@ -352,3 +352,209 @@ mod tests {
         assert!(redactar(&desde, &["no-es-correo".into()], &p).is_err());
     }
 }
+
+/// Verificación del MODO DEGRADADO (#71): un fallo del correo **no puede causar
+/// el incumplimiento que pretende evitar**, y el mecanismo DISCRIMINA — cuando el
+/// envío funciona marca (y no reenvía); cuando falla no marca (y reintenta).
+///
+/// El SMTP de prueba es un hilo `std::net` que habla el subconjunto mínimo del
+/// protocolo; el «caído» es un puerto sin nadie escuchando. Cada pasada va
+/// envuelta en un timeout: un envío colgado debe fallar RUIDOSAMENTE, no parecer
+/// una compilación lenta (misma lección que el deadlock de 13 minutos del
+/// autotest de Quipu).
+#[cfg(test)]
+mod degradado {
+    use super::*;
+    use std::io::{BufRead, BufReader, Write};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// Sink SMTP que acepta todo y cuenta los mensajes con DATA completa.
+    fn sink_ok() -> (u16, Arc<AtomicUsize>) {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let puerto = l.local_addr().unwrap().port();
+        let n = Arc::new(AtomicUsize::new(0));
+        let n2 = n.clone();
+        std::thread::spawn(move || {
+            for mut s in l.incoming().flatten() {
+                let _ = atiende(&mut s, &n2);
+            }
+        });
+        (puerto, n)
+    }
+
+    fn atiende(s: &mut std::net::TcpStream, n: &AtomicUsize) -> std::io::Result<()> {
+        let mut w = s.try_clone()?;
+        let mut r = BufReader::new(s);
+        w.write_all(b"220 sink\r\n")?;
+        w.flush()?;
+        let mut linea = String::new();
+        loop {
+            linea.clear();
+            if r.read_line(&mut linea)? == 0 {
+                break;
+            }
+            let up = linea.trim_end().to_uppercase();
+            if up.starts_with("EHLO") || up.starts_with("HELO") {
+                w.write_all(b"250-sink\r\n250 OK\r\n")?;
+            } else if up.starts_with("DATA") {
+                w.write_all(b"354 fin con .\r\n")?;
+                w.flush()?;
+                let mut cuerpo = String::new();
+                loop {
+                    cuerpo.clear();
+                    if r.read_line(&mut cuerpo)? == 0 || cuerpo.trim_end() == "." {
+                        break;
+                    }
+                }
+                n.fetch_add(1, Ordering::SeqCst);
+                w.write_all(b"250 OK\r\n")?;
+            } else if up.starts_with("QUIT") {
+                w.write_all(b"221 adios\r\n")?;
+                w.flush()?;
+                break;
+            } else {
+                // MAIL, RCPT, RSET, NOOP y cualquier otra: se aceptan.
+                w.write_all(b"250 OK\r\n")?;
+            }
+            w.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Un puerto con nadie escuchando: la conexión será rechazada.
+    fn puerto_muerto() -> u16 {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let p = l.local_addr().unwrap().port();
+        drop(l);
+        p
+    }
+
+    fn cfg_en(host: &str, puerto: u16) -> ConfigCorreo {
+        ConfigCorreo {
+            host: host.into(),
+            puerto,
+            usuario: None,
+            clave: None,
+            desde: "SIGER <siger@local>".into(),
+            tls: TlsCorreo::Ninguno,
+            dias_proximidad: 3,
+            a_operador: true,
+            a_supervision: false,
+            a_tercero: false,
+        }
+    }
+
+    async fn base() -> SqlitePool {
+        let bd = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&bd).await.unwrap();
+        bd
+    }
+
+    /// Siembra `n` entregas PENDIENTE próximas a vencer, con un operador con correo.
+    async fn siembra(bd: &SqlitePool, n: i64) {
+        sqlx::query("INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) VALUES (1,'Op','op@x.co','h','OPERADOR',1)").execute(bd).await.unwrap();
+        sqlx::query("INSERT INTO informes (id,nombre,recurrencia) VALUES (1,'Inf','{\"modo\":\"INMEDIATO\"}')").execute(bd).await.unwrap();
+        for k in 0..n {
+            sqlx::query("INSERT INTO entregas (informe_id,usuario_id,fecha_nominal,fecha_limite,estado) VALUES (1,1,?,'2026-06-01','PENDIENTE')")
+                .bind(format!("n{k}"))
+                .execute(bd)
+                .await
+                .unwrap();
+        }
+    }
+
+    async fn marcadas(bd: &SqlitePool) -> i64 {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM entregas WHERE alerta_proximidad_en IS NOT NULL")
+            .fetch_one(bd)
+            .await
+            .unwrap()
+            .0
+    }
+
+    async fn pendientes(bd: &SqlitePool) -> i64 {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM entregas WHERE estado = 'PENDIENTE'")
+            .fetch_one(bd)
+            .await
+            .unwrap()
+            .0
+    }
+
+    async fn con_timeout(bd: &SqlitePool, c: &ConfigCorreo, hoy: NaiveDate) -> Resumen {
+        tokio::time::timeout(Duration::from_secs(30), correr(bd, c, hoy))
+            .await
+            .expect("una pasada de alertas no debe colgarse")
+    }
+
+    fn hoy() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 6, 1).unwrap()
+    }
+
+    /// Camino feliz + 100+ operaciones: 120 entregas → 120 avisos, todas
+    /// marcadas; una segunda pasada NO reenvía (el marcado es la compuerta
+    /// anti-spam).
+    #[tokio::test]
+    async fn envio_ok_marca_y_no_reenvia() {
+        let bd = base().await;
+        siembra(&bd, 120).await;
+        let (puerto, enviados) = sink_ok();
+        let c = cfg_en("127.0.0.1", puerto);
+
+        let r = con_timeout(&bd, &c, hoy()).await;
+        assert_eq!(r.proximidad, 120, "deben avisarse las 120");
+        assert_eq!(r.fallidas, 0);
+        assert_eq!(marcadas(&bd).await, 120, "las 120 quedan marcadas");
+        assert_eq!(enviados.load(Ordering::SeqCst), 120, "el sink recibió 120");
+
+        let r2 = con_timeout(&bd, &c, hoy()).await;
+        assert_eq!(r2.proximidad, 0, "no se reenvía lo ya avisado");
+        assert_eq!(enviados.load(Ordering::SeqCst), 120, "el sink no recibió más");
+    }
+
+    /// La INYECCIÓN del fallo: SMTP caído. Ninguna entrega se marca, ninguna se
+    /// pierde, la pasada termina; y al volver el correo, el aviso se reintenta y
+    /// se entrega. La caída NO causó el incumplimiento.
+    #[tokio::test]
+    async fn smtp_caido_no_marca_ni_pierde_y_reintenta() {
+        let bd = base().await;
+        siembra(&bd, 120).await;
+
+        let r = con_timeout(&bd, &cfg_en("127.0.0.1", puerto_muerto()), hoy()).await;
+        assert_eq!(r.proximidad, 0, "no se avisa nada con el correo caído");
+        assert_eq!(r.fallidas, 120, "las 120 se cuentan como fallidas");
+        assert_eq!(marcadas(&bd).await, 0, "NINGUNA se marca: se reintentarán");
+        assert_eq!(pendientes(&bd).await, 120, "las entregas siguen ahí: la caída no las borró");
+
+        let (puerto, enviados) = sink_ok();
+        let r2 = con_timeout(&bd, &cfg_en("127.0.0.1", puerto), hoy()).await;
+        assert_eq!(r2.proximidad, 120, "al volver el correo se avisan las 120 que esperaban");
+        assert_eq!(marcadas(&bd).await, 120);
+        assert_eq!(enviados.load(Ordering::SeqCst), 120);
+    }
+
+    /// Discriminación fina: en una misma pasada, unas con destinatario y otras
+    /// sin él. Las que tienen correo se avisan y marcan; las que no, se cuentan
+    /// aparte y NO se marcan (para salir cuando alguien configure el correo).
+    #[tokio::test]
+    async fn distingue_enviado_de_sin_destinatario() {
+        let bd = base().await;
+        sqlx::query("INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) VALUES (1,'Op','op@x.co','h','OPERADOR',1)").execute(&bd).await.unwrap();
+        sqlx::query("INSERT INTO informes (id,nombre,recurrencia) VALUES (1,'Inf','{\"modo\":\"INMEDIATO\"}')").execute(&bd).await.unwrap();
+        for k in 0..3 {
+            sqlx::query("INSERT INTO entregas (informe_id,usuario_id,fecha_nominal,fecha_limite,estado) VALUES (1,1,?,'2026-06-01','PENDIENTE')")
+                .bind(format!("con{k}")).execute(&bd).await.unwrap();
+        }
+        for k in 0..2 {
+            sqlx::query("INSERT INTO entregas (informe_id,usuario_id,fecha_nominal,fecha_limite,estado) VALUES (1,NULL,?,'2026-06-01','PENDIENTE')")
+                .bind(format!("sin{k}")).execute(&bd).await.unwrap();
+        }
+        let (puerto, enviados) = sink_ok();
+        let r = con_timeout(&bd, &cfg_en("127.0.0.1", puerto), hoy()).await;
+        assert_eq!(r.proximidad, 3, "las 3 con correo se avisan");
+        assert_eq!(r.sin_destinatario, 2, "las 2 sin correo se cuentan aparte");
+        assert_eq!(r.fallidas, 0);
+        assert_eq!(marcadas(&bd).await, 3, "solo las enviadas se marcan");
+        assert_eq!(enviados.load(Ordering::SeqCst), 3);
+    }
+}

@@ -52,3 +52,9 @@ infer = "0.16"
 rust-embed = { version = "8", features = ["mime-guess"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Solo para las pruebas del modo degradado (#71): el timeout que hace que un
+# envío colgado falle ruidosamente en vez de parecer una compilación lenta. No
+# entra en el binario de producción.
+[dev-dependencies]
+tokio = { version = "1", features = ["time"] }
