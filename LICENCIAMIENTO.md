@@ -325,10 +325,15 @@ Costo mensual cargado de un desarrollador (Xiliux, 2026, cifras verificadas):
 | Operativos (VPS + dominios + infraestructura) | 250.000 |
 | **Costo mensual cargado** | **8.704.000** |
 
-**Costo-hora cargado ≈ $60.000/h** (de $54.400 a 160 h/mes hasta $72.500 a 120 h
-de fundador solo). NO paga *parafiscales* (SENA/ICBF/caja): son aporte del
-empleador, y aquí no hay nómina. Este es el suelo bajo el que ningún precio de
-servicio puede caer sin perder plata.
+**Costo-hora cargado = $54.400/h** (costo mensual ÷ **160 h productivas**, decidido
+por Juan 2026-07-28). Las horas se cuentan como las de un **arquitecto de software
+trabajando con IA**, no como las de un fundador solo (que factura ~120): la IA
+absorbe la implementación que de otro modo recortaría las horas facturables, así
+que la capacidad productiva mensual sube y el costo por hora BAJA. Es un piso de
+costo **estructuralmente bajo** —ventaja competitiva real—: permite facturar a
+mercado ($140.000/h, §10.2 ≈ **2,6× el costo**) con margen amplio, o desalojar por
+precio a un competidor sin IA. NO paga *parafiscales* (SENA/ICBF/caja): son aporte
+del empleador, y aquí no hay nómina.
 
 ### 10.2. Tarifa de servicios (la «tarifa vigente» de §4.6)
 
