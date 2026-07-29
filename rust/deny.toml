@@ -38,6 +38,8 @@ allow-wildcard-paths = true
 
 [sources]
 # El corazón anti-Atomic-Arch: una dep desde una fuente inesperada = rojo.
-# informes no tiene deps git — quipu viene de crates.io.
+# La única dep git autorizada es guaca (cifrado en reposo, #128), fijada además
+# por rev en siger-api/Cargo.toml.
 unknown-registry = "deny"
 unknown-git = "deny"
+allow-git = ["https://github.com/isazajuancarlos/guaca"]

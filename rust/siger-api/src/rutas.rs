@@ -286,26 +286,29 @@ async fn descargar_archivo(
 
     // El alcance entra en la MISMA consulta: no se lee primero y se comprueba
     // después, porque entre las dos cosas cabe un olvido.
+    const COLS: &str = "archivo_nombre, archivo_cifrado";
     let (sql, param) = match actor.alcance() {
-        Alcance::Todas => ("SELECT archivo_nombre FROM entregas WHERE id = ?", None),
+        Alcance::Todas => (format!("SELECT {COLS} FROM entregas WHERE id = ?"), None),
         Alcance::DeUsuario(u) => (
-            "SELECT archivo_nombre FROM entregas WHERE id = ? AND usuario_id = ?",
+            format!("SELECT {COLS} FROM entregas WHERE id = ? AND usuario_id = ?"),
             Some(u),
         ),
         Alcance::DeStakeholder(s) => (
-            "SELECT archivo_nombre FROM entregas e WHERE e.id = ? AND EXISTS \
-             (SELECT 1 FROM participacion p WHERE p.informe_id = e.informe_id \
-              AND p.stakeholder_id = ?)",
+            format!(
+                "SELECT {COLS} FROM entregas e WHERE e.id = ? AND EXISTS \
+                 (SELECT 1 FROM participacion p WHERE p.informe_id = e.informe_id \
+                  AND p.stakeholder_id = ?)"
+            ),
             Some(s),
         ),
         Alcance::Ninguna => return Err(no_existe()),
     };
 
-    let mut q = sqlx::query_as::<_, (Option<String>,)>(sql).bind(id);
+    let mut q = sqlx::query_as::<_, (Option<String>, i64)>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (nombre,) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let (nombre, cifrado) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
     let nombre = nombre.ok_or_else(no_existe)?;
 
     let ruta = ruta_de_entrega(&e.cfg.dir_entregas, id, &nombre).ok_or_else(|| {
@@ -313,7 +316,18 @@ async fn descargar_archivo(
         Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into())
     })?;
 
-    let datos = tokio::fs::read(&ruta).await.map_err(|_| no_existe())?;
+    let datos = leer_en_claro(&ruta, cifrado != 0, e.cfg.clave_reposo.as_deref())
+        .await
+        .ok_or_else(|| {
+            if cifrado != 0 {
+                tracing::error!(
+                    "entrega {id}: no se pudo descifrar el archivo (¿falta SIGER_CLAVE_REPOSO o el blob fue alterado?)"
+                );
+                Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo leer el archivo".into())
+            } else {
+                no_existe()
+            }
+        })?;
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -339,7 +353,7 @@ async fn verificar_entrega(
     let no_existe = || Error(StatusCode::NOT_FOUND, "la entrega no existe".into());
 
     const COLS: &str = "fecha_limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, \
-                        estado, fecha_entrega_real, archivo_nombre, firma";
+                        estado, fecha_entrega_real, archivo_nombre, firma, archivo_cifrado";
     let (sql, param) = match actor.alcance() {
         Alcance::Todas => (format!("SELECT {COLS} FROM entregas e WHERE e.id = ?"), None),
         Alcance::DeUsuario(u) => (
@@ -367,12 +381,13 @@ async fn verificar_entrega(
         Option<String>, // fecha_entrega_real
         Option<String>, // archivo_nombre
         Option<String>, // firma
+        i64,            // archivo_cifrado
     );
     let mut q = sqlx::query_as::<_, Fila>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma) =
+    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma, cifrado) =
         q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
 
     let Some(firma) = firma else {
@@ -383,7 +398,12 @@ async fn verificar_entrega(
     // firmarse, el hash difiere y la verificación lo delata como alteración.
     let sha = match &archivo_nombre {
         Some(n) => match ruta_de_entrega(&e.cfg.dir_entregas, id, n) {
-            Some(ruta) => tokio::fs::read(&ruta).await.ok().map(|d| crate::firma::sha256_hex(&d)),
+            // Se descifra ANTES de hashear: el SHA firmado es el del documento en
+            // claro, no el del blob. Sin esto, un archivo cifrado daría un hash
+            // distinto y la verificación cantaría un falso «alterado».
+            Some(ruta) => leer_en_claro(&ruta, cifrado != 0, e.cfg.clave_reposo.as_deref())
+                .await
+                .map(|d| crate::firma::sha256_hex(&d)),
             None => None,
         },
         None => None,
@@ -424,6 +444,19 @@ pub fn ruta_de_entrega(almacen: &str, id: i64, nombre: &str) -> Option<PathBuf> 
     } else {
         None
     }
+}
+
+/// Lee el archivo de una entrega y lo devuelve EN CLARO. Si la fila dice que está
+/// cifrado, lo descifra con la frase de reposo. `None` si el archivo no está, si
+/// hace falta frase y no hay, o si el blob no descifra — **nunca** se sirve un
+/// blob cifrado como si fuera el documento (directiva 20: ante la ausencia de la
+/// clave se falla, no se entrega basura).
+async fn leer_en_claro(ruta: &Path, cifrado: bool, clave: Option<&str>) -> Option<Vec<u8>> {
+    let crudo = tokio::fs::read(ruta).await.ok()?;
+    if !cifrado {
+        return Some(crudo);
+    }
+    guaca::reposo::descifrar(&crudo, clave?).ok()
 }
 
 // --- Subida -------------------------------------------------------------------
@@ -562,7 +595,15 @@ async fn subir_archivo(
             Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo guardar el archivo".into())
         })?;
     }
-    tokio::fs::write(&ruta, &datos).await.map_err(|err| {
+    // Cifrado EN REPOSO (A1): con frase, al disco va el BLOB cifrado; sin frase,
+    // el archivo en claro, como antes. El SHA que se firma se calcula MÁS ABAJO
+    // sobre `datos` (el documento en claro), nunca sobre esto: la firma acredita
+    // el contenido, no cómo se guarda.
+    let (para_disco, cifrado): (Vec<u8>, i64) = match e.cfg.clave_reposo.as_deref() {
+        Some(frase) => (guaca::reposo::cifrar(&datos, frase), 1),
+        None => (datos.to_vec(), 0),
+    };
+    tokio::fs::write(&ruta, &para_disco).await.map_err(|err| {
         tracing::error!("no se pudo escribir {}: {err}", ruta.display());
         Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo guardar el archivo".into())
     })?;
@@ -604,13 +645,14 @@ async fn subir_archivo(
 
     let filas = sqlx::query(
         "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ?, firma = ?, \
-         archivo_valido = ? WHERE id = ?",
+         archivo_valido = ?, archivo_cifrado = ? WHERE id = ?",
     )
     .bind(&nombre)
     .bind(estado)
     .bind(&entrega_real)
     .bind(&firma_blob)
     .bind(archivo_valido)
+    .bind(cifrado)
     .bind(id)
     .execute(&e.bd)
     .await?
@@ -794,6 +836,77 @@ mod tests {
         assert_eq!(verifica_contenido("png", png), Some(true));
         // Un CSV no tiene magic bytes: no se puede saber -> None, NO se marca.
         assert_eq!(verifica_contenido("csv", b"nombre,valor\n1,2\n"), None);
+    }
+
+    // --- Cifrado en reposo (#128, A1) ----------------------------------------
+
+    fn dir_tmp(etiqueta: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "siger_reposo_{etiqueta}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn el_sha_firmado_es_el_mismo_en_claro_o_cifrado() {
+        // LA invariante de #128: el SHA que firma la entrega es el del DOCUMENTO
+        // en claro. Se cifra en reposo, se relee descifrando, y el SHA debe
+        // coincidir con el del original —si se hasheara el blob, la verificación
+        // cantaría un falso «alterado»—.
+        let documento = b"contenido real de la entrega con datos del informe";
+        let frase = "frase-de-reposo-del-despliegue-larga-y-propia";
+        let sha_original = crate::firma::sha256_hex(documento);
+
+        let dir = dir_tmp("inv");
+        let ruta = dir.join("entrega.bin");
+        std::fs::write(&ruta, guaca::reposo::cifrar(documento, frase)).unwrap();
+
+        // En disco NO aparece el documento en claro.
+        let en_disco = std::fs::read(&ruta).unwrap();
+        assert!(!en_disco.windows(documento.len()).any(|w| w == documento));
+
+        let claro = leer_en_claro(&ruta, true, Some(frase)).await.unwrap();
+        assert_eq!(crate::firma::sha256_hex(&claro), sha_original);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn sin_la_frase_o_con_la_equivocada_no_se_sirve_el_blob() {
+        // Directiva 20: ante la ausencia de la clave se falla, no se entrega el
+        // blob cifrado como si fuera el documento.
+        let dir = dir_tmp("fail");
+        let ruta = dir.join("e.bin");
+        let frase = "la-frase-correcta-de-mas-de-treinta-bytes";
+        std::fs::write(&ruta, guaca::reposo::cifrar(b"secreto", frase)).unwrap();
+
+        assert!(leer_en_claro(&ruta, true, None).await.is_none());
+        assert!(leer_en_claro(&ruta, true, Some("frase-equivocada")).await.is_none());
+        assert_eq!(leer_en_claro(&ruta, true, Some(frase)).await.unwrap(), b"secreto");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn un_archivo_en_claro_se_lee_tal_cual_aunque_haya_frase() {
+        // Los archivos subidos antes de activar la frase (cifrado=false) se leen
+        // directo: la bandera POR FILA manda, no la config global. Así encender la
+        // frase no invalida lo ya guardado en claro.
+        let dir = dir_tmp("claro");
+        let ruta = dir.join("viejo.pdf");
+        std::fs::write(&ruta, b"documento viejo en claro").unwrap();
+        assert_eq!(
+            leer_en_claro(&ruta, false, Some("hay-frase-pero-la-fila-dice-claro"))
+                .await
+                .unwrap(),
+            b"documento viejo en claro"
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

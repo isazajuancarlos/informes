@@ -110,6 +110,14 @@ pub struct Config {
     /// firmado, pero sí seguir firmando.
     pub firma_vk_hex: Option<String>,
 
+    /// Frase de cifrado EN REPOSO de los archivos de entrega (A1). `None` =
+    /// desactivado CON GRACIA: los archivos se guardan en claro, como antes —
+    /// cifrar es una postura que se elige, y no cifrar nunca impide entregar.
+    /// Cada fila recuerda si su archivo está cifrado (`archivo_cifrado`), así que
+    /// encender la frase no invalida los archivos ya guardados en claro; y la
+    /// firma sigue cubriendo el SHA del DOCUMENTO (texto plano), no del blob.
+    pub clave_reposo: Option<String>,
+
     /// Correo de alertas. `None` = dormido: no se envía nada. Es la postura por
     /// defecto, para que una instalación nueva no intente mandar correos antes de
     /// que alguien decida por dónde. Se enciende con `ALERTAS_ACTIVAS=true`.
@@ -194,6 +202,16 @@ impl Config {
             ));
         }
 
+        // La frase de reposo, si se pone, debe ser tan robusta como el secreto de
+        // sesión: una frase corta debilita el Argon2 que protege los archivos, y
+        // ningún despliegue legítimo necesita una corta (se deriva de un secreto).
+        let clave_reposo = opcional("SIGER_CLAVE_REPOSO");
+        if let Some(f) = &clave_reposo {
+            if f.len() < MINIMO_SECRETO {
+                return Err(ErrorConfig::SecretoCorto("SIGER_CLAVE_REPOSO", f.len(), MINIMO_SECRETO));
+            }
+        }
+
         Ok(Self {
             // La base SÍ tiene defecto: no es un secreto, y el perfil de una
             // sola máquina es el que se entrega instalado.
@@ -214,6 +232,8 @@ impl Config {
             // Firma opcional (perfil `entorno`): sin clave, se registra sin firmar.
             firma_sk_hex: opcional("QUIPU_SIGNING_KEY"),
             firma_vk_hex: opcional("QUIPU_VERIFYING_KEY"),
+            // Cifrado en reposo opcional (validado arriba): sin frase, en claro.
+            clave_reposo,
             // Alertas dormidas por defecto; se encienden con ALERTAS_ACTIVAS.
             correo: correo_desde_entorno()?,
         })
@@ -233,6 +253,7 @@ impl Config {
             extensiones: vec![],
             firma_sk_hex: None,
             firma_vk_hex: None,
+            clave_reposo: None,
             correo: None,
         }
     }

@@ -771,6 +771,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "guaca"
+version = "0.3.0"
+source = "git+https://github.com/isazajuancarlos/guaca?rev=9d26cceccc95cbe146f3e6a0cac7b44b04ef7cfb#9d26cceccc95cbe146f3e6a0cac7b44b04ef7cfb"
+dependencies = [
+ "argon2",
+ "base64 0.22.1",
+ "hmac 0.12.1",
+ "password-hash",
+ "quipu",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "zeroize",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2030,6 +2046,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "guaca",
  "hmac 0.12.1",
  "infer",
  "lettre",
