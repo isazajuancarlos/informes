@@ -53,3 +53,21 @@ jobs:
       - name: Construir la interfaz
         working-directory: angular
         run: npx ng build
+
+  auditoria-deps:
+    name: cargo-audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # RustSec: falla si alguna dependencia tiene un CVE publicado. El único
+      # ignore vive en rust/.cargo/audit.toml, preciso y justificado. Cierra
+      # OWASP A03 (Software Supply Chain Failures).
+      - name: cargo-audit
+        working-directory: rust
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit

@@ -1,0 +1,14 @@
+# Configuración de cargo-audit (RustSec) para el port Rust de informes. Cierra
+# OWASP A03.
+#
+# El único ignore es preciso y justificado (nunca una categoría abierta):
+#
+# RUSTSEC-2023-0071 — Marvin Attack (canal lateral de tiempo en `rsa` 0.9.x).
+#   NO EXPLOTABLE aquí: sqlx se usa SOLO con SQLite (default-features=false,
+#   features=[sqlite,…]) y las migraciones van embebidas con `sqlx::migrate!`.
+#   El crate `rsa` entra únicamente por `sqlx-macros-core`, que declara los tres
+#   backends para ese macro; nunca se conecta a MySQL ni se ejecuta una operación
+#   RSA con clave privada, que es lo que el ataque necesita. Sin fix aguas
+#   arriba. Revisar si algún día se habilita el backend MySQL.
+[advisories]
+ignore = ["RUSTSEC-2023-0071"]
