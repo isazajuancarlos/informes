@@ -1,7 +1,7 @@
 //! El port no se revisa: se mide.
 //!
 //! Estas pruebas comparan el motor de Rust contra las fechas EXACTAS que produjo
-//! el motor de Python, congeladas por `herramientas/congelar_oraculo.py`:
+//! el motor de Python (retirado en el cutover), congeladas en `tests/oraculo/`:
 //!
 //!   - 484 festivos colombianos entre 2020 y 2045, día a día;
 //!   - 8 534 vencimientos de los 80 patrones de una base real, con su día
@@ -23,11 +23,12 @@ use serde::Deserialize;
 use siger_core::{Calendario, Motor, Regla, ReglaJson};
 
 fn raiz_oraculo() -> PathBuf {
-    // El crate vive en rust/siger-core; el oráculo, en herramientas/oraculo.
+    // Corpus dorado vendorizado junto al test. Lo produjo el motor de Python
+    // (ya retirado en el cutover a Rust); queda congelado como contrato.
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../herramientas/oraculo")
+        .join("tests/oraculo")
         .canonicalize()
-        .expect("falta herramientas/oraculo: correr `python herramientas/congelar_oraculo.py`")
+        .expect("falta tests/oraculo con festivos_co.json y vencimientos.json")
 }
 
 #[derive(Deserialize)]
