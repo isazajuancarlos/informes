@@ -1,0 +1,43 @@
+# cargo-deny — control de cadena de suministro (lección Atomic Arch, #143).
+# Complementa a cargo-audit: además de CVEs conocidos, exige que TODA dependencia
+# venga de una fuente autorizada (crates.io), prohíbe comodines de versión y
+# controla licencias. No es cargo-vet (revisión al cambiar): es el baseline
+# correcto para una app interna (ver conocimiento/cargo_vet_reconsiderado.md).
+
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+# Allowlist AJUSTADA al árbol real (directiva 23): una licencia NUEVA en un bump
+# = rojo, y se decide a mano si entra.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "0BSD",
+    "ISC",                  # ring, rustls, rustls-webpki, untrusted (stack TLS)
+    "CDLA-Permissive-2.0",  # webpki-roots (raíces de confianza TLS)
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # Quipu (nuestra) es AGPL; los crates del workspace, LicenseRef-Xiliux-Comercial.
+    "AGPL-3.0-or-later",
+    "LicenseRef-Xiliux-Comercial",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+# El corazón anti-Atomic-Arch: una dep desde una fuente inesperada = rojo.
+# informes no tiene deps git — quipu viene de crates.io.
+unknown-registry = "deny"
+unknown-git = "deny"

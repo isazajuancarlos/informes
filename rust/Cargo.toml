@@ -8,6 +8,9 @@ edition = "2021"
 rust-version = "1.85"
 license = "LicenseRef-Xiliux-Comercial"
 authors = ["Juan Carlos Isaza Arenas"]
+# Producto propietario: NUNCA se publica en crates.io. Explícito, para que un
+# `cargo publish` accidental falle y para que cargo-deny lo trate como privado.
+publish = false
 
 [workspace.dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }

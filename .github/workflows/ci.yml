@@ -71,3 +71,23 @@ jobs:
         run: |
           cargo install cargo-audit --locked
           cargo audit
+
+  cadena-suministro:
+    name: cargo-deny (supply chain)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # cargo-deny endurece la cadena de suministro más allá de los CVEs: exige
+      # que TODA dependencia venga de una fuente autorizada (crates.io), prohíbe
+      # comodines de versión externos y controla licencias. Es la defensa contra
+      # que una dep se traiga desde una fuente inesperada — el vector del ataque
+      # Atomic Arch a AUR. Config en rust/deny.toml.
+      - name: cargo-deny
+        working-directory: rust
+        run: |
+          cargo install cargo-deny --locked
+          cargo deny check
