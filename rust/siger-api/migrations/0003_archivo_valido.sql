@@ -1,0 +1,13 @@
+-- Calificación por contenido del archivo (#165).
+--
+-- `archivo_valido` es un FACTOR de calificación, no una compuerta: la extensión
+-- ya rechaza lo prohibido al subir; esto registra si el CONTENIDO real del
+-- archivo (sus magic bytes) concuerda con la extensión declarada.
+--
+--   1    = el contenido concuerda con la extensión (verificado).
+--   0    = NO concuerda — se registró igual (modo degradado: un archivo raro no
+--          impide cumplir), pero queda MARCADO para que un supervisor lo revise.
+--   NULL = no hay archivo, o el tipo no es determinable por magic bytes (un CSV,
+--          un XML y un TXT no tienen firma de tipo; no se puede afirmar ni negar,
+--          así que no se marca — no se inventa un veredicto que no se tiene).
+ALTER TABLE entregas ADD COLUMN archivo_valido INTEGER;

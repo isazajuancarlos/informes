@@ -1,132 +1,105 @@
-# Despliegue — un código, tres perfiles
+# Despliegue — un binario, SQLite, la interfaz embebida
 
-El mismo código y la misma imagen Docker sirven a tres topologías. El
-comportamiento lo decide una variable, `DEPLOYMENT_PROFILE`.
+Tras el cutover a Rust, `informes` (SIGER) es **un solo binario** (`siger-api`,
+axum) con la interfaz **Angular embebida** dentro del ejecutable y **SQLite**
+como base. No hay contenedor obligatorio, ni PostgreSQL, ni dependencias del
+sistema salvo SQLite. Se copia el binario, se le da su configuración y corre.
 
-| Perfil | Para quién | Base de datos | Internet |
-|---|---|---|---|
-| `cloud` | SaaS que hospedamos nosotros | PostgreSQL | sí |
-| `onprem` | Entidad/empresa con servidor propio | su PostgreSQL | no (LAN) |
-| `standalone` | Empresa que no quiere administrar BD | SQLite | no |
-
-`DATABASE_URL` explícito siempre gana. Si no se define y el perfil es
-`standalone`, la app usa SQLite en `storage/informes.db` sola.
+La configuración vive en variables de entorno; el binario **no arranca si falta
+un secreto** (a propósito). La plantilla está en `.env.example`.
 
 ---
 
-## `standalone` — una sola máquina, sin BD que administrar
-
-Lo más simple. SQLite dentro del contenedor, offline.
+## Construir
 
 ```bash
-export STORAGE_SECRET=$(openssl rand -hex 32)   # opcional pero recomendado
-docker compose -f docker-compose.standalone.yml up -d
-# abre http://localhost:8003
+cd rust
+cargo build --release            # produce target/release/siger-api
 ```
 
-El volumen `data` persiste **todo** el estado (la base `informes.db` y los
-archivos subidos). Respaldar = copiar ese volumen.
-
-Sin Docker, directamente:
+La interfaz Angular se construye e incrusta como parte del build (rust-embed).
+Para reconstruir la interfaz de cero:
 
 ```bash
-pip install -r requirements.txt
-DEPLOYMENT_PROFILE=standalone python main.py
+cd angular && npm ci && npx ng build     # deja el bundle que el binario embebe
 ```
+
+## Configurar y arrancar
+
+```bash
+export SIGER_SECRETO_SESION=$(target/release/siger-api generar-secreto)
+export DATABASE_URL=sqlite://siger.db     # por defecto ya es este
+./target/release/siger-api                # sirve en http://localhost:8003
+```
+
+Subcomandos del binario:
+
+| Subcomando | Para qué |
+|---|---|
+| `generar-secreto` | Genera el secreto de sesión (>= 32 bytes). |
+| `generar-claves-firma` | Genera el par de firma post-cuántica (opcional). |
+| `hashear` | Hash Argon2 de una contraseña, con los MISMOS parámetros que verifica el acceso. |
+| `importar <origen> <destino>` | Vuelca una base del sistema Python anterior al esquema nuevo. |
+| `alertas` | Corre una pasada de alertas por correo (para un cron/timer). |
+
+## Servicio (systemd)
+
+Modelo del OPRF: un `EnvironmentFile` con los secretos (permisos `600`), el
+binario bajo `systemd`, y un `nginx` delante con TLS.
+
+```ini
+# /etc/systemd/system/siger.service
+[Unit]
+Description=SIGER (informes)
+After=network.target
+
+[Service]
+EnvironmentFile=/etc/siger/siger.env
+ExecStart=/opt/siger/siger-api
+Restart=on-failure
+WorkingDirectory=/opt/siger
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`nginx` hace de proxy inverso al puerto `8003` y termina el TLS (certbot). Las
+alertas, si se activan, se disparan con un `systemd timer` diario que llama a
+`siger-api alertas` (no un hilo dentro del proceso: una pasada que puede fallar
+sin tumbar el servidor — es el modo degradado, #71).
+
+## Demostración (datos ficticios)
+
+Para VER el sistema funcionando sin instalar nada de verdad:
+
+```bash
+python rust/sembrar_demo.py           # crea rust/demo/siger.db con datos ficticios
+DATABASE_URL=sqlite://rust/demo/siger.db ./target/release/siger-api
+```
+
+Las contraseñas del seed están escritas en el guion (es para mirar, no para
+producción) y las fechas se calculan desde HOY, para que la columna de urgencia
+enseñe su trabajo sin envejecer. Las contraseñas las cifra el propio binario
+(`siger-api hashear`), con el mismo Argon2 que verifica el acceso.
 
 ---
 
-## `onprem` — el cliente lo corre en su servidor
+## Notas
 
-App + PostgreSQL juntos, en su red, sin salir a internet.
-
-```bash
-cp .env.example .env
-# edita .env: DB_PASSWORD y STORAGE_SECRET (usa valores propios)
-docker compose up -d
-# abre http://<servidor>:8003
-```
-
-Los datos viven en el volumen `db_data`, en la máquina del cliente. Nadie fuera
-de su red los ve — un argumento de venta, no una limitación.
-
----
-
-## `onprem` air-gapped — sin internet ni para bajar la imagen
-
-Entidades que no permiten salida a la red. Se construye la imagen donde sí hay
-internet, se exporta a un archivo, se traslada (USB) y se carga en destino.
-
-**Donde hay internet:**
-
-```bash
-docker compose build
-docker save informes-app postgres:16-alpine -o informes-offline.tar
-# lleva informes-offline.tar + docker-compose.yml + .env al servidor destino
-```
-
-**En el servidor air-gapped:**
-
-```bash
-docker load -i informes-offline.tar
-docker compose up -d
-```
-
----
-
-## Primer arranque
-
-En cualquier perfil, al arrancar la app:
-
-1. Crea el esquema si falta (`init_db`, seguro: solo tablas que no existan).
-2. Inicia el scheduler en segundo plano.
-
-Para datos iniciales (usuarios de prueba, variables), dentro del contenedor:
-
-```bash
-docker compose exec app python seed_data.py
-```
-
-En el log verás el perfil detectado:
-
-```
-🚀 Perfil de despliegue: onprem (PostgreSQL, offline)
-✅ Background Scheduler iniciado
-```
-
----
-
-## Notas y pendientes
-
-- **Email**: en `onprem`/`standalone` (offline) no se espera SMTP; las
-  notificaciones in-app siguen funcionando. Si el cliente tiene un servidor de
-  correo en su red, configura `SMTP_HOST`/`SENDER_EMAIL`/`SENDER_PASSWORD` y el
-  email se reactiva solo.
-- **Backups**: en PostgreSQL usa `pg_dump`; en SQLite (standalone) usa la API de
-  respaldo EN CALIENTE de `sqlite3`, no una copia del archivo. La diferencia
-  importa: copiar una base viva puede capturar una transacción a medias y
-  producir un respaldo que parece bueno y no restaura. Al restaurar se guarda
-  antes una copia de la base anterior (`informes.db.previa-*`), porque restaurar
-  es justo cuando alguien está nervioso y puede equivocarse de archivo.
-- **Licencia offline**: un archivo `licencia.quipu` firmado por EL LICENCIANTE,
-  que la aplicación verifica en local — sin red, apto para air-gapped. Se emite
-  con `python emitir_licencia.py` y sus campos son los del **Anexo A** del EULA.
-  La ruta se configura con `INFORMES_LICENCIA` y la clave pública con
-  `INFORMES_LICENCIA_PUBKEY`.
-
-  **La licencia NUNCA bloquea nada**: ni ausente, ni vencida, ni manipulada. Da
-  visibilidad —un aviso permanente en la cabecera— y evidencia; el remedio ante
-  el exceso es contractual. Es la aplicación del principio del modo degradado:
-  la ausencia de una capa opcional no puede ser la causa de que el cliente
-  incumpla ante un tercero. Si una licencia vencida impidiera registrar una
-  entrega, Xiliux pasaría a ser la causa del incumplimiento del cliente.
-- **Firma de entregas y componente Quipu**: la copia de `quipu-crypto` que se
-  entrega **no se instala desde PyPI**. Se empaqueta en `vendor/` con
-  `python preparar_distribucion.py` y `requirements-firma.txt` la instala con
-  `--no-index`. Obtenerla del índice público la entregaría bajo AGPL-3.0 y
-  activaría el artículo 13 sobre el servicio en red del cliente; la Cláusula 9.2
-  del EULA la entrega bajo licencia comercial. Si `vendor/` está vacío, la
-  instalación FALLA en vez de caer a PyPI, que es lo correcto.
-- **Actualizaciones**: on-premise no se hotfixea remotamente. La ruta de upgrade
-  es reconstruir/recargar la imagen; las migraciones (`migrate_v4.py`) son
-  idempotentes.
+- **Alertas**: dormidas por defecto. Se encienden con `ALERTAS_ACTIVAS=true` y
+  exigen `SMTP_HOST`/`SMTP_DESDE` (o el binario no arranca). Sin ellas, las
+  notificaciones internas de la aplicación siguen funcionando.
+- **Firma de entregas**: opcional. Sin `QUIPU_SIGNING_KEY` la entrega se registra
+  igual, sin firma — la ausencia de firma nunca impide cumplir.
+- **Backups**: la base es SQLite; respaldar EN CALIENTE con la API de respaldo de
+  `sqlite3`, no copiando el archivo vivo (una copia de una base en uso puede
+  capturar una transacción a medias y producir un respaldo que parece bueno y no
+  restaura).
+- **Licencia offline — PENDIENTE de portar a Rust.** En el sistema Python existía
+  una licencia firmada por el licenciante que la app verificaba en local
+  (`INFORMES_LICENCIA`). El port a Rust todavía NO la trae; está registrada como
+  tarea. Cuando exista, mantendrá el principio del modo degradado: la licencia
+  **nunca bloquea nada** —ni ausente, ni vencida, ni alterada—, solo da
+  visibilidad; el remedio ante el exceso es contractual. Si una licencia vencida
+  impidiera registrar una entrega, Xiliux pasaría a ser la causa del
+  incumplimiento del cliente.

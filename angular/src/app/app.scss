@@ -1,0 +1,46 @@
+.marco { height: 100dvh; }
+
+.lateral {
+  width: 16rem;
+  border-right: 1px solid var(--mat-sys-outline-variant);
+}
+
+.marca {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 1.25rem 1rem 0.75rem;
+}
+.marca .nombre { font-size: 1.5rem; letter-spacing: 0.1em; font-weight: 600; }
+.marca .largo { font-size: 0.75rem; color: var(--mat-sys-on-surface-variant); }
+
+.barra { position: sticky; top: 0; z-index: 2; }
+.barra .titulo { margin-left: 0.5rem; font-size: 1.05rem; }
+.barra .empuje { flex: 1 1 auto; }
+
+.cuenta { display: flex; align-items: center; gap: 0.5rem; }
+.iniciales {
+  display: grid;
+  place-items: center;
+  width: 2rem;
+  height: 2rem;
+  border-radius: 50%;
+  font-size: 0.8rem;
+  background: var(--mat-sys-primary);
+  color: var(--mat-sys-on-primary);
+}
+/* En pantallas estrechas el nombre sobra: las iniciales ya identifican, y el
+   nombre completo empujaba el título fuera de la barra. */
+@media (max-width: 700px) {
+  .quien { display: none; }
+}
+
+.detalle-cuenta {
+  display: flex;
+  flex-direction: column;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  color: var(--mat-sys-on-surface-variant);
+}
+
+.contenido { padding: 1.25rem; }
