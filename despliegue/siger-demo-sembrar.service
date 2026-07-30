@@ -1,0 +1,23 @@
+; Regenera la base de la demostración. Lo dispara el timer cada noche.
+;
+; Por qué existe: la demostración es pública y escribible. Sin esto, a la semana
+; enseña lo que hayan dejado los visitantes en vez de lo que queremos enseñar.
+; Y las fechas de la semilla se calculan desde HOY: regenerarla es también lo que
+; impide que a las dos semanas todo aparezca vencido.
+[Unit]
+Description=SIGER demo — regenerar los datos de demostración
+After=network.target
+
+[Service]
+Type=oneshot
+User=siger
+Group=siger
+WorkingDirectory=/opt/siger-demo
+; El orden importa: se para el servidor, se siembra, se arranca. Sembrar con el
+; servidor vivo compite por la base y el planificador podría volver a generar
+; sobre lo que se está borrando.
+ExecStart=/usr/bin/systemctl stop siger-demo.service
+; `--limpiar` borra la base y el almacén, NO la carpeta: aquí dentro viven
+; también el binario y este guion.
+ExecStart=/usr/bin/python3 /opt/siger-demo/sembrar_demo.py --ruta /opt/siger-demo --binario /opt/siger-demo/siger-api --limpiar
+ExecStart=/usr/bin/systemctl start siger-demo.service

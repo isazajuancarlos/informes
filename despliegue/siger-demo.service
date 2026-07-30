@@ -1,0 +1,41 @@
+; La demostración pública de SIGER en informes.xiliux.com.
+;
+; NO es una instalación de cliente y no debe confundirse con una: sus
+; credenciales están publicadas, su base se REGENERA cada noche
+; (siger-demo-sembrar.timer) y cualquiera puede escribir en ella. Una
+; instalación de verdad lleva su propio secreto, sus propios usuarios y no se
+; borra sola.
+[Unit]
+Description=SIGER — demostración pública (informes.xiliux.com)
+After=network.target
+
+[Service]
+Type=simple
+User=siger
+Group=siger
+WorkingDirectory=/opt/siger-demo
+; El servidor abre `siger.db` RELATIVO a su directorio de trabajo. Arrancarlo
+; desde otro sitio crea una base vacía sin usuarios, y el acceso responde
+; «credenciales incorrectas» —correcto para no filtrar si el correo existe, e
+; indistinguible de «esta base no tiene a nadie»—. Ya costó una tarde.
+EnvironmentFile=/etc/siger-demo/siger.env
+ExecStart=/opt/siger-demo/siger-api
+Restart=on-failure
+RestartSec=3
+
+; Endurecimiento: la demo es pública y sus credenciales también.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/siger-demo
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target

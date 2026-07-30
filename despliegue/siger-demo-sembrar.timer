@@ -1,0 +1,11 @@
+[Unit]
+Description=Regenerar la demostración de SIGER cada noche
+
+[Timer]
+; 04:10 hora del servidor. Con Persistent, si la máquina estuvo apagada se
+; ejecuta al arrancar en vez de saltarse el día.
+OnCalendar=*-*-* 04:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

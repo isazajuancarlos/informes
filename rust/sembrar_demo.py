@@ -52,7 +52,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 RAIZ = Path(__file__).resolve().parent.parent
-BINARIO = RAIZ / "rust" / "target" / "release" / "siger-api"
+BINARIO_POR_DEFECTO = RAIZ / "rust" / "target" / "release" / "siger-api"
+
+# Se fija en `main()`. Es global porque `hashear()` lo usa desde el fondo de la
+# llamada; pasarlo por cinco funciones para que solo lo use una no lo aclararía.
+BINARIO = BINARIO_POR_DEFECTO
 
 CLAVES = {
     "admin@co.co": "admin",
@@ -450,29 +454,55 @@ def sembrar(destino: Path, forzar: bool) -> None:
         print(f"  {email:<18} {clave}")
 
 
+def limpiar(destino: Path) -> None:
+    """Borra SOLO lo que esta siembra vuelve a escribir.
+
+    Antes esto era `rmtree(destino)`, y funcionaba mientras el destino fuera
+    `rust/demo`, una carpeta que no contiene nada más. En el servidor la carpeta
+    de la demostración es también donde viven el binario y este mismo guion: un
+    `rmtree` se los llevaba por delante y el despliegue quedaba sin nada que
+    arrancar. Una limpieza que borra más de lo que la corrida regenera no es
+    limpieza, es pérdida de datos — y no se ve en la primera vuelta, solo en la
+    segunda (directiva 22).
+    """
+    for wal in ("siger.db", "siger.db-wal", "siger.db-shm"):
+        (destino / wal).unlink(missing_ok=True)
+    shutil.rmtree(destino / "storage", ignore_errors=True)
+
+
 def main() -> int:
+    global BINARIO
+
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--ruta", default=str(RAIZ / "rust" / "demo"),
                    help="carpeta donde vive la base de demostración")
+    p.add_argument("--binario", default=str(BINARIO_POR_DEFECTO),
+                   help="ruta del siger-api que migra, hashea y planifica "
+                        "(en el servidor no está en rust/target/release)")
     p.add_argument("--limpiar", action="store_true",
-                   help="borra la carpeta antes de sembrar")
+                   help="borra la base y el almacén antes de sembrar "
+                        "(no la carpeta: ahí puede vivir el propio binario)")
     p.add_argument("--forzar", action="store_true",
                    help="siembra aunque la base tenga usuarios ajenos a la demo "
                         "(la vacía: úsese sabiendo lo que hace)")
     args = p.parse_args()
 
+    BINARIO = Path(args.binario).resolve()
     if not BINARIO.exists():
         print(f"Falta el binario: {BINARIO}\nConstrúyalo con ./rust/construir.sh",
               file=sys.stderr)
         return 1
 
     destino = Path(args.ruta)
+    # La comprobación va ANTES de limpiar y no solo dentro de `sembrar`. Puesta
+    # solo allí, `--limpiar` la anulaba: borraba la base del cliente y después
+    # preguntaba, sobre una base recién creada, si era la de demostración —
+    # siempre que sí, porque ya no quedaba nadie. Una salvaguarda que la bandera
+    # más usada desactiva no es una salvaguarda.
+    if (destino / "siger.db").exists():
+        comprobar_que_es_de_demostracion(destino / "siger.db", args.forzar)
     if args.limpiar and destino.exists():
-        # El alcance del borrado es la carpeta de la demostración ENTERA, que es
-        # exactamente lo que la siembra vuelve a escribir: base, almacén y nada
-        # más. Borrar por encima de eso sería pérdida de datos disfrazada de
-        # limpieza (directiva 22).
-        shutil.rmtree(destino)
+        limpiar(destino)
     destino.mkdir(parents=True, exist_ok=True)
     sembrar(destino, args.forzar)
     return 0
