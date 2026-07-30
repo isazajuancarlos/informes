@@ -400,12 +400,22 @@ def pintar_estados(bd: Path, almacen: Path) -> dict[str, int]:
         (HOY.isoformat(),),
     ))
 
-    conteo = {"CUMPLIDO": 0, "EXTEMPORANEO": 0, "INCUMPLIDO": 0}
+    conteo = {"CUMPLIDO": 0, "EXTEMPORANEO": 0, "INCUMPLIDO": 0, "PENDIENTE": 0}
     for n, (eid, iid, limite, nombre) in enumerate(vencidas):
         fl = date.fromisoformat(limite)
-        if n % 5 == 3:
+        if n % 7 == 2:
+            # Se deja PENDIENTE con el límite ya pasado, a propósito. Es el
+            # estado «vencida sin registrar», y es el que de verdad ocurre: nada
+            # en el sistema marca INCUMPLIDO solo, lo marca una persona. Pintarlo
+            # todo dejaba el contador de vencidas en CERO —justo la columna de
+            # urgencia que la demostración existe para enseñar— y dejaba a la
+            # alerta de incumplimiento sin nada que enviar, porque busca
+            # exactamente esto: PENDIENTE con fecha_limite pasada.
+            conteo["PENDIENTE"] += 1
+            continue
+        if n % 7 == 3:
             estado, real = "INCUMPLIDO", None
-        elif n % 5 == 4:
+        elif n % 7 == 4:
             estado, real = "EXTEMPORANEO", fl + timedelta(days=2)
         else:
             estado, real = "CUMPLIDO", fl - timedelta(days=1)
@@ -448,7 +458,8 @@ def sembrar(destino: Path, forzar: bool) -> None:
         nota = "" if espera else "  (creada a mano: su modo no fija días)"
         print(f"  [{modo:<24}] {nombre:<34} {n:>3} entregas{nota}")
     print(f"\n  {conteo['CUMPLIDO']} cumplidas · {conteo['EXTEMPORANEO']} extemporáneas"
-          f" · {conteo['INCUMPLIDO']} incumplidas · el resto pendientes")
+          f" · {conteo['INCUMPLIDO']} incumplidas · {conteo['PENDIENTE']} vencidas"
+          f" sin registrar · el resto, pendientes por vencer")
     print(f"  Generadas por el planificador del binario el {datetime.now():%Y-%m-%d %H:%M}\n")
     for email, clave in CLAVES.items():
         print(f"  {email:<18} {clave}")
