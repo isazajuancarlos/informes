@@ -28,7 +28,12 @@ con el recorrido.
 ## 1. La bandeja (1 minuto) — entrar como `operador`
 
 Es la primera pantalla y hace el trabajo sola: entregas con su fecha límite y la
-columna de urgencia. Hay vencidas, hay una que vence esta semana y hay cumplidas.
+columna de urgencia. Lo que hay, medido en la demostración sembrada: **40
+entregas — 22 cumplidas, 5 extemporáneas, 5 incumplidas, 5 vencidas sin registrar
+y 2 que vencen esta semana**, con una tasa de cumplimiento del 68 %.
+
+Las **vencidas sin registrar** son las que hacen la conversación: nadie las tocó
+y el plazo pasó. Es el caso que el prospecto reconoce sin que se lo expliquen.
 
 **Qué señalar**: que las fechas se calcularon solas desde una regla, y que la
 urgencia no es un color decorativo sino el resultado de comparar dos fechas — la
@@ -108,7 +113,7 @@ No es una interfaz distinta: es el mismo sistema con el alcance de quien mira.
 |---|---|
 | ¿Está en la nube o en mi servidor? | Las dos. Es **un archivo ejecutable** con la base dentro; corre en un servidor suyo sin internet, o se lo alojamos. |
 | ¿Qué pasa si se me daña? | `siger-api respaldar` copia la base **en caliente** con sus archivos y **verifica la copia**. La restauración está probada, no supuesta. |
-| ¿Manda correos? | Sí, avisos de proximidad e incumplimiento. Están **dormidos** hasta que se configura el servidor de correo, y el sistema no arranca con esa configuración a medias. |
+| ¿Manda correos? | Sí, avisos de proximidad («Recordatorio:») e incumplimiento («Vencido:»). Probado de punta a punta: 7 mensajes sobre los datos de la demostración. Están **dormidos** hasta que se configura el servidor de correo, y el sistema no arranca con esa configuración a medias. |
 | ¿Cuántos usuarios? | Cuatro papeles: administrador, operador, supervisor y tercero externo. |
 | ¿Y si mi norma cambia? | Se edita la regla y las entregas futuras se recalculan. Las pasadas no se tocan: son historia. |
 
