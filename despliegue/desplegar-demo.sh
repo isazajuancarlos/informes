@@ -47,6 +47,9 @@ ssh "$DESTINO" "sudo mkdir -p $REMOTO /etc/siger-demo && sudo chown -R \$(id -un
 scp "$BIN" rust/sembrar_demo.py "$DESTINO:$REMOTO/"
 scp despliegue/siger-demo.service despliegue/siger-demo-sembrar.service \
     despliegue/siger-demo-sembrar.timer "$DESTINO:/tmp/"
+# El respaldo NO se instala aquí: la demostración se regenera cada noche, así que
+# respaldarla sería guardar copias de datos ficticios. `siger-respaldo.service` y
+# su timer son para una instalación de CLIENTE.
 scp despliegue/informes.xiliux.com.nginx "$DESTINO:/tmp/"
 
 echo "==> 4/5  configurar y arrancar"

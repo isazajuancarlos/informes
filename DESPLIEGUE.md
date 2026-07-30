@@ -45,6 +45,31 @@ Subcomandos del binario:
 | `hashear` | Hash Argon2 de una contraseña, con los MISMOS parámetros que verifica el acceso. |
 | `importar <origen> <destino>` | Vuelca una base del sistema Python anterior al esquema nuevo. |
 | `alertas` | Corre una pasada de alertas por correo (para un cron/timer). |
+| `respaldar <carpeta>` | Copia la base **en caliente** y los archivos de las entregas, y **verifica la copia** antes de darla por buena. |
+| `restaurar <carpeta>` | Devuelve un respaldo a su sitio. Pare el servicio antes; `--forzar` para pisar una base con datos. |
+
+### Respaldos
+
+```bash
+# El servicio puede seguir corriendo: la copia se toma bajo una transacción.
+siger-api respaldar /var/respaldos/siger-$(date +%F)
+```
+
+Tres cosas que este comando hace y que un `cp` no:
+
+1. **No copia el archivo vivo.** La base va en modo WAL: las escrituras
+   confirmadas viven en `siger.db-wal` hasta que alguien las integra, así que una
+   copia del `.db` se abre, pasa por buena y le faltan las últimas transacciones.
+   Se usa `VACUUM INTO`, que toma la instantánea bajo una transacción de lectura.
+2. **Se lleva los archivos de las entregas**, que viven fuera de la base. Un
+   respaldo con solo la base restaura un sistema donde cada entrega cumplida dice
+   tener un archivo que ya no existe.
+3. **Verifica la copia y falla si no cuadra**: la abre, le pasa
+   `PRAGMA integrity_check`, compara los recuentos de las seis tablas con el
+   origen y comprueba que cada archivo que la base nombra llegó. «Hay un cron» no
+   es tener respaldos; lo que no se restauró no está probado.
+
+Para automatizarlo, `despliegue/siger-respaldo.service` y su `.timer` diario.
 
 ## Servicio (systemd)
 

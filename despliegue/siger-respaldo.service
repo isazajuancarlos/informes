@@ -1,0 +1,29 @@
+; Respaldo diario de una instalación de CLIENTE.
+;
+; No es para la demostración pública —esa se regenera, no se respalda—: esto es
+; lo que hace instalable el sistema en un sitio de verdad. Un SQLite sin respaldo
+; probado es una pérdida de datos esperando su día.
+;
+; El comando NO para el servicio: la copia se toma con `VACUUM INTO`, bajo una
+; transacción de lectura. Y se verifica sola: si la copia no cuadra con el
+; origen, el comando sale con error, la unidad queda en `failed` y `systemctl
+; --failed` lo enseña. Un respaldo que falla en silencio es peor que no tenerlo.
+[Unit]
+Description=SIGER — respaldo diario, verificado
+After=network.target
+
+[Service]
+Type=oneshot
+User=siger
+Group=siger
+WorkingDirectory=/opt/siger
+EnvironmentFile=/etc/siger/siger.env
+; La carpeta lleva la fecha: un respaldo que se pisa a sí mismo cada noche no
+; protege del error que se descubre tres días después, que es el caso normal.
+ExecStart=/bin/sh -c '/opt/siger/siger-api respaldar /var/respaldos/siger-$(date +%%F)'
+; Y se podan los viejos. El alcance del borrado es EXACTAMENTE el conjunto que
+; esta unidad crea —carpetas `siger-<fecha>` bajo /var/respaldos— y nada más.
+ExecStartPost=/usr/bin/find /var/respaldos -mindepth 1 -maxdepth 1 -type d -name 'siger-*' -mtime +30 -exec rm -rf {} +
+
+[Install]
+WantedBy=multi-user.target
