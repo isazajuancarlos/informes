@@ -1,0 +1,86 @@
+# informes.xiliux.com — la demostración pública de SIGER.
+#
+# Se copia a /etc/nginx/sites-available/ y se enlaza en sites-enabled/. El bloque
+# TLS lo escribe certbot; aquí va el sitio en claro con la redirección, que es lo
+# que certbot espera encontrar.
+#
+#   sudo certbot --nginx -d informes.xiliux.com
+#
+# Requiere que informes.xiliux.com resuelva ANTES: certbot valida por HTTP-01 y
+# sin registro A no hay reto que superar.
+
+# Límite de peticiones. La demostración es pública y sus credenciales están
+# publicadas: sin esto, un bucle de subidas de 50 MB llena el disco del VPS que
+# también sirve oprf.xiliux.com y el portafolio. La zona es propia de este sitio
+# para que su tope no se reparta con los demás.
+limit_req_zone $binary_remote_addr zone=siger_demo:10m rate=10r/s;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name informes.xiliux.com;
+
+    # Certbot escribe aquí su reto; el resto va a TLS.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name informes.xiliux.com;
+
+    # Estas cuatro líneas las gestiona certbot; se dejan nombradas para que el
+    # archivo sea legible antes de que las escriba.
+    # ssl_certificate     /etc/letsencrypt/live/informes.xiliux.com/fullchain.pem;
+    # ssl_certificate_key /etc/letsencrypt/live/informes.xiliux.com/privkey.pem;
+    # include             /etc/letsencrypt/options-ssl-nginx.conf;
+    # ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # El tope de subida es el del binario (SIGER_MAX_MB=50) más margen para el
+    # sobre multipart. Si nginx admitiera más, el rechazo llegaría del binario
+    # después de haber transferido el archivo entero.
+    client_max_body_size 52m;
+
+    # HSTS PROPIO, y no heredado: medido el 2026-07-30 contra el sitio en vivo,
+    # `xiliux.com` responde `Strict-Transport-Security: max-age=31536000` SIN
+    # `includeSubDomains`, así que no cubre a este subdominio. Sin esta línea, la
+    # primera visita de cada navegador viaja en claro hasta el 301 — y el 301 lo
+    # sirve el mismo puerto 80 que un atacante en la red puede interceptar.
+    # Certbot NO añade la cabecera; solo el certificado.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    add_header X-Frame-Options SAMEORIGIN always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    # La demostración NO debe indexarse: sus credenciales son públicas y no
+    # queremos que una búsqueda de «SIGER» lleve a una base que se borra cada
+    # noche antes que al portafolio.
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    location / {
+        limit_req zone=siger_demo burst=20 nodelay;
+
+        # `Secure` en la cookie de sesión lo pone AQUÍ, y no el binario.
+        # `sesion.rs` lo deja fuera a propósito —el perfil de una sola máquina se
+        # sirve por HTTP en localhost, y una cookie `Secure` ahí no se guarda: el
+        # cliente vería una pantalla de acceso que ni falla ni deja entrar—, y
+        # documenta que «se añade en el proxy». Esta es la única plantilla de
+        # proxy del repositorio, así que sin esta línea esa frase no la cumplía
+        # nadie. Lo cazó la revisión de seguridad del 2026-07-30.
+        proxy_cookie_flags ~ secure;
+
+        proxy_pass http://127.0.0.1:8003;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}

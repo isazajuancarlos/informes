@@ -13,16 +13,20 @@ un secreto** (a propósito). La plantilla está en `.env.example`.
 ## Construir
 
 ```bash
-cd rust
-cargo build --release            # produce target/release/siger-api
+./rust/construir.sh              # produce rust/target/release/siger-api
 ```
 
-La interfaz Angular se construye e incrusta como parte del build (rust-embed).
-Para reconstruir la interfaz de cero:
+**Un solo comando, y es el único correcto.** `cargo build --release` a secas NO
+construye la interfaz: `rust-embed` empotra lo que haya en
+`rust/siger-api/estaticos/`, cuyo contenido está en `.gitignore`. En un clon
+limpio esa carpeta está vacía, y el binario saldría sirviendo la API con un 404
+en la raíz. `construir.sh` compila Angular primero y lo copia; el orden importa,
+porque al revés el binario viaja con la interfaz de la vez anterior.
 
-```bash
-cd angular && npm ci && npx ng build     # deja el bundle que el binario embebe
-```
+Ya no se puede equivocar uno en silencio: `rust/siger-api/build.rs` **rompe la
+compilación de release** si falta `estaticos/index.html`. Si de verdad se quiere
+un binario sin interfaz, hay que pedirlo:
+`SIGER_SIN_INTERFAZ=1 cargo build --release`.
 
 ## Configurar y arrancar
 
@@ -41,6 +45,31 @@ Subcomandos del binario:
 | `hashear` | Hash Argon2 de una contraseña, con los MISMOS parámetros que verifica el acceso. |
 | `importar <origen> <destino>` | Vuelca una base del sistema Python anterior al esquema nuevo. |
 | `alertas` | Corre una pasada de alertas por correo (para un cron/timer). |
+| `respaldar <carpeta>` | Copia la base **en caliente** y los archivos de las entregas, y **verifica la copia** antes de darla por buena. |
+| `restaurar <carpeta>` | Devuelve un respaldo a su sitio. Pare el servicio antes; `--forzar` para pisar una base con datos. |
+
+### Respaldos
+
+```bash
+# El servicio puede seguir corriendo: la copia se toma bajo una transacción.
+siger-api respaldar /var/respaldos/siger-$(date +%F)
+```
+
+Tres cosas que este comando hace y que un `cp` no:
+
+1. **No copia el archivo vivo.** La base va en modo WAL: las escrituras
+   confirmadas viven en `siger.db-wal` hasta que alguien las integra, así que una
+   copia del `.db` se abre, pasa por buena y le faltan las últimas transacciones.
+   Se usa `VACUUM INTO`, que toma la instantánea bajo una transacción de lectura.
+2. **Se lleva los archivos de las entregas**, que viven fuera de la base. Un
+   respaldo con solo la base restaura un sistema donde cada entrega cumplida dice
+   tener un archivo que ya no existe.
+3. **Verifica la copia y falla si no cuadra**: la abre, le pasa
+   `PRAGMA integrity_check`, compara los recuentos de las seis tablas con el
+   origen y comprueba que cada archivo que la base nombra llegó. «Hay un cron» no
+   es tener respaldos; lo que no se restauró no está probado.
+
+Para automatizarlo, `despliegue/siger-respaldo.service` y su `.timer` diario.
 
 ## Servicio (systemd)
 
@@ -74,8 +103,42 @@ Para VER el sistema funcionando sin instalar nada de verdad:
 
 ```bash
 python rust/sembrar_demo.py           # crea rust/demo/siger.db con datos ficticios
-DATABASE_URL=sqlite://rust/demo/siger.db ./target/release/siger-api
+cd rust/demo && SIGER_SECRETO_SESION=$(../target/release/siger-api generar-secreto) \
+  ../target/release/siger-api
 ```
+
+**Arráncalo DESDE la carpeta de la demostración.** El servidor abre `siger.db`
+relativo a su directorio de trabajo: desde la raíz del repositorio crea una base
+vacía sin usuarios, y el acceso responde «credenciales incorrectas» —correcto
+para no filtrar si el correo existe, e indistinguible de «esta base no tiene a
+nadie»—.
+
+La semilla siembra **un informe por cada modo de recurrencia** (específico
+mensual y trimestral, cíclico, semanal, horario, fechas y a solicitud) y deja que
+el **planificador del binario** genere las entregas con su calendario de
+festivos. Si algún modo de calendario no produjera ninguna, el guion falla en vez
+de dejar una demostración vacía: una demostración que no depende del motor no
+demuestra el motor.
+
+Dos cosas que el guion **no** hace, por si alguien apunta el `--ruta` a otro
+sitio: no siembra sobre una base cuyos usuarios no sean los de la demostración
+(hay que pedirlo con `--forzar`), y `--limpiar` borra la base y el almacén, nunca
+la carpeta —en el servidor ahí viven también el binario y el propio guion—.
+
+## La demostración pública (informes.xiliux.com)
+
+Todo lo que hace falta está en `despliegue/`: la unidad de systemd, el timer que
+regenera los datos cada noche, el sitio de nginx y `desplegar-demo.sh`, que
+construye, comprueba que el binario lleva la interfaz DENTRO, copia y arranca.
+
+```bash
+./despliegue/desplegar-demo.sh usuario@servidor
+```
+
+Tres pasos quedan fuera a propósito, porque no son reversibles desde el guion: el
+registro DNS de `informes.xiliux.com`, enlazar el sitio en `sites-enabled/` y
+pedir el certificado con `certbot --nginx -d informes.xiliux.com` (que exige el
+DNS ya resolviendo). El guion los recuerda al terminar.
 
 Las contraseñas del seed están escritas en el guion (es para mirar, no para
 producción) y las fechas se calculan desde HOY, para que la columna de urgencia

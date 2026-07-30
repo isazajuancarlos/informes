@@ -190,6 +190,29 @@ fn numero<T: std::str::FromStr>(clave: &'static str, defecto: T) -> Result<T, Er
 }
 
 impl Config {
+    /// Una configuración válida para las PRUEBAS, sin tocar el entorno.
+    ///
+    /// El entorno es global al proceso y las pruebas corren en paralelo: montarlo
+    /// con `set_var` haría que una prueba cambiara la configuración de otra, y el
+    /// fallo aparecería de forma intermitente y en el sitio equivocado.
+    #[cfg(test)]
+    pub fn para_pruebas() -> Self {
+        Self {
+            url_bd: "sqlite::memory:".into(),
+            puerto: 0,
+            secreto_sesion: b"secreto-de-prueba-de-mas-de-treinta-y-dos-bytes".to_vec(),
+            pais_iso: "CO".into(),
+            minutos_sesion: 60,
+            dir_entregas: "storage/entregas".into(),
+            max_mb: 50,
+            extensiones: vec![".pdf".into()],
+            firma_sk_hex: None,
+            firma_vk_hex: None,
+            clave_reposo: None,
+            correo: None,
+        }
+    }
+
     pub fn desde_entorno() -> Result<Self, ErrorConfig> {
         let secreto = opcional("SIGER_SECRETO_SESION")
             .ok_or(ErrorConfig::SecretoAusente("SIGER_SECRETO_SESION"))?;

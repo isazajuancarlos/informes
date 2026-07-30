@@ -21,6 +21,15 @@ pub enum ErrorRegla {
     ModoDesconocido(String),
     #[error("el modo {0} no trae los campos que necesita: {1}")]
     CamposIncompletos(&'static str, &'static str),
+    #[error(
+        "el modo «{0}» está RETIRADO: una obligación por horas no se puede \
+         representar. La tabla `entregas` guarda una FECHA nominal y su clave \
+         única es (informe, fecha_nominal), así que de «cada cuatro horas» solo \
+         sobrevivía una entrega al día — sin error y sin aviso. Convierta la \
+         regla a diaria (CICLICO, intervalo 1) si eso era lo que hacía, o \
+         enumere los días con FECHAS."
+    )]
+    ModoRetirado(String),
 }
 
 /// Espejo exacto del diccionario que guarda el sistema actual. Todos los campos
@@ -72,13 +81,10 @@ pub struct ReglaJson {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cada_n_semanas: Option<i64>,
 
-    // Horario
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hora_inicio: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hora_fin: Option<i64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub intervalo_horas: Option<i64>,
+    // Los campos del modo horario (`hora_inicio`, `hora_fin`, `intervalo_horas`)
+    // se quitaron con el modo. Una regla guardada que los traiga los pierde al
+    // reescribirse, y da igual: su modo ya no se puede leer, así que esa regla
+    // hay que rehacerla de todos modos.
 
     // Fechas explícitas
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -181,11 +187,11 @@ impl TryFrom<&ReglaJson> for Regla {
                 dia_habil: positivo(j.dia_habil_semana),
                 cada_n_semanas: positivo(j.cada_n_semanas),
             }),
-            "HOURLY" | "HORARIO" => Patron::Horario {
-                hora_inicio: j.hora_inicio.unwrap_or(8).clamp(0, 23) as u32,
-                hora_fin: j.hora_fin.unwrap_or(18).clamp(0, 23) as u32,
-                intervalo_horas: j.intervalo_horas.unwrap_or(1).max(0) as u32,
-            },
+            // Retirado a propósito, y con un error PROPIO en vez de caer en
+            // «modo desconocido»: quien lo vea tiene que entender que no es un
+            // dedazo suyo sino una decisión, y qué poner en su lugar. En los 80
+            // patrones reales del catálogo migrado no aparece ni una vez.
+            "HOURLY" | "HORARIO" => return Err(ErrorRegla::ModoRetirado(modo)),
             "FECHAS" => Patron::Fechas(
                 j.fechas
                     .clone()
@@ -226,6 +232,31 @@ mod tests {
         for modo in ["A_SOLICITUD", "ASOLICITUD", "a_solicitud"] {
             let rj = ReglaJson { modo: Some(modo.to_string()), ..Default::default() };
             assert_eq!(Regla::try_from(&rj).unwrap().patron, Patron::ASolicitud);
+        }
+    }
+
+    #[test]
+    fn el_modo_horario_esta_retirado_y_lo_dice_con_su_nombre() {
+        // Antes esto se leía y producía UNA entrega al día en silencio, porque
+        // `entregas` guarda una fecha y su clave única es (informe, fecha). El
+        // motor sabía expresar «cada cuatro horas» y la persistencia no, así que
+        // el sistema prometía una obligación que no cumplía.
+        //
+        // Ahora falla, y falla con un error PROPIO: caer en «modo desconocido»
+        // haría pensar en un dedazo en vez de en una decisión.
+        for modo in ["HORARIO", "HOURLY", "horario"] {
+            let rj = ReglaJson { modo: Some(modo.to_string()), ..Default::default() };
+            let e = Regla::try_from(&rj).unwrap_err();
+            assert!(
+                matches!(e, ErrorRegla::ModoRetirado(_)),
+                "«{modo}» no dio ModoRetirado sino {e}"
+            );
+            let texto = e.to_string();
+            assert!(texto.contains("RETIRADO"), "{texto}");
+            assert!(
+                texto.contains("CICLICO") && texto.contains("FECHAS"),
+                "el error no dice qué poner en su lugar: {texto}"
+            );
         }
     }
 

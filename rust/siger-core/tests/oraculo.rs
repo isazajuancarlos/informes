@@ -56,7 +56,11 @@ struct VencimientoCongelado {
     nominal: String,
     limite: String,
     ajuste: String,
-    hora: Option<u32>,
+    // `hora` se quitó con el modo HORARIO. El JSON congelado sigue trayendo la
+    // clave y serde la ignora, lo cual es correcto y además está comprobado: en
+    // los 8 534 vencimientos del oráculo su valor es null SIN EXCEPCIÓN. El
+    // motor anterior tampoco produjo nunca un vencimiento con hora sobre el
+    // catálogo real, que es la razón de fondo por la que el modo se retiró.
 }
 
 fn leer<T: for<'de> Deserialize<'de>>(nombre: &str) -> T {
@@ -139,7 +143,6 @@ fn los_vencimientos_de_los_80_patrones_se_reproducen_exactos() {
                     siger_core::TipoAjuste::Omitir => "OMITIR",
                 }
                 .to_string(),
-                hora: v.hora,
             })
             .collect();
 

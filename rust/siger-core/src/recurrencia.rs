@@ -47,8 +47,6 @@ pub enum Patron {
     Especifico(Especifico),
     /// Días de la semana, o el n-ésimo hábil de la semana.
     Semanal(Semanal),
-    /// Varias veces dentro del mismo día.
-    Horario { hora_inicio: u32, hora_fin: u32, intervalo_horas: u32 },
     /// Lista literal. La salida de emergencia del diseño: una obligación que no
     /// sigue ningún patrón se enumera, y así nadie se queda fuera por no encajar
     /// en una forma que se nos ocurrió.
@@ -153,9 +151,6 @@ impl Motor {
                     Vec::new()
                 }
             }
-            Patron::Horario { hora_inicio, hora_fin, intervalo_horas } => {
-                self.horario(fecha, *hora_inicio, *hora_fin, *intervalo_horas)
-            }
             // A solicitud no fija ningún día: el planificador no le crea entregas
             // automáticas, exactamente como el sistema anterior, donde estos
             // informes tenían cero entregas esperadas.
@@ -243,29 +238,6 @@ impl Motor {
             return self.con_ajuste(fecha, regla.ajuste).into_iter().collect();
         }
         Vec::new()
-    }
-
-    fn horario(
-        &self,
-        fecha: NaiveDate,
-        inicio: u32,
-        fin: u32,
-        intervalo: u32,
-    ) -> Vec<Vencimiento> {
-        if intervalo == 0 {
-            return Vec::new();
-        }
-        // La franja puede cruzar la medianoche: de 18 a 8 es un turno nocturno,
-        // no un error. Se recorre hasta `fin + 24` y se toma el resto, para que
-        // «cada dos horas» siga siendo cada dos horas al pasar de las 23 a las 0.
-        let final_ = if fin >= inicio { fin } else { fin + 24 };
-        let mut salida = Vec::new();
-        let mut cursor = inicio;
-        while cursor <= final_ {
-            salida.push(Vencimiento::sin_ajuste(fecha).con_hora(cursor % 24));
-            cursor += intervalo;
-        }
-        salida
     }
 
     /// Envuelve un día nominal con su día límite. `None` cuando el ajuste dice

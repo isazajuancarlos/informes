@@ -19,6 +19,9 @@ mod importar;
 mod informes;
 mod participacion;
 mod planificador;
+#[cfg(test)]
+mod pruebas_cronograma;
+mod respaldo;
 mod rutas;
 mod sesion;
 
@@ -41,6 +44,13 @@ async fn main() -> std::process::ExitCode {
 
     if std::env::args().nth(1).as_deref() == Some("alertas") {
         return alertas_cmd().await;
+    }
+
+    if matches!(
+        std::env::args().nth(1).as_deref(),
+        Some("respaldar") | Some("restaurar")
+    ) {
+        return respaldo_cmd().await;
     }
 
     if let Some(codigo) = subcomando() {
@@ -158,6 +168,79 @@ async fn alertas_cmd() -> std::process::ExitCode {
         r.proximidad, r.incumplimiento, r.fallidas, r.sin_destinatario
     );
     std::process::ExitCode::SUCCESS
+}
+
+/// `siger-api respaldar <carpeta>` y `siger-api restaurar <carpeta>`.
+///
+/// Los dos leen del entorno DÓNDE está la base y dónde los archivos, así que
+/// respaldan lo que el servicio usa de verdad y no lo que alguien creía. Es la
+/// misma razón por la que el hash lo produce el binario que después lo verifica.
+async fn respaldo_cmd() -> std::process::ExitCode {
+    let orden = std::env::args().nth(1).unwrap_or_default();
+    let Some(carpeta) = std::env::args().nth(2) else {
+        eprintln!(
+            "uso: siger-api {orden} <carpeta>\n\n\
+             respaldar  copia la base EN CALIENTE y los archivos de las entregas,\n\
+             \x20          y verifica la copia antes de darla por buena.\n\
+             restaurar  la devuelve a su sitio. Pare el servicio antes.\n\
+             \x20          --forzar para pisar una base que ya tiene datos."
+        );
+        return std::process::ExitCode::FAILURE;
+    };
+    let carpeta = std::path::PathBuf::from(carpeta);
+
+    // La configuración se lee entera, con su validación: sin secreto de sesión
+    // esto no arranca. Es a propósito — respaldar la base de una instalación
+    // cuya configuración no es válida daría un respaldo de algo que no corre.
+    let cfg = match config::Config::desde_entorno() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\nno se pudo leer la configuración:\n  {e}\n");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    let resultado = if orden == "respaldar" {
+        respaldo::respaldar(&cfg.url_bd, &cfg.dir_entregas, &carpeta).await
+    } else {
+        let forzar = std::env::args().any(|a| a == "--forzar");
+        respaldo::restaurar(&carpeta, &cfg.url_bd, &cfg.dir_entregas, forzar).await
+    };
+
+    match resultado {
+        Ok(r) => {
+            // La preposición importa: «respaldado EN la carpeta» y «restaurado
+            // DESDE la carpeta» son direcciones opuestas, y con un único verbo
+            // el mensaje de restaurar parecía decir que había escrito en el
+            // respaldo. Quien lee esto lo lee el peor día.
+            let frase = if orden == "respaldar" {
+                format!("Respaldado en «{}»", carpeta.display())
+            } else {
+                format!(
+                    "Restaurado desde «{}» a «{}»",
+                    carpeta.display(),
+                    cfg.url_bd
+                )
+            };
+            println!(
+                "{frase}: {} filas en {} tablas y {} archivos de entrega.",
+                r.total_filas(),
+                r.filas.len(),
+                r.archivos
+            );
+            for (tabla, n) in &r.filas {
+                println!("  {tabla:<16} {n}");
+            }
+            if orden == "respaldar" {
+                println!("\nLa copia se abrió y se comprobó: integridad, recuentos y archivos.");
+            }
+            std::process::ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("\n{e}\n");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {

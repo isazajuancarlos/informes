@@ -64,3 +64,11 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # entra en el binario de producción.
 [dev-dependencies]
 tokio = { version = "1", features = ["time"] }
+# Las pruebas del respaldo necesitan bases en DISCO, no en memoria: `VACUUM INTO`
+# escribe un archivo y lo que se está probando es precisamente que ese archivo
+# sirva. Una base `:memory:` no ejercería nada de eso.
+tempfile = "3"
+# Para ejercer las rutas como las ejerce un cliente: una petición entra, una
+# respuesta sale. Sin esto solo se probaban funciones, y el cableado —extractores,
+# códigos de estado, cabeceras— no lo miraba nadie.
+tower = { version = "0.5", features = ["util"] }
