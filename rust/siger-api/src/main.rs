@@ -284,6 +284,7 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
     planificador::arrancar_reloj(bd.clone(), motor, cfg.correo.clone());
 
     let puerto = cfg.puerto;
+    let direccion = cfg.escucha;
     let estado = rutas::Estado { bd, cfg, motor: motor_web };
 
     let app = Router::new()
@@ -293,8 +294,8 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http());
 
-    let escucha = tokio::net::TcpListener::bind(("0.0.0.0", puerto)).await?;
-    tracing::info!("SIGER escuchando en http://0.0.0.0:{puerto}");
+    let escucha = tokio::net::TcpListener::bind((direccion, puerto)).await?;
+    tracing::info!("SIGER escuchando en http://{direccion}:{puerto}");
     // `with_connect_info` y no `into_make_service` a secas: sin esto no hay
     // dirección del socket, y el freno del login se queda sin la mitad de su
     // clave (ver `origen`).

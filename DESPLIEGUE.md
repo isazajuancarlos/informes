@@ -68,6 +68,24 @@ el registro**: no se rellena con la dirección del proxy, porque eso degradaría
 freno a contar solo por cuenta y dejaría que un desconocido frenase al dueño de
 la cuenta.
 
+#### Y arrastra dónde escucha: `SIGER_ESCUCHA`
+
+| `SIGER_ESCUCHA` | `SIGER_TRAS_PROXY` | dirección |
+|---|---|---|
+| puesta | cualquiera | lo que diga usted |
+| ausente | `1` | `127.0.0.1` |
+| ausente | sin poner | `0.0.0.0` |
+
+Declarar el proxy y seguir escuchando en todas las interfaces deja una puerta
+detrás del proxy: quien alcance el puerto directamente **elige su propio
+`X-Real-IP`**, y entonces el freno del login no engancha nunca porque cada
+intento cae en un cubo distinto. Por eso la declaración arrastra el defecto.
+
+**Si el proxy vive en otra máquina** —o en otra red que la de bucle—, póngala a
+mano: `SIGER_ESCUCHA=0.0.0.0`, o la dirección de la interfaz que corresponda. Se
+cierra el descuido, no el caso. Una dirección ilegible **no arranca**; no se
+sustituye por el defecto.
+
 El freno **no bloquea**: tras cinco fallos seguidos el siguiente intento espera,
 la espera se dobla y se detiene en cinco minutos. Nadie tiene que desbloquear a
 nadie. Un acierto lo borra todo.
