@@ -95,6 +95,13 @@ sudo install -m 644 /tmp/informes.xiliux.com.nginx \
 
 sudo systemctl stop siger-demo.service 2>/dev/null || true
 sudo chown -R siger:siger "$REMOTO"
+# …pero el binario y el guion de siembra vuelven a root. `siger` tiene que poder
+# ESCRIBIR la base y el almacén, no el ejecutable que corre ni el guion que root
+# lanza cada noche: ser dueño de lo que ejecutas es poder reescribirlo. No cierra
+# ningún ataque conocido —no hay primitiva de escritura que lleve ahí— pero
+# quitarlo cuesta dos líneas. Señalado en la revisión de seguridad del 2026-07-30.
+sudo chown root:root "$REMOTO/siger-api" "$REMOTO/sembrar_demo.py"
+sudo chmod 755 "$REMOTO/siger-api" "$REMOTO/sembrar_demo.py"
 sudo -u siger python3 "$REMOTO/sembrar_demo.py" \
      --ruta "$REMOTO" --binario "$REMOTO/siger-api" --limpiar
 

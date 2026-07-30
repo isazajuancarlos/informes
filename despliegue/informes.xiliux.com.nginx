@@ -59,6 +59,15 @@ server {
     location / {
         limit_req zone=siger_demo burst=20 nodelay;
 
+        # `Secure` en la cookie de sesión lo pone AQUÍ, y no el binario.
+        # `sesion.rs` lo deja fuera a propósito —el perfil de una sola máquina se
+        # sirve por HTTP en localhost, y una cookie `Secure` ahí no se guarda: el
+        # cliente vería una pantalla de acceso que ni falla ni deja entrar—, y
+        # documenta que «se añade en el proxy». Esta es la única plantilla de
+        # proxy del repositorio, así que sin esta línea esa frase no la cumplía
+        # nadie. Lo cazó la revisión de seguridad del 2026-07-30.
+        proxy_cookie_flags ~ secure;
+
         proxy_pass http://127.0.0.1:8003;
         proxy_http_version 1.1;
         proxy_set_header Host              $host;

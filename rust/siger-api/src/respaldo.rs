@@ -327,19 +327,46 @@ pub async fn restaurar(
     let destino_bd = ruta_de_url(url_bd);
     if destino_bd.exists() && !forzar {
         let mut cx = conectar(&destino_bd).await?;
-        // Si la base de destino no tiene ni el esquema, no hay nada que perder:
-        // es el caso normal de restaurar en una máquina nueva.
-        let usuarios: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usuarios")
-            .fetch_one(&mut cx)
-            .await
-            .unwrap_or(0);
-        let entregas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entregas")
-            .fetch_one(&mut cx)
-            .await
-            .unwrap_or(0);
-        cx.close().await.ok();
-        if usuarios > 0 || entregas > 0 {
-            return Err(ErrorRespaldo::DestinoConDatos(usuarios, entregas));
+
+        // Dos situaciones que se parecen y no lo son:
+        //
+        //   (a) la base de destino no tiene ni el esquema — máquina nueva, no hay
+        //       nada que perder, adelante;
+        //   (b) la base existe pero NO SE PUEDE LEER — tomada por otro proceso,
+        //       corrupta, sin permisos.
+        //
+        // Antes las dos daban lo mismo, porque el recuento se leía con
+        // `.unwrap_or(0)`: en el caso (b) el fallo de lectura se contaba como
+        // «cero filas» y la restauración pisaba una base que podía estar llena.
+        // «No pude mirar» contabilizado como «no hay nada» es la forma más cara
+        // de perder datos, porque parece que funcionó.
+        //
+        // Se distinguen preguntando primero si las tablas EXISTEN. Si no existen,
+        // es (a). Si existen, el recuento tiene que salir bien: cualquier error se
+        // propaga y no se restaura nada.
+        let con_esquema: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sqlite_master \
+             WHERE type = 'table' AND name IN ('usuarios', 'entregas')",
+        )
+        .fetch_one(&mut cx)
+        .await
+        .map_err(|e| ErrorRespaldo::NoAbre(destino_bd.display().to_string(), e))?;
+
+        if con_esquema > 0 {
+            let usuarios: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM usuarios")
+                .fetch_one(&mut cx)
+                .await
+                .map_err(|e| ErrorRespaldo::NoAbre(destino_bd.display().to_string(), e))?;
+            let entregas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM entregas")
+                .fetch_one(&mut cx)
+                .await
+                .map_err(|e| ErrorRespaldo::NoAbre(destino_bd.display().to_string(), e))?;
+            cx.close().await.ok();
+            if usuarios > 0 || entregas > 0 {
+                return Err(ErrorRespaldo::DestinoConDatos(usuarios, entregas));
+            }
+        } else {
+            cx.close().await.ok();
         }
     }
 
@@ -479,6 +506,60 @@ mod tests {
 
         let e = restaurar(&destino, &url, &entregas, false).await.unwrap_err();
         assert!(matches!(e, ErrorRespaldo::DestinoConDatos(2, 1)), "{e}");
+    }
+
+    #[tokio::test]
+    async fn una_base_de_destino_ilegible_no_cuenta_como_vacia() {
+        // El hallazgo de la revisión de seguridad del 2026-07-30. El recuento del
+        // destino se leía con `.unwrap_or(0)`, así que una base tomada, corrupta o
+        // sin permisos daba «cero filas» y la restauración la pisaba. «No pude
+        // mirar» contabilizado como «no hay nada» es la forma más cara de perder
+        // datos: parece que funcionó.
+        //
+        // Aquí se corrompen las páginas del medio de la base de DESTINO —el
+        // encabezado sigue diciendo «soy SQLite», así que abre— y se comprueba
+        // que restaurar se NIEGA en vez de sobrescribirla.
+        let tmp = tempfile::tempdir().unwrap();
+        let (url, entregas) = base_de_prueba(tmp.path()).await;
+        let destino = tmp.path().join("copia");
+        respaldar(&url, &entregas, &destino).await.unwrap();
+
+        use std::io::{Seek, SeekFrom, Write};
+        let bd = ruta_de_url(&url);
+        let mut f = std::fs::OpenOptions::new().write(true).open(&bd).unwrap();
+        f.seek(SeekFrom::Start(4096)).unwrap();
+        f.write_all(&[0xFF; 8192]).unwrap();
+        f.sync_all().unwrap();
+        drop(f);
+
+        let r = restaurar(&destino, &url, &entregas, false).await;
+        assert!(
+            r.is_err(),
+            "restauró sobre una base que no se pudo leer: eso la habría borrado"
+        );
+    }
+
+    #[tokio::test]
+    async fn restaurar_en_una_maquina_nueva_sigue_funcionando() {
+        // El reverso de la anterior, para que la corrección no cierre de más: una
+        // base de destino que existe pero AÚN NO TIENE ESQUEMA es el caso normal
+        // de instalar en una máquina nueva, y ahí no hay nada que perder.
+        let tmp = tempfile::tempdir().unwrap();
+        let (url, entregas) = base_de_prueba(tmp.path()).await;
+        let destino = tmp.path().join("copia");
+        respaldar(&url, &entregas, &destino).await.unwrap();
+
+        // Base vacía de verdad: el archivo EXISTE y no tiene una sola tabla. Un
+        // archivo de cero bytes es una base SQLite válida y vacía, que es
+        // exactamente el estado de una instalación recién puesta. (No sirve
+        // `conectar`: abre sin crear, a propósito.)
+        let bd = ruta_de_url(&url);
+        std::fs::remove_file(&bd).unwrap();
+        std::fs::File::create(&bd).unwrap();
+
+        restaurar(&destino, &url, &entregas, false)
+            .await
+            .expect("una base sin esquema debe poder restaurarse sin --forzar");
     }
 
     #[tokio::test]
