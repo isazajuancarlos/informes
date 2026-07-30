@@ -28,6 +28,11 @@ pub enum ErrorConfig {
     SecretoCorto(&'static str, usize, usize),
     #[error("{0} no es un número válido: {1}")]
     NoEsNumero(&'static str, String),
+    #[error(
+        "SIGER_ESCUCHA no es una dirección IP válida: «{0}». Ponga una dirección \
+         (por ejemplo 127.0.0.1 o 0.0.0.0), no un nombre de máquina ni un puerto."
+    )]
+    NoEsDireccion(String),
     #[error("el calendario no se pudo construir: {0}")]
     Calendario(#[from] siger_core::ErrorCalendario),
     #[error(
@@ -138,6 +143,46 @@ pub struct Config {
     /// del repositorio pone `proxy_set_header X-Real-IP $remote_addr`, que pisa lo
     /// que venga) devuelve justo ese agujero. Por eso se pide explícitamente.
     pub tras_proxy: bool,
+
+    /// En qué dirección escucha el servidor. Ver [`direccion_de_escucha`].
+    pub escucha: std::net::IpAddr,
+}
+
+/// La dirección en la que liga el servidor, en cascada.
+///
+/// | `SIGER_ESCUCHA` | `tras_proxy` | resultado |
+/// |---|---|---|
+/// | puesta | cualquiera | lo que diga el operador |
+/// | ausente | sí | `127.0.0.1` |
+/// | ausente | no | `0.0.0.0` |
+///
+/// # Por qué el defecto depende de la otra bandera
+///
+/// Declarar `SIGER_TRAS_PROXY=1` es decir «a mí me habla el proxy». Si además el
+/// binario sigue escuchando en `0.0.0.0`, cualquiera que alcance el puerto se
+/// salta el proxy — y entonces **elige su propio `X-Real-IP`**, con lo que el
+/// freno del login no engancha nunca: basta rotar la cabecera en cada intento.
+/// El control existiría y no frenaría, que es el mismo fallo que ya mordió en
+/// medico por el otro lado (allí la cabecera era `X-Forwarded-For`).
+///
+/// Así que la declaración arrastra su consecuencia: quien dice estar detrás de un
+/// proxy, por defecto no se expone.
+///
+/// # Y por qué es un defecto y no una regla
+///
+/// Cerrarlo a `127.0.0.1` sin salida rompería una topología legítima: nginx en
+/// otra máquina, o un contenedor cuyo proxy vive fuera de su red de bucle. Ahí el
+/// operador pone `SIGER_ESCUCHA=0.0.0.0` —o la dirección de la interfaz que
+/// toque— y lo dice a propósito. Se cierra el descuido, no el caso.
+pub fn direccion_de_escucha(
+    valor: Option<&str>,
+    tras_proxy: bool,
+) -> Result<std::net::IpAddr, ErrorConfig> {
+    match valor.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => v.parse().map_err(|_| ErrorConfig::NoEsDireccion(v.to_string())),
+        None if tras_proxy => Ok(std::net::IpAddr::from([127, 0, 0, 1])),
+        None => Ok(std::net::IpAddr::from([0, 0, 0, 0])),
+    }
 }
 
 fn booleano(clave: &str, defecto: bool) -> bool {
@@ -227,10 +272,13 @@ impl Config {
             clave_reposo: None,
             correo: None,
             tras_proxy: false,
+            escucha: std::net::IpAddr::from([127, 0, 0, 1]),
         }
     }
 
     pub fn desde_entorno() -> Result<Self, ErrorConfig> {
+        // Se lee antes que nada porque el defecto de `escucha` depende de él.
+        let tras_proxy = booleano("SIGER_TRAS_PROXY", false);
         let secreto = opcional("SIGER_SECRETO_SESION")
             .ok_or(ErrorConfig::SecretoAusente("SIGER_SECRETO_SESION"))?;
         let secreto = secreto.into_bytes();
@@ -276,7 +324,8 @@ impl Config {
             clave_reposo,
             // Alertas dormidas por defecto; se encienden con ALERTAS_ACTIVAS.
             correo: correo_desde_entorno()?,
-            tras_proxy: booleano("SIGER_TRAS_PROXY", false),
+            tras_proxy,
+            escucha: direccion_de_escucha(opcional("SIGER_ESCUCHA").as_deref(), tras_proxy)?,
         })
     }
 
@@ -297,6 +346,63 @@ impl Config {
             clave_reposo: None,
             correo: None,
             tras_proxy: false,
+            escucha: std::net::IpAddr::from([127, 0, 0, 1]),
+        }
+    }
+}
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+    use std::net::IpAddr;
+
+    fn ip(s: &str) -> IpAddr {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn sin_proxy_declarado_se_escucha_en_todas_las_interfaces() {
+        // El perfil de una sola máquina y el de un servidor sin proxy: si esto
+        // ligara a loopback por defecto, nadie llegaría al sistema.
+        assert_eq!(direccion_de_escucha(None, false).unwrap(), ip("0.0.0.0"));
+    }
+
+    #[test]
+    fn declarar_el_proxy_deja_de_exponer_el_puerto() {
+        // LA prueba de este cambio. Con el proxy declarado y el puerto abierto a
+        // todas las interfaces, quien alcance el puerto se salta el proxy y elige
+        // su propio `X-Real-IP`: el freno del login no engancharía nunca.
+        assert_eq!(direccion_de_escucha(None, true).unwrap(), ip("127.0.0.1"));
+    }
+
+    #[test]
+    fn el_operador_manda_sobre_el_defecto_en_las_dos_direcciones() {
+        // nginx en otra máquina es una topología legítima, y cerrarla sin salida
+        // sería rechazar lo inusual en vez de lo imposible.
+        assert_eq!(direccion_de_escucha(Some("0.0.0.0"), true).unwrap(), ip("0.0.0.0"));
+        assert_eq!(direccion_de_escucha(Some("10.0.0.7"), true).unwrap(), ip("10.0.0.7"));
+        // Y al revés: se puede cerrar sin declarar proxy.
+        assert_eq!(direccion_de_escucha(Some("127.0.0.1"), false).unwrap(), ip("127.0.0.1"));
+        // IPv6 también, que es una dirección como cualquier otra.
+        assert_eq!(direccion_de_escucha(Some("::1"), false).unwrap(), ip("::1"));
+    }
+
+    #[test]
+    fn una_direccion_ilegible_no_se_sustituye_por_un_defecto() {
+        // Directiva: ante un dato roto, fallar. Caer al defecto dejaría al
+        // operador creyendo que puso una cosa mientras el servidor hace otra —y
+        // en la dirección peligrosa, porque el defecto sin proxy es 0.0.0.0.
+        for malo in ["localhost", "127.0.0.1:8003", "no", " "] {
+            let r = direccion_de_escucha(Some(malo), false);
+            if malo.trim().is_empty() {
+                // Vacío es «no la puso»: cae al defecto, que es correcto.
+                assert!(r.is_ok(), "«{malo}» debería contar como ausente");
+            } else {
+                assert!(
+                    matches!(r, Err(ErrorConfig::NoEsDireccion(_))),
+                    "«{malo}» pasó por dirección válida"
+                );
+            }
         }
     }
 }
