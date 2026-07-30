@@ -68,24 +68,42 @@ fn instalacion(dir: &Path) {
         .env("SIGER_SECRETO_SESION", SECRETO)
         .env("DATABASE_URL", "sqlite://siger.db")
         .env("PORT", "0")
-        .stdout(std::process::Stdio::null())
+        // `tracing_subscriber::fmt()` escribe en STDOUT, que es donde sale el
+        // aviso que se espera abajo.
+        .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .expect("no arrancó");
 
-    // Se espera a que la migración haya dejado la base, y NO un tiempo fijo: un
-    // `sleep` generoso hace la suite lenta y uno corto la hace intermitente.
-    let bd = dir.join("siger.db");
-    let limite = std::time::Instant::now() + std::time::Duration::from_secs(30);
-    while std::time::Instant::now() < limite {
-        if bd.exists() && std::fs::metadata(&bd).map(|m| m.len() > 0).unwrap_or(false) {
-            break;
+    // Se espera al AVISO DE QUE ESTÁ ESCUCHANDO, y no a que el archivo de la base
+    // exista y pese algo.
+    //
+    // Esa era la condición anterior, y medía otra cosa: SQLite escribe la
+    // cabecera del archivo al abrir el pool, ANTES de que corran las migraciones.
+    // Entre las dos cosas hay una ventana en la que el archivo existe, no está
+    // vacío, y todavía no hay tabla `usuarios` — así que el `kill` podía caer en
+    // medio de la migración y dejar una base a medias. En esta máquina casi nunca
+    // pasaba; en la del CI, sí. Un `sleep` generoso lo taparía haciendo la suite
+    // lenta, y uno corto la haría intermitente: lo que hay que esperar es la
+    // señal que el binario emite cuando de verdad terminó de arrancar, que va
+    // después de migrar y de ligar el puerto.
+    let salida = hijo.stdout.take().expect("se pidió stdout por tubería");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::BufRead;
+        for linea in std::io::BufReader::new(salida).lines().map_while(Result::ok) {
+            if linea.contains("escuchando") {
+                let _ = tx.send(());
+                return;
+            }
         }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-    }
+    });
+    let arrancado = rx.recv_timeout(std::time::Duration::from_secs(30)).is_ok();
+
     hijo.kill().ok();
     hijo.wait().ok();
-    assert!(bd.exists(), "el binario no creó la base en 30 s");
+    assert!(arrancado, "el binario no terminó de arrancar en 30 s");
+    assert!(dir.join("siger.db").exists(), "arrancó sin dejar la base");
 }
 
 #[test]
