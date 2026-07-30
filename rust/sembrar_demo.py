@@ -132,11 +132,14 @@ INFORMES = [
     ),
     (
         5,
-        "Monitoreo de disponibilidad",
-        "Estado del servicio durante la jornada, de 8 a 18 cada cuatro horas.",
-        regla(modo="HORARIO", fecha_inicio=dias_atras(6), hora_inicio=8,
-              hora_fin=18, intervalo_horas=4),
-        "HORARIO",
+        "Monitoreo diario de disponibilidad",
+        "Estado del servicio, todos los días desde el inicio del contrato.",
+        # Era el ejemplo del modo HORARIO, que se retiró: la tabla de entregas
+        # guarda una FECHA y su clave única es (informe, fecha_nominal), así que
+        # «cada cuatro horas» producía UNA entrega al día en silencio. Lo diario
+        # es lo que aquel modo hacía de verdad, y así se llama.
+        regla(modo="CICLICO", fecha_inicio=dias_atras(6), intervalo=1),
+        "CICLICO (diario)",
         True,
     ),
     (
@@ -451,8 +454,10 @@ def sembrar(destino: Path, forzar: bool) -> None:
     entrega_a_solicitud(bd)
     conteo = pintar_estados(bd, almacen)
 
+    modos = {m.split(" ")[0] for _i, _n, _d, _r, m, _e in INFORMES}
     print(f"\nSembrado en {bd}")
-    print(f"  {len(INFORMES)} informes · un patrón por modo de recurrencia\n")
+    print(f"  {len(INFORMES)} informes · los {len(modos)} modos que el motor lee, "
+          f"con dos variantes de los dos más ricos\n")
     for iid, nombre, _d, _r, modo, espera in INFORMES:
         n = cuenta.get(iid, 0) if espera else 1
         nota = "" if espera else "  (creada a mano: su modo no fija días)"

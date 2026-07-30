@@ -31,8 +31,10 @@ const NOMBRE_MODO: Record<string, string> = {
   CICLICO: 'Cíclica',
   ESPECIFICO: 'Periódica',
   SEMANAL: 'Semanal',
-  HOURLY: 'Por horas',
-  HORARIO: 'Por horas',
+  // HOURLY / HORARIO se quitaron con el modo: la tabla de entregas guarda una
+  // fecha, no una hora, así que «cada cuatro horas» solo producía una entrega al
+  // día. El servidor ya no lee esas reglas, y una etiqueta bonita aquí solo
+  // serviría para que pareciera que sí.
   FECHAS: 'Fechas fijas',
   INMEDIATO: 'A solicitud',
 };

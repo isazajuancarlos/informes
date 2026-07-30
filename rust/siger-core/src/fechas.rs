@@ -79,24 +79,16 @@ pub struct Vencimiento {
     pub nominal: FechaNominal,
     pub limite: FechaLimite,
     pub ajuste: TipoAjuste,
-    /// Solo en periodicidad por horas. En el resto el vencimiento agota el día.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hora: Option<u32>,
 }
 
 impl Vencimiento {
     pub fn nuevo(nominal: NaiveDate, limite: NaiveDate, ajuste: TipoAjuste) -> Self {
-        Self { nominal: FechaNominal(nominal), limite: FechaLimite(limite), ajuste, hora: None }
+        Self { nominal: FechaNominal(nominal), limite: FechaLimite(limite), ajuste }
     }
 
     /// Nominal y límite coinciden: no hubo nada que ajustar.
     pub fn sin_ajuste(nominal: NaiveDate) -> Self {
         Self::nuevo(nominal, nominal, TipoAjuste::Ninguno)
-    }
-
-    pub fn con_hora(mut self, hora: u32) -> Self {
-        self.hora = Some(hora);
-        self
     }
 
     pub fn se_movio(&self) -> bool {

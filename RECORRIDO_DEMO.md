@@ -123,8 +123,6 @@ No es una interfaz distinta: es el mismo sistema con el alcance de quien mira.
   prospecto necesita varias con datos separados, es una conversación distinta y
   hay que tenerla ANTES de instalar: cambiarlo después es una migración.
 - **La licencia offline no está portada** al binario nuevo. No se menciona.
-- **El modo horario** existe en el motor pero hoy produce una entrega al día. No
-  se enseña.
 - No se cita ninguna resolución ni se da opinión jurídica sobre el valor
   probatorio de la firma. Xiliux vende el sistema; el criterio jurídico es otra
   cosa y va por separado.
