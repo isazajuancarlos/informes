@@ -10,14 +10,17 @@ After=network.target
 
 [Service]
 Type=oneshot
-User=siger
-Group=siger
-WorkingDirectory=/opt/siger-demo
-; El orden importa: se para el servidor, se siembra, se arranca. Sembrar con el
-; servidor vivo compite por la base y el planificador podría volver a generar
-; sobre lo que se está borrando.
+
+; SIN `User=siger`, a propósito, y no por descuido: parar y arrancar otro
+; servicio es cosa de root, y con `User=siger` los dos `systemctl` de aquí abajo
+; fallaban con «Access denied» — la resiembra habría quedado en verde el primer
+; día y muerta desde el segundo, que es la clase de fallo que no se mira.
+;
+; La siembra en sí NO corre como root: `runuser` la baja a `siger`, que es quien
+; tiene que ser dueño de la base y del almacén para que el servicio pueda
+; escribirlos después.
 ExecStart=/usr/bin/systemctl stop siger-demo.service
 ; `--limpiar` borra la base y el almacén, NO la carpeta: aquí dentro viven
 ; también el binario y este guion.
-ExecStart=/usr/bin/python3 /opt/siger-demo/sembrar_demo.py --ruta /opt/siger-demo --binario /opt/siger-demo/siger-api --limpiar
+ExecStart=/usr/bin/runuser -u siger -- /usr/bin/python3 /opt/siger-demo/sembrar_demo.py --ruta /opt/siger-demo --binario /opt/siger-demo/siger-api --limpiar
 ExecStart=/usr/bin/systemctl start siger-demo.service
