@@ -208,6 +208,56 @@ pub async fn actualizar(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// Lo que la pantalla del cronograma manda: los días marcados y el ajuste.
+#[derive(Deserialize)]
+pub struct Seleccion {
+    /// Días marcados en el calendario, en `YYYY-MM-DD`.
+    fechas: Vec<String>,
+    /// Cómo tratar los días no hábiles. La inferencia no lo adivina.
+    #[serde(default)]
+    ajuste: siger_core::inferencia::AjusteSel,
+}
+
+/// Qué puede ser lo que el usuario marcó en el calendario.
+///
+/// Devuelve la lista de lecturas posibles —«todas las semanas, lunes y jueves»,
+/// «el 5º día hábil de cada mes»— cada una con las próximas fechas que
+/// produciría y con la regla que se guardaría si se elige. Solo aparecen lecturas
+/// que CONTIENEN lo marcado: si una interpretación no generase alguna de las
+/// fechas señaladas, no es una lectura de lo que se señaló.
+///
+/// Es una previsualización, así que no escribe nada; pero se restringe a quien
+/// puede crear informes, porque es parte de ese flujo y no hay razón para
+/// ofrecerla a quien no va a poder guardar.
+pub async fn lecturas(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(sel): Json<Seleccion>,
+) -> Result<Json<serde_json::Value>, Error> {
+    puede_escribir(&actor)?;
+
+    if sel.fechas.is_empty() {
+        return Err(Error(StatusCode::BAD_REQUEST, "no se marcó ninguna fecha".into()));
+    }
+    // Un tope para que la petición no se convierta en un barrido: marcar un año
+    // entero a mano no es la operación que esta pantalla sirve.
+    if sel.fechas.len() > 366 {
+        return Err(Error(StatusCode::BAD_REQUEST, "demasiadas fechas marcadas".into()));
+    }
+
+    // Una fecha ilegible es un error del cliente, no un día que se descarta en
+    // silencio: descartarlo cambiaría la lectura sin decírselo a nadie.
+    let mut dias = Vec::with_capacity(sel.fechas.len());
+    for f in &sel.fechas {
+        let d = chrono::NaiveDate::parse_from_str(f, "%Y-%m-%d")
+            .map_err(|_| Error(StatusCode::BAD_REQUEST, format!("fecha ilegible: {f}")))?;
+        dias.push(d);
+    }
+
+    let lecturas = siger_core::inferencia::interpretaciones_con(&dias, &e.motor, sel.ajuste);
+    Ok(Json(serde_json::json!({ "lecturas": lecturas })))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

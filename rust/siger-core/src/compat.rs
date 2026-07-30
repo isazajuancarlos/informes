@@ -26,68 +26,77 @@ pub enum ErrorRegla {
 /// Espejo exacto del diccionario que guarda el sistema actual. Todos los campos
 /// son opcionales porque en la base lo son: eso es precisamente el problema que
 /// la conversión resuelve.
+/// La regla tal como viaja y se guarda.
+///
+/// Todo campo vacío se OMITE al serializar (`skip_serializing_if`). No es
+/// cosmética: `informes::crear` guarda la regla verbatim «para que los informes
+/// nuevos queden en el mismo JSON compacto que los migrados, sin campos nulos de
+/// relleno», y sin esto una regla construida en Rust —como las que devuelve la
+/// inferencia— llegaba a la base con veinte `null` explícitos mientras las
+/// migradas tenían cuatro claves. Dos formas del mismo dato, y dentro de un año
+/// nadie sabría cuál es la canónica.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReglaJson {
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub modo: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fecha_inicio: Option<String>,
 
     // Cíclico
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intervalo: Option<i64>,
 
     // Específico
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub meses: Option<Vec<u32>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dia_corte: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dias_corte: Option<Vec<i64>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub es_ultimo_dia: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dia_habil: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dia_semana_mes: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semana_del_mes: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cada_n_anios: Option<i64>,
 
     // Semanal
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dias_semana: Option<Vec<u32>>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dia_habil_semana: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cada_n_semanas: Option<i64>,
 
     // Horario
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hora_inicio: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hora_fin: Option<i64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intervalo_horas: Option<i64>,
 
     // Fechas explícitas
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fechas: Option<Vec<String>>,
 
     // Ajuste. Dos parejas de banderas para lo mismo, porque el específico usaba
     // una y el cíclico la otra. Esa divergencia ya costó que el ajuste
     // anticipado no se aplicara nunca en modo semanal; aquí se leen las dos y se
     // colapsan en un único valor.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ajuste_habil: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mover_habil: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ajuste_habil_anterior: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mover_habil_anterior: Option<bool>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub omitir_festivos: Option<bool>,
 }
 

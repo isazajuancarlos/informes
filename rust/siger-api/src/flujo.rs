@@ -291,7 +291,15 @@ mod tests {
     async fn base() -> Estado {
         let bd = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::migrate!("./migrations").run(&bd).await.unwrap();
-        Estado { bd, cfg: crate::config::Config::de_prueba() }
+        Estado { bd, cfg: crate::config::Config::de_prueba(), motor: motor_de_prueba() }
+    }
+
+    /// Motor con un rango de años corto: en pruebas no hace falta un siglo de
+    /// calendario, y construirlo en cada caso se notaría en la suite.
+    fn motor_de_prueba() -> std::sync::Arc<siger_core::Motor> {
+        std::sync::Arc::new(siger_core::Motor::nuevo(
+            siger_core::Calendario::de_pais("CO", 2024, 2030).unwrap(),
+        ))
     }
 
     async fn sembrar(e: &Estado) {

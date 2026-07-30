@@ -176,6 +176,11 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
     // falle ahora —con el operador delante— y no dentro de seis meses, al
     // calcular la primera fecha, cuando el fallo parecerá otra cosa.
     let calendario = siger_core::Calendario::de_pais(&cfg.pais_iso, 2000, 2100)?;
+    // Dos motores desde EL MISMO calendario: uno para el planificador y otro para
+    // la pantalla del cronograma. Si se construyeran de dos fuentes, lo que la
+    // pantalla muestra podría diferir de lo que después se genera, y eso no se
+    // notaría hasta que un plazo venciera solo.
+    let motor_web = std::sync::Arc::new(siger_core::Motor::nuevo(calendario.clone()));
     let motor = siger_core::Motor::nuevo(calendario);
     tracing::info!(
         "calendario de {} listo; hoy {} es hábil: {}",
@@ -194,7 +199,7 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
     planificador::arrancar_reloj(bd.clone(), motor, cfg.correo.clone());
 
     let puerto = cfg.puerto;
-    let estado = rutas::Estado { bd, cfg };
+    let estado = rutas::Estado { bd, cfg, motor: motor_web };
 
     let app = Router::new()
         .merge(rutas::router(estado))

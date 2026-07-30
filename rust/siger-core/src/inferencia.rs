@@ -21,6 +21,7 @@
 use std::collections::BTreeSet;
 
 use chrono::{Datelike, Duration, NaiveDate};
+use serde::{Deserialize, Serialize};
 
 use crate::calendario::{dias_del_mes, Calendario};
 use crate::compat::ReglaJson;
@@ -430,8 +431,26 @@ fn como_se_lee(meses: &[u32], dias: &[u32]) -> String {
     format!("en {}, {}", lista, que_dia)
 }
 
+/// Cómo trata la regla los días no hábiles. La inferencia NO lo adivina —de una
+/// selección de fechas no se deduce si la entidad quiere gracia o anticipación—,
+/// así que lo elige quien crea la obligación y se aplica a cada lectura antes de
+/// calcular las fechas: mostrar unas y guardar otras sería el peor defecto
+/// posible en esta pantalla.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+pub struct AjusteSel {
+    /// Se admite entregar hasta el hábil siguiente.
+    #[serde(default)]
+    pub gracia: bool,
+    /// Se entrega el hábil anterior.
+    #[serde(default)]
+    pub anticipado: bool,
+    /// Si el nominal es festivo, no hay vencimiento.
+    #[serde(default)]
+    pub omitir_festivos: bool,
+}
+
 /// Una interpretación posible de lo que se marcó.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Lectura {
     /// Clave del catálogo, o `None` cuando ninguna la nombra sin mentir.
     pub periodicidad: Option<String>,
@@ -468,6 +487,20 @@ fn proximas(motor: &Motor, rj: &ReglaJson, desde: NaiveDate, cuantas: usize) -> 
 /// selección: si una interpretación no generase alguna fecha marcada, no es una
 /// lectura de lo que se marcó. Comprobado ejecutando, no razonado.
 pub fn interpretaciones(seleccion: &[NaiveDate], motor: &Motor) -> Vec<Lectura> {
+    interpretaciones_con(seleccion, motor, AjusteSel::default())
+}
+
+/// Igual, pero aplicando el ajuste que eligió el usuario.
+///
+/// Va aparte y no como parámetro de la anterior a propósito: `interpretaciones`
+/// tiene un corpus dorado que pasa, y no se mueve el camino de una prueba en
+/// verde cuando se puede construir al lado. Con el ajuste por defecto —sin
+/// gracia, sin anticipación, sin omitir— las dos hacen exactamente lo mismo.
+pub fn interpretaciones_con(
+    seleccion: &[NaiveDate],
+    motor: &Motor,
+    aj: AjusteSel,
+) -> Vec<Lectura> {
     let mut fechas = seleccion.to_vec();
     fechas.sort();
     fechas.dedup();
@@ -586,8 +619,13 @@ pub fn interpretaciones(seleccion: &[NaiveDate], motor: &Motor) -> Vec<Lectura> 
 
     let mut lecturas = Vec::new();
     let mut vistas: BTreeSet<String> = BTreeSet::new();
-    for (clave, dice, regla) in candidatas {
-        // La lectura tiene que CONTENER lo marcado.
+    for (clave, dice, mut regla) in candidatas {
+        regla.mover_habil = Some(aj.gracia);
+        regla.mover_habil_anterior = Some(aj.anticipado);
+        regla.omitir_festivos = Some(aj.omitir_festivos);
+        // La lectura tiene que CONTENER lo marcado, YA con el ajuste puesto: si se
+        // marcó un festivo y se pidió omitirlos, esa lectura no produce esa fecha
+        // y ofrecerla sería ofrecer algo que no hace lo que se pidió.
         let noms = nominales(motor, &regla, inicio, fin);
         if !fechas.iter().all(|f| noms.contains(f)) {
             continue;

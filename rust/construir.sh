@@ -25,6 +25,13 @@ echo "==> 2/3  empotrar la interfaz en el binario"
 # viajaría con código muerto que además podría servirse.
 rm -rf rust/siger-api/estaticos
 mkdir -p rust/siger-api/estaticos
+# El `.gitkeep` está versionado para que la carpeta exista en un clon limpio; el
+# `rm -rf` de arriba lo borraba, así que cada compilación dejaba el árbol sucio con
+# un archivo eliminado. Se repone aquí, junto al vaciado que lo quita, y no en un
+# «acuérdate de restaurarlo» en otro sitio.
+git -C "$RAIZ" checkout -- rust/siger-api/estaticos/.gitkeep 2>/dev/null \
+  || printf 'Aquí se empotra la interfaz compilada. Ver construir.sh\n' \
+       > rust/siger-api/estaticos/.gitkeep
 cp -r angular/dist/siger-web/browser/. rust/siger-api/estaticos/
 
 echo "==> 3/3  binario (Rust)"

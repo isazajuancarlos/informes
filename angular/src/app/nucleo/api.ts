@@ -82,6 +82,30 @@ export interface ReglaJson {
   omitir_festivos?: boolean;
 }
 
+/** Una lectura posible de los días marcados en el calendario.
+ *
+ *  La produce el motor, no la pantalla: `dice` es la frase en los términos de
+ *  quien crea la obligación y `proximas` son las fechas que esa regla generaría
+ *  de verdad. Elegir una lectura es elegir su `regla`, así que lo que se guarda
+ *  es exactamente lo que se mostró. */
+export interface Lectura {
+  periodicidad: string | null;
+  nombre: string;
+  dice: string;
+  regla: ReglaJson;
+  proximas: string[];
+}
+
+/** Cómo tratar los días no hábiles. El motor NO lo deduce de las fechas
+ *  marcadas —de unas fechas no se sigue si la entidad da plazo o exige
+ *  anticipar—, así que lo elige el usuario y viaja con la selección para que las
+ *  fechas mostradas sean las que se van a guardar. */
+export interface AjusteSel {
+  gracia: boolean;
+  anticipado: boolean;
+  omitir_festivos: boolean;
+}
+
 /** Un informe en la lista de gestión. `modo` sale ya extraído de la regla. */
 export interface InformeFila {
   id: number;
@@ -229,6 +253,17 @@ export class Api {
 
   informeDetalle(id: number) {
     return this.get<InformeDetalle>(`/api/informes/${id}`);
+  }
+
+  /** Qué puede ser lo que se marcó en el calendario. */
+  lecturas(fechas: string[], ajuste: AjusteSel) {
+    return this.http
+      .post<{ lecturas: Lectura[] }>(
+        '/api/cronograma/lecturas',
+        { fechas, ajuste },
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
   }
 
   crearInforme(cuerpo: InformeEntrada) {

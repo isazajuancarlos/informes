@@ -30,6 +30,12 @@ use crate::sesion;
 pub struct Estado {
     pub bd: SqlitePool,
     pub cfg: Config,
+    /// El mismo motor que genera las tareas. Va en el estado para que la pantalla
+    /// del cronograma calcule las fechas CON ÉL y no con una reimplementación: una
+    /// previsualización que no sale del mismo cálculo es una promesa que después no
+    /// se cumple. `Arc` porque `Motor` no es `Clone` y axum exige que el estado lo
+    /// sea.
+    pub motor: std::sync::Arc<siger_core::Motor>,
 }
 
 pub fn router(estado: Estado) -> Router {
@@ -52,6 +58,10 @@ pub fn router(estado: Estado) -> Router {
         )
         .route("/api/periodicidad/previsualizar", post(previsualizar))
         .route("/api/planificador/generar", post(generar_ahora))
+        .route(
+            "/api/cronograma/lecturas",
+            post(crate::informes::lecturas),
+        )
         .route(
             "/api/informes",
             get(crate::informes::listar).post(crate::informes::crear),
@@ -1030,7 +1040,15 @@ mod tests {
         .await
         .unwrap();
 
-        (Estado { bd, cfg }, dir)
+        (Estado { bd, cfg, motor: motor_de_prueba() }, dir)
+    }
+
+    /// Motor con un rango de años corto: en pruebas no hace falta un siglo de
+    /// calendario, y construirlo en cada caso se notaría en la suite.
+    fn motor_de_prueba() -> std::sync::Arc<siger_core::Motor> {
+        std::sync::Arc::new(siger_core::Motor::nuevo(
+            siger_core::Calendario::de_pais("CO", 2024, 2030).unwrap(),
+        ))
     }
 
     const FRASE_REPOSO: &str = "frase-de-reposo-del-despliegue-larga-y-propia";
