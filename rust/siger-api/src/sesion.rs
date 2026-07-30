@@ -14,10 +14,24 @@
 //! el SPA desde el mismo binario, y por eso esa decisión de despliegue es
 //! también una decisión de seguridad.
 //!
-//! La cookie lleva `id|caducidad|firma`. La firma es HMAC-SHA256 con el secreto
-//! del servidor, comparada en tiempo constante. No guarda ni el rol ni el nombre:
-//! esos se leen de la base en cada petición, porque un rol dentro de la cookie
-//! sobrevive a que un administrador lo revoque.
+//! La cookie lleva `id|version|caducidad|firma`. La firma es HMAC-SHA256 con el
+//! secreto del servidor, comparada en tiempo constante. No guarda ni el rol ni el
+//! nombre: esos se leen de la base en cada petición, porque un rol dentro de la
+//! cookie sobrevive a que un administrador lo revoque.
+//!
+//! # Por qué `version` (revocación selectiva, #194)
+//!
+//! Un token firmado sin estado tiene una pega conocida: emitido, vale hasta que
+//! caduca, y el servidor no puede retirarlo. Desactivar al usuario ya lo echa
+//! —`activo` se relee en cada petición—, pero eso es revocar a la PERSONA, y el
+//! caso que importa es otro: «acabo de cambiar la contraseña, echa a quien
+//! entrara con la vieja» y «cerrar sesión en todos los dispositivos».
+//!
+//! `version` es un entero por usuario que viaja firmado dentro del token y se
+//! compara con el de la base en la MISMA relectura que ya se hacía para el rol.
+//! Subirlo invalida de golpe todas las sesiones abiertas de esa persona. No hay
+//! lista de tokens revocados ni recolección de basura: el estado es un entero en
+//! la fila del usuario.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,6 +47,9 @@ type HmacSha256 = Hmac<Sha256>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sesion {
     pub usuario_id: i64,
+    /// La versión de token con la que se emitió. Vale mientras coincida con la
+    /// del usuario en la base; ver el módulo.
+    pub version: i64,
     pub caduca_en: i64,
 }
 
@@ -50,9 +67,9 @@ fn firmar(secreto: &[u8], carga: &str) -> String {
 }
 
 /// Construye el valor de la cookie para un usuario.
-pub fn emitir(secreto: &[u8], usuario_id: i64, minutos: i64) -> String {
+pub fn emitir(secreto: &[u8], usuario_id: i64, version: i64, minutos: i64) -> String {
     let caduca = ahora() + minutos * 60;
-    let carga = format!("{usuario_id}|{caduca}");
+    let carga = format!("{usuario_id}|{version}|{caduca}");
     let firma = firmar(secreto, &carga);
     format!("{carga}|{firma}")
 }
@@ -71,9 +88,18 @@ pub fn verificar(secreto: &[u8], valor: &str) -> Option<Sesion> {
         return None;
     }
 
-    let (id, caduca) = carga.split_once('|')?;
+    // Exactamente tres campos. Un `split_once` dejaría pasar una carga con
+    // campos de más —lo sobrante acabaría dentro del último `parse`, o peor,
+    // ignorado— y un token viejo de dos campos entraría con la versión leída de
+    // la caducidad. La firma cuadra con lo que se firmó; el FORMATO también
+    // tiene que cuadrar.
+    let campos: Vec<&str> = carga.split('|').collect();
+    let [id, version, caduca] = campos[..] else {
+        return None;
+    };
     let sesion = Sesion {
         usuario_id: id.parse().ok()?,
+        version: version.parse().ok()?,
         caduca_en: caduca.parse().ok()?,
     };
     if sesion.caduca_en <= ahora() {
@@ -125,28 +151,60 @@ mod tests {
 
     #[test]
     fn una_sesion_emitida_se_verifica() {
-        let v = emitir(SECRETO, 42, 60);
-        assert_eq!(verificar(SECRETO, &v).unwrap().usuario_id, 42);
+        let v = emitir(SECRETO, 42, 7, 60);
+        let s = verificar(SECRETO, &v).unwrap();
+        assert_eq!(s.usuario_id, 42);
+        assert_eq!(s.version, 7);
     }
 
     #[test]
     fn cambiar_el_usuario_invalida_la_firma() {
         // La prueba que discrimina: sin ella, un verificador que siempre
         // devuelve `Some` pasaría la anterior.
-        let v = emitir(SECRETO, 42, 60);
+        let v = emitir(SECRETO, 42, 1, 60);
         let manipulada = v.replacen("42|", "1|", 1);
         assert!(verificar(SECRETO, &manipulada).is_none());
     }
 
     #[test]
+    fn bajar_la_version_a_mano_invalida_la_firma() {
+        // La versión va DENTRO de lo firmado. Si alguien pudiera bajarla en el
+        // navegador, la revocación no revocaría nada — sería un campo decorativo.
+        let v = emitir(SECRETO, 42, 9, 60);
+        let manipulada = v.replacen("42|9|", "42|1|", 1);
+        assert!(verificar(SECRETO, &manipulada).is_none());
+    }
+
+    #[test]
     fn otro_secreto_no_vale() {
-        let v = emitir(SECRETO, 42, 60);
+        let v = emitir(SECRETO, 42, 1, 60);
         assert!(verificar(b"otro secreto igualmente largo de 32+", &v).is_none());
     }
 
     #[test]
     fn una_sesion_caducada_no_entra() {
-        let v = emitir(SECRETO, 42, -1);
+        let v = emitir(SECRETO, 42, 1, -1);
         assert!(verificar(SECRETO, &v).is_none());
+    }
+
+    #[test]
+    fn una_cookie_del_formato_viejo_no_entra() {
+        // El caso que obliga a exigir tres campos. Una cookie `id|caduca|firma`
+        // emitida ANTES de esta migración lleva una firma que cuadra —se firmó
+        // justo esa carga—, así que la comprobación criptográfica la deja pasar
+        // y solo el formato la detiene. Si entrara, lo haría sin versión: una
+        // sesión inmune a la revocación.
+        let caduca = ahora() + 3600;
+        let carga = format!("42|{caduca}");
+        let vieja = format!("{carga}|{}", firmar(SECRETO, &carga));
+        assert!(verificar(SECRETO, &vieja).is_none(), "una cookie de dos campos entró");
+    }
+
+    #[test]
+    fn una_carga_con_campos_de_mas_no_entra() {
+        let caduca = ahora() + 3600;
+        let carga = format!("42|1|{caduca}|sobra");
+        let rara = format!("{carga}|{}", firmar(SECRETO, &carga));
+        assert!(verificar(SECRETO, &rara).is_none());
     }
 }

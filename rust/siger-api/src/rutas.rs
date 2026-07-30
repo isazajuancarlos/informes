@@ -122,8 +122,9 @@ impl FromRequestParts<Estado> for Actor {
         // El rol se lee de la BASE en cada petición, no de la cookie: dentro de
         // la cookie sobreviviría a que un administrador lo revoque, y entonces
         // revocarlo no revocaría nada.
-        let fila = sqlx::query_as::<_, (i64, String, String, String, i64, Option<i64>)>(
-            "SELECT id, nombre, email, rol, activo, stakeholder_id FROM usuarios WHERE id = ?",
+        let fila = sqlx::query_as::<_, (i64, String, String, String, i64, Option<i64>, i64)>(
+            "SELECT id, nombre, email, rol, activo, stakeholder_id, token_version \
+             FROM usuarios WHERE id = ?",
         )
         .bind(s.usuario_id)
         .fetch_optional(&estado.bd)
@@ -131,6 +132,17 @@ impl FromRequestParts<Estado> for Actor {
         .ok_or_else(no_autorizado)?;
 
         if fila.4 == 0 {
+            return Err(no_autorizado());
+        }
+
+        // Revocación selectiva (#194): la versión del token contra la del
+        // usuario, en la MISMA lectura que ya se hacía. Distinta = la sesión se
+        // emitió antes de una revocación —cambio de contraseña, «cerrar sesión en
+        // todos los dispositivos»— y no vale, aunque la firma cuadre y no haya
+        // caducado. `<` no: solo `==`. Con `<` bastaría con haber guardado un
+        // token de una versión MAYOR (un contador que alguien bajó al restaurar un
+        // respaldo) para entrar.
+        if s.version != fila.6 {
             return Err(no_autorizado());
         }
         let rol = Rol::desde_bd(&fila.3).ok_or_else(no_autorizado)?;
@@ -147,39 +159,142 @@ pub struct Credenciales {
     clave: String,
 }
 
+/// El hash contra el que se comprueba la contraseña cuando **no hay usuario**.
+///
+/// Existe por una razón sola: que las tres respuestas —correo inexistente,
+/// cuenta desactivada y contraseña incorrecta— cuesten lo mismo. Antes el correo
+/// inexistente salía por la puerta sin llegar a Argon2, así que respondía en
+/// menos de un milisegundo mientras el existente tardaba decenas: el mensaje era
+/// idéntico y el CRONÓMETRO decía cuáles de una lista de correos son cuentas de
+/// verdad. El comentario de esta función afirmaba «mismo mensaje y mismo
+/// trabajo», y solo la primera mitad era cierta.
+///
+/// Se deriva en caliente, una vez, y no se incrusta como constante a propósito:
+/// una constante se calculó con los parámetros de Argon2 de su día, y el día que
+/// `Argon2::default()` cambie —o que se endurezcan a mano— el señuelo costaría
+/// distinto que los hashes reales y la diferencia de tiempo volvería, en
+/// silencio. Derivándolo del mismo `default()` que verifica, no puede desalinearse.
+fn hash_senuelo() -> &'static PasswordHash<'static> {
+    static SENUELO: std::sync::OnceLock<PasswordHash<'static>> = std::sync::OnceLock::new();
+    SENUELO.get_or_init(|| {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        // La sal es fija y pública, y no protege nada: nadie tiene esta
+        // «contraseña», y lo único que se le pide al señuelo es costar lo mismo.
+        let sal = SaltString::from_b64("c2VudWVsb2Rlc2lnZXIxMg")
+            .expect("la sal del señuelo es base64 válido");
+        let phc = Argon2::default()
+            .hash_password(b"ninguna cuenta tiene esta clave", &sal)
+            .expect("hashear con los parámetros por defecto no falla")
+            .to_string();
+        // `PasswordHash` presta de la cadena que lo contiene, así que la cadena
+        // se filtra a propósito: es UNA, para todo el proceso.
+        let prestada: &'static str = Box::leak(phc.into_boxed_str());
+        PasswordHash::new(prestada).expect("el PHC recién generado es válido")
+    })
+}
+
 async fn abrir_sesion(
     State(e): State<Estado>,
+    crate::origen::OrigenCliente(origen): crate::origen::OrigenCliente,
     Json(cred): Json<Credenciales>,
 ) -> Result<Response, Error> {
-    let fila = sqlx::query_as::<_, (i64, String, i64)>(
-        "SELECT id, clave_hash, activo FROM usuarios WHERE email = ?",
+    let email = cred.email.trim().to_lowercase();
+
+    // Una dirección de más de 320 octetos no existe: es el máximo de la RFC 5321
+    // (64 de parte local + `@` + 255 de dominio). No se rechaza lo raro, se
+    // rechaza lo IMPOSIBLE — y aquí importa porque el correo TECLEADO se guarda,
+    // tanto en el rastro del freno como en la auditoría. Sin este corte, el
+    // cuerpo de la petición (2 MB por defecto en axum) entra entero en la base
+    // en cada intento, sin autenticarse: a diez peticiones por segundo son giga
+    // y medio de disco al día. Se corta antes de escribir NADA.
+    const MAX_EMAIL: usize = 320;
+    if email.len() > MAX_EMAIL {
+        // El mismo 401 de siempre. Responder antes no delata nada: ninguna
+        // cuenta puede tener una dirección así, de modo que la diferencia de
+        // tiempo no dice qué correos existen.
+        return Err(Error(StatusCode::UNAUTHORIZED, "credenciales incorrectas".into()));
+    }
+
+    // Sin origen no hay freno posible, y un freno a medias es peor que ninguno
+    // porque se cuenta como puesto. Se falla, y el mensaje dice qué arreglar.
+    let Some(origen) = origen else {
+        tracing::error!(
+            "SIGER_TRAS_PROXY está activo pero no llegó la cabecera {}: el proxy no la escribe. \
+             Añada `proxy_set_header X-Real-IP $remote_addr` al sitio, o quite SIGER_TRAS_PROXY.",
+            crate::origen::CABECERA
+        );
+        return Err(Error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "no se pudo determinar el origen de la petición".into(),
+        ));
+    };
+
+    let ahora = chrono::Utc::now();
+    let freno = crate::acceso::estado(&e.bd, &email, &origen, ahora).await?;
+    if freno.frenado() {
+        // 429 y `Retry-After`, no 401: decir «credenciales incorrectas» cuando lo
+        // que pasa es que hay que esperar manda al usuario legítimo a cambiar una
+        // contraseña que estaba bien.
+        let segundos = freno.segundos_restantes();
+        auditar(&e.bd, "acceso_frenado", Some(&email), None).await;
+        let mut cabeceras = HeaderMap::new();
+        cabeceras.insert(
+            header::RETRY_AFTER,
+            segundos.to_string().parse().expect("un número es ASCII"),
+        );
+        return Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            cabeceras,
+            Json(serde_json::json!({
+                "error": format!("demasiados intentos. Vuelva a probar en {segundos} s."),
+                "segundos": segundos,
+            })),
+        )
+            .into_response());
+    }
+
+    let fila = sqlx::query_as::<_, (i64, String, i64, i64)>(
+        "SELECT id, clave_hash, activo, token_version FROM usuarios WHERE email = ?",
     )
-    .bind(cred.email.trim().to_lowercase())
+    .bind(&email)
     .fetch_optional(&e.bd)
     .await?;
 
     // Mismo mensaje y mismo trabajo para «no existe» y «clave incorrecta»: la
-    // diferencia le dice a quien prueba qué correos son de verdad.
+    // diferencia —cualquiera de las dos— le dice a quien prueba qué correos son
+    // de verdad. Ver `hash_senuelo` para la mitad que faltaba.
     let rechazo = Error(StatusCode::UNAUTHORIZED, "credenciales incorrectas".into());
-    let Some((id, hash, activo)) = fila else {
-        return Err(rechazo);
+    let (id, version, analizado) = match &fila {
+        Some((id, hash, activo, version)) if *activo != 0 => match PasswordHash::new(hash) {
+            Ok(h) => (Some(*id), *version, h),
+            Err(_) => {
+                // Un hash que ningún esquema reconoce no deja entrar, pero se
+                // registra: significa que alguien quedó fuera del sistema. Se
+                // sigue hasta el señuelo para no responder antes de tiempo.
+                tracing::error!("el hash del usuario {id} no lo reconoce ningún esquema");
+                (None, 0, hash_senuelo().clone())
+            }
+        },
+        // Correo que no existe, o cuenta desactivada: mismo trabajo.
+        _ => (None, 0, hash_senuelo().clone()),
     };
-    if activo == 0 {
-        return Err(rechazo);
-    }
-    let Ok(analizado) = PasswordHash::new(&hash) else {
-        // Un hash que ningún esquema reconoce no deja entrar, pero se registra:
-        // significa que alguien quedó fuera del sistema.
-        tracing::error!("el hash del usuario {id} no lo reconoce ningún esquema");
-        return Err(rechazo);
-    };
-    if Argon2::default().verify_password(cred.clave.as_bytes(), &analizado).is_err() {
-        auditar(&e.bd, "acceso_fallido", Some(&cred.email), None).await;
-        return Err(rechazo);
-    }
 
-    auditar(&e.bd, "acceso", Some(&cred.email), None).await;
-    let valor = sesion::emitir(&e.cfg.secreto_sesion, id, e.cfg.minutos_sesion);
+    let clave_correcta =
+        Argon2::default().verify_password(cred.clave.as_bytes(), &analizado).is_ok();
+    // El señuelo nunca casa —nadie tiene esa contraseña—, pero que la respuesta
+    // no dependa de si había usuario tiene que ser explícito y no una casualidad
+    // del optimizador.
+    let entra = clave_correcta && id.is_some();
+
+    crate::acceso::anotar(&e.bd, &email, &origen, entra, ahora).await?;
+    if !entra {
+        auditar(&e.bd, "acceso_fallido", Some(&email), None).await;
+        return Err(rechazo);
+    }
+    let id = id.expect("`entra` exige que haya usuario");
+
+    auditar(&e.bd, "acceso", Some(&email), None).await;
+    let valor = sesion::emitir(&e.cfg.secreto_sesion, id, version, e.cfg.minutos_sesion);
     let mut cabeceras = HeaderMap::new();
     cabeceras.insert(
         header::SET_COOKIE,
@@ -853,6 +968,337 @@ pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle
         .await
     {
         tracing::error!("no se pudo registrar el evento {evento}: {e}");
+    }
+}
+
+/// El freno del login y la revocación selectiva, probados en la RUTA (#194).
+///
+/// No basta con que `guaca::freno` diga la regla: el borde que importa es el que
+/// aplica este manejador, y las dos maneras de contar la misma cosa es como se
+/// llega a que una diga cinco y la otra seis.
+#[cfg(test)]
+mod pruebas_acceso {
+    use super::*;
+
+    const CLAVE: &str = "la-clave-de-la-prueba";
+
+    /// Una base con un usuario real: hash de Argon2 de verdad, porque lo que se
+    /// mide aquí incluye lo que cuesta comprobarlo.
+    async fn estado_con_usuario() -> Estado {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+
+        let bd = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&bd).await.unwrap();
+        let sal = SaltString::from_b64("c2FsZGVsYXBydWViYWRlYWNj").unwrap();
+        let hash = Argon2::default().hash_password(CLAVE.as_bytes(), &sal).unwrap().to_string();
+        sqlx::query(
+            "INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) \
+             VALUES (1,'Ada','ada@x.co',?,'ADMIN',1)",
+        )
+        .bind(&hash)
+        .execute(&bd)
+        .await
+        .unwrap();
+
+        Estado {
+            bd,
+            cfg: Config::de_prueba(),
+            motor: std::sync::Arc::new(siger_core::Motor::nuevo(
+                siger_core::Calendario::de_pais("CO", 2024, 2030).unwrap(),
+            )),
+        }
+    }
+
+    async fn intentar(e: &Estado, email: &str, clave: &str, origen: &str) -> Response {
+        let credenciales = Credenciales { email: email.into(), clave: clave.into() };
+        match abrir_sesion(
+            State(e.clone()),
+            crate::origen::OrigenCliente(Some(origen.into())),
+            Json(credenciales),
+        )
+        .await
+        {
+            Ok(r) => r,
+            Err(err) => err.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cinco_fallos_no_frenan_y_el_sexto_intento_si() {
+        let e = estado_con_usuario().await;
+        for i in 0..5 {
+            let r = intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "el intento {i} no dio 401");
+        }
+        // El sexto ya no es un 401: es un 429 con cuánto hay que esperar. Decir
+        // «credenciales incorrectas» aquí manda a cambiar una contraseña buena.
+        let r = intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+        assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS);
+        let espera: u64 = r
+            .headers()
+            .get(header::RETRY_AFTER)
+            .expect("un 429 sin Retry-After no dice cuándo volver")
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(espera >= 1, "Retry-After: 0 invita a reintentar ya mismo");
+    }
+
+    #[tokio::test]
+    async fn con_la_clave_buena_se_entra_y_el_freno_se_borra() {
+        let e = estado_con_usuario().await;
+        for _ in 0..4 {
+            intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+        }
+        let r = intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await;
+        assert_eq!(r.status(), StatusCode::OK, "la clave correcta no entró");
+
+        // Y tras entrar, la cuenta vuelve a cero: equivocarse cuatro veces un
+        // martes no puede penalizar el miércoles.
+        for i in 0..5 {
+            let r = intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "el intento {i} ya venía frenado");
+        }
+    }
+
+    #[tokio::test]
+    async fn el_freno_es_de_quien_falla_y_no_del_dueno_de_la_cuenta() {
+        // La prueba que justifica meter el origen en la clave: por mucho que un
+        // desconocido aporree el correo de Ada, Ada entra desde su equipo. Sin
+        // esto, seis peticiones de fuera dejan a alguien sin sistema.
+        let e = estado_con_usuario().await;
+        for _ in 0..8 {
+            intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+        }
+        assert_eq!(
+            intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "el que insiste no quedó frenado"
+        );
+        assert_eq!(
+            intentar(&e, "ada@x.co", CLAVE, "10.0.0.5").await.status(),
+            StatusCode::OK,
+            "la dueña de la cuenta quedó fuera por culpa de otro"
+        );
+    }
+
+    #[tokio::test]
+    async fn un_correo_que_no_existe_se_frena_igual() {
+        // Si solo se frenaran las cuentas reales, recibir el 429 diría que el
+        // correo existe — justo lo que el login evita dando el mismo 401 para
+        // todo. El freno no puede deshacer lo que la respuesta oculta.
+        let e = estado_con_usuario().await;
+        for _ in 0..5 {
+            let r = intentar(&e, "no-existe@x.co", "loquesea", "203.0.113.9").await;
+            assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+        }
+        assert_eq!(
+            intentar(&e, "no-existe@x.co", "loquesea", "203.0.113.9").await.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "un correo inexistente no se frenó: el freno delata qué cuentas existen"
+        );
+    }
+
+    #[tokio::test]
+    async fn un_correo_inexistente_cuesta_lo_mismo_que_uno_existente() {
+        // El oráculo de tiempo. Antes, el correo que no existía salía sin llegar
+        // a Argon2: mismo mensaje, y el CRONÓMETRO diciendo cuáles de una lista
+        // son cuentas de verdad. La diferencia era de tres órdenes de magnitud,
+        // así que un solo par de medidas la separa de sobra; el margen es ancho a
+        // propósito para que la prueba no dependa de la carga de la máquina.
+        let e = estado_con_usuario().await;
+
+        let t0 = std::time::Instant::now();
+        intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+        let existente = t0.elapsed();
+
+        let t1 = std::time::Instant::now();
+        intentar(&e, "no-existe@x.co", "no-es", "198.51.100.4").await;
+        let inexistente = t1.elapsed();
+
+        assert!(
+            inexistente * 3 >= existente,
+            "el correo inexistente respondió en {inexistente:?} y el existente en \
+             {existente:?}: la diferencia dice qué cuentas existen"
+        );
+    }
+
+    #[tokio::test]
+    async fn una_cuenta_desactivada_tampoco_responde_antes() {
+        // La tercera rama del mismo oráculo, y la que se olvida: desactivar a
+        // alguien no puede convertirlo en un correo que responde distinto.
+        let e = estado_con_usuario().await;
+        sqlx::query("UPDATE usuarios SET activo = 0 WHERE id = 1").execute(&e.bd).await.unwrap();
+
+        let t0 = std::time::Instant::now();
+        let r = intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await;
+        let desactivada = t0.elapsed();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "una cuenta desactivada entró");
+
+        let t1 = std::time::Instant::now();
+        intentar(&e, "no-existe@x.co", CLAVE, "198.51.100.4").await;
+        let inexistente = t1.elapsed();
+
+        assert!(
+            desactivada * 3 >= inexistente && inexistente * 3 >= desactivada,
+            "desactivada {desactivada:?} vs inexistente {inexistente:?}"
+        );
+    }
+
+    /// Extrae el `Actor` de una petición que lleva esta cookie, como haría
+    /// cualquier extremo protegido.
+    async fn actor_con(e: &Estado, cookie: &str) -> Result<Actor, Error> {
+        let req = axum::http::Request::builder()
+            .header(header::COOKIE, format!("{}={cookie}", sesion::NOMBRE_COOKIE))
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        Actor::from_request_parts(&mut parts, e).await
+    }
+
+    #[tokio::test]
+    async fn subir_token_version_invalida_las_sesiones_ya_abiertas() {
+        // El caso de #194: «acabo de cambiar la contraseña, echa a quien entrara
+        // con la vieja». La cookie sigue firmada y sin caducar; lo que cambió es
+        // el número que lleva dentro.
+        let e = estado_con_usuario().await;
+        let r = intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let cookie = r
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .split_once('=')
+            .unwrap()
+            .1
+            .to_string();
+
+        assert!(actor_con(&e, &cookie).await.is_ok(), "la sesión recién abierta no valía");
+
+        sqlx::query("UPDATE usuarios SET token_version = token_version + 1 WHERE id = 1")
+            .execute(&e.bd)
+            .await
+            .unwrap();
+        assert!(
+            actor_con(&e, &cookie).await.is_err(),
+            "subir token_version no echó a la sesión abierta: la revocación no revoca"
+        );
+
+        // Y la sesión NUEVA sí entra: la revocación no puede dejar fuera también
+        // a quien vuelve a autenticarse, que sería un bloqueo con otro nombre.
+        let r = intentar(&e, "ada@x.co", CLAVE, "10.0.0.5").await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let nueva = r
+            .headers()
+            .get(header::SET_COOKIE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .split_once('=')
+            .unwrap()
+            .1
+            .to_string();
+        assert!(actor_con(&e, &nueva).await.is_ok(), "tras revocar no se puede volver a entrar");
+    }
+
+    #[tokio::test]
+    async fn un_correo_imposiblemente_largo_no_llega_a_escribirse() {
+        // Sin este corte, cada intento mete en la base el correo tecleado —hasta
+        // los 2 MB que admite el cuerpo por defecto— sin necesidad de
+        // autenticarse. No es un problema de criptografía: es llenar el disco del
+        // servidor desde fuera, y se cierra donde se puede, en la puerta.
+        let e = estado_con_usuario().await;
+        let largo = format!("{}@x.co", "a".repeat(400));
+        let r = intentar(&e, &largo, "loquesea", "203.0.113.9").await;
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+
+        let filas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM intento_acceso")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(filas, 0, "una dirección imposible se guardó igual");
+        let auditadas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auditoria")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(auditadas, 0, "una dirección imposible llegó a la auditoría");
+
+        // Y una dirección larga PERO posible sigue entrando al circuito normal:
+        // el corte rechaza lo imposible, no lo inusual.
+        let posible = format!("{}@x.co", "a".repeat(60));
+        assert_eq!(
+            intentar(&e, &posible, "loquesea", "203.0.113.9").await.status(),
+            StatusCode::UNAUTHORIZED
+        );
+        let filas: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM intento_acceso")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(filas, 1, "el corte se llevó por delante una dirección legítima");
+    }
+
+    #[tokio::test]
+    async fn sin_origen_el_login_falla_ruidosamente_y_no_pasa_de_largo() {
+        // El camino que NO existe: si el origen no se puede saber, no se sigue
+        // con un valor de relleno. Un freno que cuenta a todo el mundo en la
+        // misma casilla deja que un desconocido eche al dueño de la cuenta.
+        let e = estado_con_usuario().await;
+        let credenciales =
+            Credenciales { email: "ada@x.co".into(), clave: CLAVE.into() };
+        let r = abrir_sesion(
+            State(e.clone()),
+            crate::origen::OrigenCliente(None),
+            Json(credenciales),
+        )
+        .await;
+        let Err(err) = r else {
+            panic!("entró sin que se supiera de dónde venía");
+        };
+        assert_eq!(err.0, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Directiva #8: 120 intentos concurrentes contra la misma pareja. Ninguno se
+    /// pierde, no hay interbloqueo, y al final el freno está puesto.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn ciento_veinte_intentos_a_la_vez_dejan_el_freno_puesto() {
+        let e = estado_con_usuario().await;
+        let plazo = std::time::Duration::from_secs(120);
+
+        let mut tareas = Vec::new();
+        for _ in 0..120 {
+            let bd = e.bd.clone();
+            tareas.push(tokio::spawn(async move {
+                crate::acceso::anotar(&bd, "ada@x.co", "203.0.113.9", false, chrono::Utc::now())
+                    .await
+            }));
+        }
+        for t in tareas {
+            tokio::time::timeout(plazo, t)
+                .await
+                .expect("un intento no respondió a tiempo: ¿interbloqueo?")
+                .expect("la tarea no debía entrar en panic")
+                .expect("una anotación falló");
+        }
+
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM intento_acceso")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(n, 120, "se perdieron intentos bajo concurrencia");
+        assert_eq!(
+            intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "120 fallos seguidos no dejaron el freno puesto"
+        );
     }
 }
 

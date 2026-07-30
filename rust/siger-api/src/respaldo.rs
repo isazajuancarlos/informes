@@ -409,6 +409,14 @@ mod tests {
         // como parte de la base, pero su recuento no dice nada del estado del
         // cliente.
         "_sqlx_migrations",
+        // El rastro del freno de login. Viaja en la copia —es parte de la base—,
+        // pero comparar su recuento haría fallar el respaldo por funcionar: se
+        // escribe en CADA intento de acceso, así que basta con que alguien entre
+        // (o con que un robot lo intente) entre la lectura de los recuentos y el
+        // `VACUUM INTO` para que origen y copia difieran, y el respaldo nocturno
+        // se declarara malo sin que nada estuviera mal. Además se poda sola a las
+        // 24 horas: no hay estado del cliente que restaurar aquí.
+        "intento_acceso",
     ];
 
     /// Una base con esquema, dos usuarios, una entrega con archivo y su archivo.

@@ -48,6 +48,43 @@ Subcomandos del binario:
 | `respaldar <carpeta>` | Copia la base **en caliente** y los archivos de las entregas, y **verifica la copia** antes de darla por buena. |
 | `restaurar <carpeta>` | Devuelve un respaldo a su sitio. Pare el servicio antes; `--forzar` para pisar una base con datos. |
 
+### Si va detrás de un proxy inverso: `SIGER_TRAS_PROXY=1`
+
+El acceso lleva un **freno al ensayo de contraseñas** que cuenta por pareja
+(correo, origen). El origen es, por defecto, la dirección desde la que llegó la
+conexión — que el cliente no elige.
+
+Detrás de un proxy, esa dirección es siempre la del proxy y todos los clientes se
+confundirían en uno. Con `SIGER_TRAS_PROXY=1` se toma la cabecera `X-Real-IP`.
+
+**Solo se enciende si el proxy la REESCRIBE.** El sitio de nginx de este
+repositorio (`despliegue/informes.xiliux.com.nginx`) pone
+`proxy_set_header X-Real-IP $remote_addr`, que pisa lo que traiga el cliente. Con
+un proxy que se limite a pasarla, encenderlo permite escribir un origen distinto
+en cada petición, no llegar nunca al umbral y dejar el freno en adorno.
+
+Si se enciende y la cabecera no llega, **el acceso falla con un 500 y lo dice en
+el registro**: no se rellena con la dirección del proxy, porque eso degradaría el
+freno a contar solo por cuenta y dejaría que un desconocido frenase al dueño de
+la cuenta.
+
+El freno **no bloquea**: tras cinco fallos seguidos el siguiente intento espera,
+la espera se dobla y se detiene en cinco minutos. Nadie tiene que desbloquear a
+nadie. Un acierto lo borra todo.
+
+### Cerrar todas las sesiones de un usuario
+
+Cada usuario lleva un `token_version` que viaja firmado dentro de la cookie y se
+comprueba en cada petición. Subirlo invalida de golpe todas sus sesiones abiertas
+(cambio de contraseña, teléfono perdido, «cerrar sesión en todos los
+dispositivos»):
+
+```sql
+UPDATE usuarios SET token_version = token_version + 1 WHERE email = 'quien@sea';
+```
+
+Quien vuelva a autenticarse entra con normalidad: revoca lo emitido, no la cuenta.
+
 ### Respaldos
 
 ```bash
