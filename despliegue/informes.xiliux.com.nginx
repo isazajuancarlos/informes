@@ -48,6 +48,13 @@ server {
     # después de haber transferido el archivo entero.
     client_max_body_size 52m;
 
+    # HSTS PROPIO, y no heredado: medido el 2026-07-30 contra el sitio en vivo,
+    # `xiliux.com` responde `Strict-Transport-Security: max-age=31536000` SIN
+    # `includeSubDomains`, así que no cubre a este subdominio. Sin esta línea, la
+    # primera visita de cada navegador viaja en claro hasta el 301 — y el 301 lo
+    # sirve el mismo puerto 80 que un atacante en la red puede interceptar.
+    # Certbot NO añade la cabecera; solo el certificado.
+    add_header Strict-Transport-Security "max-age=31536000" always;
     add_header X-Frame-Options SAMEORIGIN always;
     add_header X-Content-Type-Options nosniff always;
     add_header Referrer-Policy strict-origin-when-cross-origin always;
