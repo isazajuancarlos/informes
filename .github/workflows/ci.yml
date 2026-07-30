@@ -12,6 +12,11 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  # Menor privilegio (supply-chain #203): este CI solo prueba, con checkout de
+  # solo lectura. Sin este bloque el GITHUB_TOKEN hereda permisos amplios.
+  contents: read
+
 jobs:
   rust:
     name: rust (test + clippy)
