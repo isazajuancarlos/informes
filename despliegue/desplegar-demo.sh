@@ -64,6 +64,13 @@ id siger >/dev/null 2>&1 || sudo useradd --system --no-create-home --shell /usr/
 # la sesión de quien esté mirando la demostración en ese momento.
 if [ ! -f /etc/siger-demo/siger.env ]; then
     SECRETO="$($REMOTO/siger-api generar-secreto)"
+    # La firma de entregas y el cifrado en reposo se activan EN LA DEMOSTRACIÓN,
+    # no solo en una instalación de pago. Son dos de las tres cosas que
+    # diferencian esto de una hoja de cálculo, y con las claves ausentes la
+    # entrega recién subida sale con `tiene_firma: false` — es decir, enseñando
+    # en pantalla lo contrario de lo que uno acaba de decir.
+    CLAVES="$($REMOTO/siger-api generar-claves-firma)"
+    REPOSO="$($REMOTO/siger-api generar-secreto)"
     sudo tee /etc/siger-demo/siger.env >/dev/null <<ENV
 SIGER_SECRETO_SESION=$SECRETO
 DATABASE_URL=sqlite://siger.db
@@ -71,6 +78,8 @@ PORT=8003
 PAIS_ISO=CO
 SIGER_DIR_ENTREGAS=storage/entregas
 SIGER_MAX_MB=50
+$CLAVES
+SIGER_CLAVE_REPOSO=$REPOSO
 ENV
     sudo chmod 600 /etc/siger-demo/siger.env
     sudo chown siger:siger /etc/siger-demo/siger.env
