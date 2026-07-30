@@ -13,16 +13,20 @@ un secreto** (a propósito). La plantilla está en `.env.example`.
 ## Construir
 
 ```bash
-cd rust
-cargo build --release            # produce target/release/siger-api
+./rust/construir.sh              # produce rust/target/release/siger-api
 ```
 
-La interfaz Angular se construye e incrusta como parte del build (rust-embed).
-Para reconstruir la interfaz de cero:
+**Un solo comando, y es el único correcto.** `cargo build --release` a secas NO
+construye la interfaz: `rust-embed` empotra lo que haya en
+`rust/siger-api/estaticos/`, cuyo contenido está en `.gitignore`. En un clon
+limpio esa carpeta está vacía, y el binario saldría sirviendo la API con un 404
+en la raíz. `construir.sh` compila Angular primero y lo copia; el orden importa,
+porque al revés el binario viaja con la interfaz de la vez anterior.
 
-```bash
-cd angular && npm ci && npx ng build     # deja el bundle que el binario embebe
-```
+Ya no se puede equivocar uno en silencio: `rust/siger-api/build.rs` **rompe la
+compilación de release** si falta `estaticos/index.html`. Si de verdad se quiere
+un binario sin interfaz, hay que pedirlo:
+`SIGER_SIN_INTERFAZ=1 cargo build --release`.
 
 ## Configurar y arrancar
 
