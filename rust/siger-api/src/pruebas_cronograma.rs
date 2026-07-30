@@ -63,6 +63,14 @@ async fn entrar(app: &axum::Router, email: &str) -> String {
                 .method("POST")
                 .uri("/api/sesion")
                 .header("content-type", "application/json")
+                // Lo que el servidor de verdad pone con
+                // `into_make_service_with_connect_info`. Sin esto el login no
+                // sabe de dónde viene la petición y se niega a seguir — a
+                // propósito: el freno cuenta por (correo, origen) y sin origen no
+                // hay freno (ver `crate::origen`).
+                .extension(axum::extract::ConnectInfo(
+                    "127.0.0.1:5555".parse::<std::net::SocketAddr>().unwrap(),
+                ))
                 .body(Body::from(format!(
                     r#"{{"email":"{email}","clave":"clave"}}"#
                 )))

@@ -122,6 +122,22 @@ pub struct Config {
     /// defecto, para que una instalación nueva no intente mandar correos antes de
     /// que alguien decida por dónde. Se enciende con `ALERTAS_ACTIVAS=true`.
     pub correo: Option<ConfigCorreo>,
+
+    /// Si el binario está detrás de un proxy inverso de confianza
+    /// (`SIGER_TRAS_PROXY=1`), de quien se acepta la cabecera `X-Real-IP` como
+    /// origen del cliente.
+    ///
+    /// **El defecto es `false`, y no es timidez.** El freno al ensayo de
+    /// contraseñas cuenta por pareja (correo, origen); si el origen saliera de una
+    /// cabecera que el cliente puede escribir, bastaría con cambiarla en cada
+    /// petición para no llegar nunca al umbral — el freno existiría y no frenaría
+    /// nada. Sin proxy, el origen es la dirección del socket, que el cliente no
+    /// elige.
+    ///
+    /// Encenderlo sin un proxy que REESCRIBA la cabecera (el `informes.xiliux.com`
+    /// del repositorio pone `proxy_set_header X-Real-IP $remote_addr`, que pisa lo
+    /// que venga) devuelve justo ese agujero. Por eso se pide explícitamente.
+    pub tras_proxy: bool,
 }
 
 fn booleano(clave: &str, defecto: bool) -> bool {
@@ -210,6 +226,7 @@ impl Config {
             firma_vk_hex: None,
             clave_reposo: None,
             correo: None,
+            tras_proxy: false,
         }
     }
 
@@ -259,6 +276,7 @@ impl Config {
             clave_reposo,
             // Alertas dormidas por defecto; se encienden con ALERTAS_ACTIVAS.
             correo: correo_desde_entorno()?,
+            tras_proxy: booleano("SIGER_TRAS_PROXY", false),
         })
     }
 
@@ -278,6 +296,7 @@ impl Config {
             firma_vk_hex: None,
             clave_reposo: None,
             correo: None,
+            tras_proxy: false,
         }
     }
 }

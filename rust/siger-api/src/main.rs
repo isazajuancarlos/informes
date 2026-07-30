@@ -7,6 +7,7 @@
 //! Sin Python, sin `pip`, sin Node y sin base de datos que administrar. El
 //! cliente copia un archivo y lo ejecuta; la base se crea y se migra sola.
 
+mod acceso;
 mod alertas;
 mod autz;
 mod config;
@@ -17,6 +18,7 @@ mod firma;
 mod flujo;
 mod importar;
 mod informes;
+mod origen;
 mod participacion;
 mod planificador;
 #[cfg(test)]
@@ -293,7 +295,10 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
 
     let escucha = tokio::net::TcpListener::bind(("0.0.0.0", puerto)).await?;
     tracing::info!("SIGER escuchando en http://0.0.0.0:{puerto}");
-    axum::serve(escucha, app)
+    // `with_connect_info` y no `into_make_service` a secas: sin esto no hay
+    // dirección del socket, y el freno del login se queda sin la mitad de su
+    // clave (ver `origen`).
+    axum::serve(escucha, app.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!("cerrando");

@@ -78,6 +78,11 @@ PORT=8003
 PAIS_ISO=CO
 SIGER_DIR_ENTREGAS=storage/entregas
 SIGER_MAX_MB=50
+# La demo va detrás de nginx, que reescribe X-Real-IP con la dirección real
+# (\`proxy_set_header X-Real-IP \$remote_addr\`). Sin esto, el freno del login
+# vería a todo el mundo llegar desde 127.0.0.1 y contaría a los visitantes en la
+# misma casilla.
+SIGER_TRAS_PROXY=1
 $CLAVES
 SIGER_CLAVE_REPOSO=$REPOSO
 ENV

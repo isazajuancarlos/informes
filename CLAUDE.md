@@ -36,9 +36,10 @@ rust/
     tests/oraculo.rs, oraculo_inferencia.rs  # oráculos diferenciales (ver abajo)
   siger-api/    # binario axum + Angular embebido (rust-embed) + SQLite (SQLx)
     main.rs rutas.rs db.rs config.rs sesion.rs autz.rs
+    acceso.rs origen.rs  # freno del login: las dos consultas y de dónde viene quien pide
     participacion.rs informes.rs flujo.rs estadisticas.rs
-    alertas.rs planificador.rs firma.rs importar.rs estaticos.rs
-    migrations/  # 0001_inicial … 0004_flujo_supervisor (sqlx::migrate!)
+    alertas.rs planificador.rs firma.rs importar.rs estaticos.rs respaldo.rs
+    migrations/  # 0001_inicial … 0006_freno_y_revocacion (sqlx::migrate!)
 angular/        # la interfaz; se construye e incrusta en el binario
 ```
 
@@ -83,6 +84,27 @@ Roles `Admin | Operador | Supervisor | Tercero`. El **alcance** de lo que cada
 quien ve es un valor explícito: `Todas` (admin/supervisión), `DeUsuario(id)`,
 `DeStakeholder(id)`, `Ninguna` («no le corresponde nada» es un valor legítimo, no
 un hueco). Las consultas filtran por alcance; no hay «filtro opcional».
+
+## La puerta: freno y revocación (`acceso.rs`, `origen.rs`, `sesion.rs`)
+
+La cookie es `id|version|caducidad|firma` (HMAC-SHA256, `HttpOnly`,
+`SameSite=Strict`; `Secure` lo añade el proxy). `version` es el `token_version`
+del usuario: viaja firmado y se compara en la misma relectura que ya se hacía
+para el rol, así que **subir el entero cierra de golpe todas las sesiones de esa
+persona** sin guardar estado de sesión en el servidor.
+
+El freno al ensayo de contraseñas cuenta por pareja **(correo, origen)**: cinco
+fallos sin castigo, luego 15 s doblando con techo en 5 min, y un acierto lo borra.
+**No bloquea la cuenta** — un bloqueo deja fuera al usuario legítimo, que es peor
+que el ataque que evita. La REGLA vive en `guaca::freno`, compartida con medico;
+aquí solo están las dos consultas. El origen es la dirección del socket salvo que
+se declare `SIGER_TRAS_PROXY=1`, y si entonces no llega `X-Real-IP` **el acceso
+falla**: rellenarlo con la dirección del proxy degradaría el freno a contar solo
+por cuenta.
+
+Las tres respuestas de rechazo —correo inexistente, cuenta desactivada, clave
+mala— cuestan **lo mismo**: cuando no hay usuario se verifica contra un hash
+señuelo. Sin eso, el mensaje es idéntico y el cronómetro dice qué correos existen.
 
 ## Firma de entregas (`firma.rs`, Quipu, opcional)
 

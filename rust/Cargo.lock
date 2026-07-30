@@ -772,11 +772,12 @@ dependencies = [
 
 [[package]]
 name = "guaca"
-version = "0.3.0"
-source = "git+https://github.com/isazajuancarlos/guaca?rev=9d26cceccc95cbe146f3e6a0cac7b44b04ef7cfb#9d26cceccc95cbe146f3e6a0cac7b44b04ef7cfb"
+version = "0.4.0"
+source = "git+https://github.com/isazajuancarlos/guaca?rev=2ffe1346b706f5fbb8f5eaaea1c37375682c807d#2ffe1346b706f5fbb8f5eaaea1c37375682c807d"
 dependencies = [
  "argon2",
  "base64 0.22.1",
+ "chrono",
  "hmac 0.12.1",
  "password-hash",
  "quipu",
