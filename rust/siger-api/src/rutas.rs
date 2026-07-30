@@ -286,26 +286,29 @@ async fn descargar_archivo(
 
     // El alcance entra en la MISMA consulta: no se lee primero y se comprueba
     // después, porque entre las dos cosas cabe un olvido.
+    const COLS: &str = "archivo_nombre, archivo_cifrado";
     let (sql, param) = match actor.alcance() {
-        Alcance::Todas => ("SELECT archivo_nombre FROM entregas WHERE id = ?", None),
+        Alcance::Todas => (format!("SELECT {COLS} FROM entregas WHERE id = ?"), None),
         Alcance::DeUsuario(u) => (
-            "SELECT archivo_nombre FROM entregas WHERE id = ? AND usuario_id = ?",
+            format!("SELECT {COLS} FROM entregas WHERE id = ? AND usuario_id = ?"),
             Some(u),
         ),
         Alcance::DeStakeholder(s) => (
-            "SELECT archivo_nombre FROM entregas e WHERE e.id = ? AND EXISTS \
-             (SELECT 1 FROM participacion p WHERE p.informe_id = e.informe_id \
-              AND p.stakeholder_id = ?)",
+            format!(
+                "SELECT {COLS} FROM entregas e WHERE e.id = ? AND EXISTS \
+                 (SELECT 1 FROM participacion p WHERE p.informe_id = e.informe_id \
+                  AND p.stakeholder_id = ?)"
+            ),
             Some(s),
         ),
         Alcance::Ninguna => return Err(no_existe()),
     };
 
-    let mut q = sqlx::query_as::<_, (Option<String>,)>(sql).bind(id);
+    let mut q = sqlx::query_as::<_, (Option<String>, i64)>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (nombre,) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let (nombre, cifrado) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
     let nombre = nombre.ok_or_else(no_existe)?;
 
     let ruta = ruta_de_entrega(&e.cfg.dir_entregas, id, &nombre).ok_or_else(|| {
@@ -313,7 +316,21 @@ async fn descargar_archivo(
         Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into())
     })?;
 
-    let datos = tokio::fs::read(&ruta).await.map_err(|_| no_existe())?;
+    let datos = match leer_en_claro(&ruta, cifrado != 0, e.cfg.clave_reposo.as_deref()).await {
+        Documento::Claro(d) => d,
+        // Que no esté es un 404 esté cifrado o no: el estado del despliegue no
+        // cambia qué le pasó al archivo.
+        Documento::NoEsta => return Err(no_existe()),
+        Documento::NoDescifra => {
+            tracing::error!(
+                "entrega {id}: no se pudo descifrar el archivo (¿falta SIGER_CLAVE_REPOSO, está rotada, o el blob fue alterado?)"
+            );
+            return Err(Error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "no se pudo leer el archivo".into(),
+            ));
+        }
+    };
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -339,7 +356,7 @@ async fn verificar_entrega(
     let no_existe = || Error(StatusCode::NOT_FOUND, "la entrega no existe".into());
 
     const COLS: &str = "fecha_limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, \
-                        estado, fecha_entrega_real, archivo_nombre, firma";
+                        estado, fecha_entrega_real, archivo_nombre, firma, archivo_cifrado";
     let (sql, param) = match actor.alcance() {
         Alcance::Todas => (format!("SELECT {COLS} FROM entregas e WHERE e.id = ?"), None),
         Alcance::DeUsuario(u) => (
@@ -367,12 +384,13 @@ async fn verificar_entrega(
         Option<String>, // fecha_entrega_real
         Option<String>, // archivo_nombre
         Option<String>, // firma
+        i64,            // archivo_cifrado
     );
     let mut q = sqlx::query_as::<_, Fila>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma) =
+    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma, cifrado) =
         q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
 
     let Some(firma) = firma else {
@@ -380,13 +398,11 @@ async fn verificar_entrega(
     };
 
     // El sha256 se recalcula del archivo AHORA: si el documento cambió tras
-    // firmarse, el hash difiere y la verificación lo delata como alteración.
-    let sha = match &archivo_nombre {
-        Some(n) => match ruta_de_entrega(&e.cfg.dir_entregas, id, n) {
-            Some(ruta) => tokio::fs::read(&ruta).await.ok().map(|d| crate::firma::sha256_hex(&d)),
-            None => None,
-        },
-        None => None,
+    // firmarse, el hash difiere y la verificación lo delata como alteración. Y si
+    // no se pudo leer, NO se sigue: no poder mirar no es haber visto algo.
+    let sha = match sha_del_documento(&e.cfg, id, archivo_nombre.as_deref(), cifrado != 0).await {
+        Ok(sha) => sha,
+        Err(motivo) => return Ok(Json(serde_json::json!({ "verificada": false, "motivo": motivo }))),
     };
 
     let (ok, motivo) = crate::firma::verificar(
@@ -423,6 +439,83 @@ pub fn ruta_de_entrega(almacen: &str, id: i64, nombre: &str) -> Option<PathBuf> 
         Some(ruta)
     } else {
         None
+    }
+}
+
+/// El SHA-256 del documento EN CLARO tal como está ahora, para contrastarlo con
+/// el que se firmó. `Err(motivo)` cuando no se puede saber.
+///
+/// La regla, y es la que evita una acusación falsa: **`Ok(None)` solo significa
+/// «esta entrega no tiene archivo»**, un hecho que la firma acredita igual que
+/// cualquier otro. Todo lo demás —el archivo que no está donde se guardó, el blob
+/// que no descifra, un nombre que la base no debería contener— es *no se puede
+/// saber*, y sale por `Err`. Antes todos caían en el mismo `None`: el canónico
+/// local quedaba con `"archivo_sha256":null`, no cuadraba con el firmado, y
+/// `verificar` respondía «la entrega fue alterada tras la firma» a una entrega
+/// intacta cuyo despliegue había perdido `SIGER_CLAVE_REPOSO` o tenía
+/// `SIGER_DIR_ENTREGAS` mal puesto. Es exactamente la acusación que este producto
+/// existe para hacer bien (directivas 20 y 23).
+async fn sha_del_documento(
+    cfg: &Config,
+    id: i64,
+    nombre: Option<&str>,
+    cifrado: bool,
+) -> Result<Option<String>, &'static str> {
+    let Some(nombre) = nombre else {
+        return Ok(None); // la entrega no trae archivo: eso es un hecho, no un hueco
+    };
+    let Some(ruta) = ruta_de_entrega(&cfg.dir_entregas, id, nombre) else {
+        tracing::error!("nombre de archivo inaceptable en la entrega {id}: {nombre:?}");
+        return Err("no se pudo leer el archivo de la entrega");
+    };
+    // Se descifra ANTES de hashear: el SHA firmado es el del documento en claro,
+    // no el del blob.
+    match leer_en_claro(&ruta, cifrado, cfg.clave_reposo.as_deref()).await {
+        Documento::Claro(d) => Ok(Some(crate::firma::sha256_hex(&d))),
+        Documento::NoEsta => {
+            tracing::error!("entrega {id}: el archivo firmado no está en el almacén");
+            Err("el archivo de la entrega no está en el almacén")
+        }
+        Documento::NoDescifra => {
+            tracing::error!(
+                "entrega {id}: no se pudo descifrar el archivo para verificar la firma (¿falta SIGER_CLAVE_REPOSO, está rotada, o el blob fue alterado?)"
+            );
+            Err("no se pudo descifrar el archivo de la entrega")
+        }
+    }
+}
+
+/// Lo que se obtuvo al intentar leer el documento de una entrega.
+///
+/// Los tres casos NO son el mismo hecho, y colapsarlos en un `None` fue el origen
+/// de una acusación falsa: quien no distingue «no está» de «no descifra» acaba
+/// diciéndole a un ente de control que hubo manipulación donde solo faltó un
+/// `export SIGER_CLAVE_REPOSO`.
+#[derive(Debug, PartialEq, Eq)]
+enum Documento {
+    /// El documento, en claro.
+    Claro(Vec<u8>),
+    /// No hay archivo en esa ruta.
+    NoEsta,
+    /// El archivo está y la fila lo declara cifrado, pero no se pudo descifrar:
+    /// falta la frase de reposo, está rotada, o el blob fue alterado.
+    NoDescifra,
+}
+
+/// Lee el archivo de una entrega y lo devuelve EN CLARO. Si la fila dice que está
+/// cifrado, lo descifra con la frase de reposo. **Nunca** se sirve un blob
+/// cifrado como si fuera el documento (directiva 20: ante la ausencia de la clave
+/// se falla, no se entrega basura).
+async fn leer_en_claro(ruta: &Path, cifrado: bool, clave: Option<&str>) -> Documento {
+    let Ok(crudo) = tokio::fs::read(ruta).await else {
+        return Documento::NoEsta;
+    };
+    if !cifrado {
+        return Documento::Claro(crudo);
+    }
+    match clave.and_then(|c| guaca::reposo::descifrar(&crudo, c).ok()) {
+        Some(claro) => Documento::Claro(claro),
+        None => Documento::NoDescifra,
     }
 }
 
@@ -562,7 +655,15 @@ async fn subir_archivo(
             Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo guardar el archivo".into())
         })?;
     }
-    tokio::fs::write(&ruta, &datos).await.map_err(|err| {
+    // Cifrado EN REPOSO (A1): con frase, al disco va el BLOB cifrado; sin frase,
+    // el archivo en claro, como antes. El SHA que se firma se calcula MÁS ABAJO
+    // sobre `datos` (el documento en claro), nunca sobre esto: la firma acredita
+    // el contenido, no cómo se guarda.
+    let (para_disco, cifrado): (Vec<u8>, i64) = match e.cfg.clave_reposo.as_deref() {
+        Some(frase) => (guaca::reposo::cifrar(&datos, frase), 1),
+        None => (datos.to_vec(), 0),
+    };
+    tokio::fs::write(&ruta, &para_disco).await.map_err(|err| {
         tracing::error!("no se pudo escribir {}: {err}", ruta.display());
         Error(StatusCode::INTERNAL_SERVER_ERROR, "no se pudo guardar el archivo".into())
     })?;
@@ -604,13 +705,14 @@ async fn subir_archivo(
 
     let filas = sqlx::query(
         "UPDATE entregas SET archivo_nombre = ?, estado = ?, fecha_entrega_real = ?, firma = ?, \
-         archivo_valido = ? WHERE id = ?",
+         archivo_valido = ?, archivo_cifrado = ? WHERE id = ?",
     )
     .bind(&nombre)
     .bind(estado)
     .bind(&entrega_real)
     .bind(&firma_blob)
     .bind(archivo_valido)
+    .bind(cifrado)
     .bind(id)
     .execute(&e.bd)
     .await?
@@ -794,6 +896,200 @@ mod tests {
         assert_eq!(verifica_contenido("png", png), Some(true));
         // Un CSV no tiene magic bytes: no se puede saber -> None, NO se marca.
         assert_eq!(verifica_contenido("csv", b"nombre,valor\n1,2\n"), None);
+    }
+
+    // --- Cifrado en reposo (#128, A1) ----------------------------------------
+
+    fn dir_tmp(etiqueta: &str) -> std::path::PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static N: AtomicU64 = AtomicU64::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "siger_reposo_{etiqueta}_{}_{}",
+            std::process::id(),
+            N.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[tokio::test]
+    async fn el_sha_firmado_es_el_mismo_en_claro_o_cifrado() {
+        // LA invariante de #128: el SHA que firma la entrega es el del DOCUMENTO
+        // en claro. Se cifra en reposo, se relee descifrando, y el SHA debe
+        // coincidir con el del original —si se hasheara el blob, la verificación
+        // cantaría un falso «alterado»—.
+        let documento = b"contenido real de la entrega con datos del informe";
+        let frase = "frase-de-reposo-del-despliegue-larga-y-propia";
+        let sha_original = crate::firma::sha256_hex(documento);
+
+        let dir = dir_tmp("inv");
+        let ruta = dir.join("entrega.bin");
+        std::fs::write(&ruta, guaca::reposo::cifrar(documento, frase)).unwrap();
+
+        // En disco NO aparece el documento en claro.
+        let en_disco = std::fs::read(&ruta).unwrap();
+        assert!(!en_disco.windows(documento.len()).any(|w| w == documento));
+
+        let Documento::Claro(claro) = leer_en_claro(&ruta, true, Some(frase)).await else {
+            panic!("con la frase correcta el documento se lee")
+        };
+        assert_eq!(crate::firma::sha256_hex(&claro), sha_original);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn sin_la_frase_o_con_la_equivocada_no_se_sirve_el_blob() {
+        // Directiva 20: ante la ausencia de la clave se falla, no se entrega el
+        // blob cifrado como si fuera el documento.
+        let dir = dir_tmp("fail");
+        let ruta = dir.join("e.bin");
+        let frase = "la-frase-correcta-de-mas-de-treinta-bytes";
+        std::fs::write(&ruta, guaca::reposo::cifrar(b"secreto", frase)).unwrap();
+
+        // «No descifra» y «no está» son hechos distintos y se devuelven distintos:
+        // de eso depende que la verificación no acuse de alteración a quien solo
+        // perdió la frase.
+        assert_eq!(leer_en_claro(&ruta, true, None).await, Documento::NoDescifra);
+        assert_eq!(
+            leer_en_claro(&ruta, true, Some("frase-equivocada")).await,
+            Documento::NoDescifra
+        );
+        assert_eq!(
+            leer_en_claro(&dir.join("no-existe.bin"), true, Some(frase)).await,
+            Documento::NoEsta
+        );
+        assert_eq!(
+            leer_en_claro(&ruta, true, Some(frase)).await,
+            Documento::Claro(b"secreto".to_vec())
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn un_archivo_en_claro_se_lee_tal_cual_aunque_haya_frase() {
+        // Los archivos subidos antes de activar la frase (cifrado=false) se leen
+        // directo: la bandera POR FILA manda, no la config global. Así encender la
+        // frase no invalida lo ya guardado en claro.
+        let dir = dir_tmp("claro");
+        let ruta = dir.join("viejo.pdf");
+        std::fs::write(&ruta, b"documento viejo en claro").unwrap();
+        assert_eq!(
+            leer_en_claro(&ruta, false, Some("hay-frase-pero-la-fila-dice-claro")).await,
+            Documento::Claro(b"documento viejo en claro".to_vec())
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Una entrega firmada, con el archivo cifrado en reposo, lista para auditar.
+    /// Devuelve el estado y el directorio del almacén (que hay que borrar).
+    async fn entrega_firmada_y_cifrada(frase: Option<&str>) -> (Estado, std::path::PathBuf) {
+        const DOCUMENTO: &[u8] = b"%PDF-1.5\nel informe que se entrego\n";
+        let (vk, sk) = crate::firma::generar_claves();
+        let dir = dir_tmp("verificar");
+
+        let mut cfg = Config::de_prueba();
+        cfg.dir_entregas = dir.to_string_lossy().into_owned();
+        cfg.firma_sk_hex = Some(sk);
+        cfg.firma_vk_hex = Some(vk);
+        cfg.clave_reposo = frase.map(str::to_owned);
+
+        // En disco va el BLOB cifrado; lo que se firma es el SHA del documento.
+        let ruta = ruta_de_entrega(&cfg.dir_entregas, 9, "e9.pdf").unwrap();
+        std::fs::create_dir_all(ruta.parent().unwrap()).unwrap();
+        std::fs::write(&ruta, guaca::reposo::cifrar(DOCUMENTO, FRASE_REPOSO)).unwrap();
+
+        let firma = crate::firma::firmar(
+            &crate::firma::Auditable {
+                id: 9,
+                informe_id: 5,
+                usuario_id: Some(1),
+                fecha_limite: "2026-01-01",
+                fecha_entrega: Some("2026-01-01T10:00:00+00:00"),
+                estado: "CUMPLIDO",
+                archivo_sha256: Some(&crate::firma::sha256_hex(DOCUMENTO)),
+                fecha_vencimiento_nominal: "2026-01-01",
+                tipo_ajuste: "NINGUNO",
+            },
+            cfg.firma_sk_hex.as_deref(),
+        )
+        .expect("hay clave de firma");
+
+        let bd = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&bd).await.unwrap();
+        sqlx::query("INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) VALUES (1,'Op','op@x.co','h','OPERADOR',1)").execute(&bd).await.unwrap();
+        sqlx::query("INSERT INTO informes (id,nombre,recurrencia) VALUES (5,'Informe','{\"modo\":\"INMEDIATO\"}')").execute(&bd).await.unwrap();
+        sqlx::query(
+            "INSERT INTO entregas (id,informe_id,usuario_id,fecha_nominal,fecha_limite,tipo_ajuste,\
+             estado,fecha_entrega_real,archivo_nombre,firma,archivo_cifrado) \
+             VALUES (9,5,1,'2026-01-01','2026-01-01','NINGUNO','CUMPLIDO','2026-01-01T10:00:00+00:00','e9.pdf',?,1)",
+        )
+        .bind(&firma)
+        .execute(&bd)
+        .await
+        .unwrap();
+
+        (Estado { bd, cfg }, dir)
+    }
+
+    const FRASE_REPOSO: &str = "frase-de-reposo-del-despliegue-larga-y-propia";
+
+    fn auditor() -> Actor {
+        Actor { id: 2, nombre: "Adm".into(), email: "adm@x.co".into(), rol: Rol::Admin, stakeholder_id: None }
+    }
+
+    async fn motivo_de(e: &Estado) -> String {
+        let r = verificar_entrega(State(e.clone()), auditor(), RutaParam(9)).await.unwrap();
+        r.0["motivo"].as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn una_entrega_cifrada_e_intacta_verifica() {
+        // El camino feliz de #128: el SHA se recalcula descifrando, y cuadra.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        let r = verificar_entrega(State(e.clone()), auditor(), RutaParam(9)).await.unwrap();
+        assert_eq!(r.0["verificada"], serde_json::json!(true), "motivo: {}", r.0["motivo"]);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn sin_la_frase_de_reposo_no_se_acusa_de_alteracion() {
+        // El fallo que esto cierra: perder `SIGER_CLAVE_REPOSO` —un reinicio sin el
+        // `export`, una rotación en mal orden, un restore en otra máquina— hacía
+        // que el SHA quedara en `null`, el canónico no cuadrara, y el extremo le
+        // dijera al ente de control «la entrega fue alterada tras la firma» de una
+        // entrega que nadie tocó. No poder mirar no es haber visto algo.
+        let (e, dir) = entrega_firmada_y_cifrada(None).await;
+        let motivo = motivo_de(&e).await;
+        assert_ne!(motivo, "la entrega fue alterada tras la firma");
+        assert_eq!(motivo, "no se pudo descifrar el archivo de la entrega");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn con_el_almacen_mal_puesto_tampoco_se_acusa_de_alteracion() {
+        // La misma acusación falsa por la otra vía: `SIGER_DIR_ENTREGAS` apuntando
+        // donde no está el archivo (volumen sin montar, restore a medias).
+        let (mut e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        e.cfg.dir_entregas = dir.join("otro-volumen").to_string_lossy().into_owned();
+        let motivo = motivo_de(&e).await;
+        assert_ne!(motivo, "la entrega fue alterada tras la firma");
+        assert_eq!(motivo, "el archivo de la entrega no está en el almacén");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn el_documento_cambiado_tras_firmar_si_se_delata() {
+        // Y la prueba de que sigue DISCRIMINANDO: con la frase puesta y el archivo
+        // legible, un contenido distinto al firmado sí es una alteración y se dice
+        // con esas palabras. Si esto pasara a «no se pudo descifrar», el arreglo
+        // habría convertido la salvaguarda en un atajo.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        let ruta = ruta_de_entrega(&e.cfg.dir_entregas, 9, "e9.pdf").unwrap();
+        std::fs::write(&ruta, guaca::reposo::cifrar(b"otro documento", FRASE_REPOSO)).unwrap();
+        assert_eq!(motivo_de(&e).await, "la entrega fue alterada tras la firma");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

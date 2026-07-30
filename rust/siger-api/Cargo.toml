@@ -36,6 +36,11 @@ sha2 = "0.10"
 # Firma post-cuántica de las entregas (Ed25519 + ML-DSA-87). Xiliux es titular de
 # Quipu (doble licencia), así que su AGPL no obliga a nada aquí.
 quipu = "0.10"
+# Cifrado EN REPOSO de las entregas (A1): guaca::reposo envuelve el contenedor
+# cifrado de Quipu (Argon2 → AEAD → padding Padmé). Repo público (AGPL, de casa),
+# fijado por commit inmutable (= tag v0.3.0), no por el tag —un tag es mutable y
+# moverlo traería un commit malicioso al construir (lección Atomic Arch)—.
+guaca = { git = "https://github.com/isazajuancarlos/guaca", rev = "9d26cceccc95cbe146f3e6a0cac7b44b04ef7cfb", version = "0.3" }
 base64 = "0.22"
 rand = "0.8"
 
