@@ -19,6 +19,8 @@ mod importar;
 mod informes;
 mod participacion;
 mod planificador;
+#[cfg(test)]
+mod pruebas_cronograma;
 mod respaldo;
 mod rutas;
 mod sesion;
