@@ -110,9 +110,10 @@ fn rol_usuario(id: i64, email: &str, es_admin: i64, rol_sistema: Option<&str>) -
 ///
 /// No se re-hashea (no tenemos la contraseña) ni se verifica de verdad (haría
 /// falta la contraseña, y correr el KDF por usuario cuesta 45 ms de los suyos).
-/// Se comprueban las cinco cosas que el verificador exige antes de llegar a
-/// comparar: PHC legible, algoritmo de la familia Argon2, versión presente **y**
-/// conocida, parámetros que construyan el KDF, y sal y salida presentes.
+/// Se comprueba lo que el verificador exige antes de llegar a comparar: PHC
+/// legible, algoritmo de la familia Argon2, versión presente **y** conocida,
+/// parámetros que construyan el KDF, sal y salida presentes, y la sal con al
+/// menos 8 bytes.
 ///
 /// **El criterio no es esa lista, es su consecuencia**: que no entre en la base
 /// ningún hash con el que el dueño no pueda entrar. La lista es el medio y
@@ -164,12 +165,29 @@ fn clave_argon2(id: i64, email: &str, hash: &str) -> Result<String, ErrorImporta
     // m=...,t=...,p=...`, que es una descripción de parámetros, no una
     // credencial—: parsea, es Argon2 y sus parámetros son buenos, pero no hay
     // nada contra lo que comparar. El verificador lo rechaza siempre.
-    if phc.salt.is_none() || phc.hash.is_none() {
+    let (Some(sal), Some(_)) = (phc.salt, phc.hash) else {
         return Err(no(
             "el PHC no trae sal o no trae salida: describe unos parámetros de Argon2, \
              pero no contiene ninguna contraseña contra la que comparar"
                 .to_string(),
         ));
+    };
+
+    // Y la sal tiene que dar al menos 8 bytes. `Params::try_from` valida m, t, p
+    // y el tamaño de salida, pero NO la longitud de la sal, y ahí las dos
+    // librerías no coinciden: `password_hash` admite desde 4 caracteres b64 (3
+    // bytes) y `argon2` exige 8 (`MIN_SALT_LEN`). En esa rendija cabe un hash que
+    // pasa todo lo anterior y que el verificador rechaza siempre — el mismo
+    // bloqueo silencioso de esta ficha, por otra puerta. Lo encontró la
+    // re-revisión, midiéndolo; yo había escrito «se comprueba lo que el
+    // verificador exige» sin haber contado sus comprobaciones.
+    const MINIMO_SAL: usize = 8;
+    let bytes_de_sal = sal.decode_b64(&mut [0u8; 64]).map(|b| b.len()).unwrap_or(0);
+    if bytes_de_sal < MINIMO_SAL {
+        return Err(no(format!(
+            "la sal del Argon2 tiene {bytes_de_sal} bytes y el verificador exige al menos \
+             {MINIMO_SAL}: es un hash que ningún acceso podrá comprobar"
+        )));
     }
 
     Ok(hash.to_string())
@@ -520,6 +538,14 @@ mod tests {
             ("un v1.0 SIN campo v= (passlib)", v10.replace("$v=16", "")),
             ("una versión que nadie conoce", bueno.replace("v=19", "v=99")),
             ("solo la cabecera, sin sal ni salida", "$argon2id$v=19$m=19456,t=2,p=1".to_string()),
+            // La rendija entre las dos librerías: `password_hash` admite una sal
+            // de 3 bytes y `argon2` exige 8. Seis bytes («abcdef») pasa el
+            // parseo y el verificador no lo acepta jamás.
+            (
+                "una sal más corta de lo que el verificador admite",
+                "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVm$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+                    .to_string(),
+            ),
         ] {
             // Los dos controles importan tanto como los casos: sin ellos, un
             // chequeo que rechazara TODO también pasaría esta prueba.
