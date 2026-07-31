@@ -1403,7 +1403,13 @@ mod pruebas_licencia {
                 // Y cuando se ve, se ve entero: sin esto, un `datos` vacío
                 // pasaría la prueba por el lado equivocado.
                 assert_eq!(v["datos"]["nit"], "900123456-1", "{rol:?}");
-                assert!(v["exceso_usuarios"].as_str().unwrap().contains('3'), "{rol:?}");
+                assert_eq!(v["datos"]["licenciatario"], "ACME S.A.S.", "{rol:?}");
+                assert_eq!(v["datos"]["usuarios"], 2, "{rol:?}");
+                // Los DOS números, no solo uno: con `contains('3')` a secas
+                // pasaría cualquier mensaje que llevara un 3 por cualquier
+                // motivo, y lo que se afirma es que dice activos Y tope.
+                let aviso = v["exceso_usuarios"].as_str().unwrap();
+                assert!(aviso.contains('3') && aviso.contains('2'), "{rol:?}: {aviso}");
             }
         }
 

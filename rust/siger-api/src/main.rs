@@ -198,7 +198,19 @@ fn emitir_licencia_cmd() -> std::process::ExitCode {
     }
 
     let dame = |k: &str| campos.get(k).cloned().unwrap_or_default();
-    let numero = |k: &str| campos.get(k).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+
+    // Un valor que no es número se DICE. Antes caía a 0 y salía por «faltan
+    // campos obligatorios: usuarios», que es ruidoso pero no dice la causa: el
+    // operador escribió algo, y el mensaje da a entender que no escribió nada.
+    // Es la misma queja muda que la lista cerrada de arriba vino a cerrar.
+    let mut mal: Option<String> = None;
+    let mut numero = |k: &str| match campos.get(k) {
+        None => 0,
+        Some(v) => v.parse::<u32>().unwrap_or_else(|_| {
+            mal.get_or_insert(format!("--{k} tiene que ser un número entero, y es «{v}»"));
+            0
+        }),
+    };
 
     let l = licencia::Licencia {
         licenciatario: dame("licenciatario"),
@@ -209,15 +221,17 @@ fn emitir_licencia_cmd() -> std::process::ExitCode {
         usuarios: numero("usuarios"),
         sedes: numero("sedes"),
         modalidad: dame("modalidad"),
-        // La emisión es HOY. No se acepta por argumento: una fecha de emisión
-        // que se teclea es una fecha de emisión que se puede antedatar, y este
-        // campo es de los que un perito miraría.
-        // El MISMO reloj que usa el veredicto (`licencia::hoy`). Que la emisión
-        // y la comprobación miren relojes distintos es cómo el aviso de
-        // «mantenimiento vencido» acaba apareciendo un día antes de tiempo.
+        // La emisión es HOY, con el MISMO reloj que usa el veredicto. No se
+        // acepta por argumento: una fecha de emisión que se teclea es una fecha
+        // que se puede antedatar, y este campo es de los que un perito miraría.
         emitida: licencia::hoy().to_string(),
         mantenimiento_hasta: dame("mantenimiento-hasta"),
     };
+
+    if let Some(queja) = mal {
+        eprintln!("no se emitió nada:\n  {queja}\n\n{USO}");
+        return std::process::ExitCode::FAILURE;
+    }
 
     let Ok(sk) = std::env::var("INFORMES_LICENCIA_SK") else {
         eprintln!(

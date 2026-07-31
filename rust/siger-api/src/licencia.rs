@@ -73,24 +73,67 @@ pub const MODALIDADES: &[&str] = &["asistente", "asistida", "air-gapped"];
 /// Nombre por defecto del archivo de licencia, junto al binario.
 pub const ARCHIVO_POR_DEFECTO: &str = "licencia.quipu";
 
-/// El día de hoy **en el calendario del cliente**, y es el único reloj que este
-/// módulo usa: lo mira la emisión y lo mira el veredicto.
+/// Días de gracia antes de declarar vencido el mantenimiento. **Uno, y es el
+/// mecanismo entero de zonas horarias de este módulo.**
 ///
-/// Tenía las dos mitades con relojes distintos —`Local` al emitir, `Utc` al
-/// juzgar— y lo cazó una revisión de seguridad. En Colombia (UTC-5) eso hace que
-/// el aviso de «mantenimiento vencido» aparezca a las **19:00 hora local del
-/// último día pagado**: el cliente pierde cinco horas del día que contrató y el
-/// sistema le dice algo que todavía no es verdad. Es exactamente lo que la nota
-/// de módulo jura no hacer.
+/// # La historia, porque la primera solución era peor que el problema
 ///
-/// El resto de la aplicación compara con `Utc` (planificador, estadísticas,
-/// alertas), y aquí NO se sigue esa costumbre a propósito:
-/// `mantenimiento_hasta` no es un instante, es **una fecha de un contrato
-/// firmado en Colombia**. La comparación tiene que ocurrir en el calendario en
-/// el que se pactó. Que el planificador use otro reloj es asunto suyo —y
-/// pendiente propio—, no una razón para heredar aquí un defecto.
+/// La emisión fechaba con `Local` y el veredicto comparaba con `Utc`. En
+/// Colombia (UTC-5) eso hace que el aviso salga a las **19:00 del último día
+/// pagado**: el sistema le dice al cliente algo que todavía no es verdad, que es
+/// justo lo que la nota de módulo jura no hacer.
+///
+/// El arreglo obvio —usar `Local` en las dos mitades— **no arreglaba nada**, y lo
+/// cazó la segunda revisión: `chrono::Local` sale de la zona del HOST. Si esa
+/// zona no se puede resolver, `chrono` no falla: cae a `/etc/localtime` y, si
+/// tampoco, a UTC. La unidad de systemd no fija `TZ` y nada en el repositorio lo
+/// hace, así que en un servidor en UTC —el defecto de casi toda imagen de nube—
+/// `Local` **es** `Utc` y el defecto vuelve entero, con un comentario largo
+/// afirmando lo contrario. Es la directiva 20 al revés: un dato ausente
+/// sustituido por un defecto, sin manera de notarlo.
+///
+/// # Por qué un día de gracia y no configurar la zona
+///
+/// Configurar la zona sería añadir un mecanismo para contener lo que creó otro
+/// (directiva 1). Lo que hay que quitar es la SENSIBILIDAD al reloj.
+///
+/// El desfase horario máximo del planeta es de ±14 h, menos de un día. Con un
+/// día de gracia sobre la fecha, **ninguna zona horaria puede ver el aviso antes
+/// de que el mantenimiento haya terminado de verdad en la suya**, sea cual sea
+/// el reloj del servidor. El precio es que el aviso puede aparecer hasta un día
+/// tarde, y ese precio es cero: este aviso no ejecuta nada, no bloquea nada y no
+/// tiene efecto contractual. Un día tarde no le cuesta nada a nadie; un día
+/// pronto es el sistema mintiéndole a un cliente que está en su pleno derecho.
+///
+/// Y así el módulo vuelve a comparar en `Utc`, como el resto de la aplicación
+/// (planificador, estadísticas, alertas): un reloj menos que explicar.
+const DIAS_DE_GRACIA: i64 = 1;
+
+/// El desfase horario máximo que existe en el planeta: UTC+14 (Kiribati) frente
+/// a UTC−12. En el peor caso el servidor cree que es un día más tarde que el
+/// cliente — nunca más de uno.
+const HORAS_MAXIMAS_DE_DESFASE: i64 = 14;
+
+// La gracia TIENE que cubrir ese desfase, y esto se comprueba al COMPILAR, no en
+// una prueba: es la afirmación que sostiene el diseño entero —«ninguna zona
+// horaria puede ver el aviso antes de tiempo»— y una prueba se puede borrar con
+// el archivo que la contiene. Si alguien baja la gracia a cero «para limpiar»,
+// no compila.
+//
+// El tope de arriba es igual de deliberado: la gracia es tolerancia de RELOJ, no
+// una prórroga. Con un mes, el aviso llegaría cuando ya no sirve para nada.
+const _: () = {
+    // En horas, que es como se enuncia el invariante: la gracia tiene que ser al
+    // menos tan larga como el desfase máximo. Expresarlo en días obligaba a un
+    // `div_euclid` que decía lo mismo peor.
+    assert!(DIAS_DE_GRACIA * 24 >= HORAS_MAXIMAS_DE_DESFASE);
+    assert!(DIAS_DE_GRACIA <= 2);
+};
+
+/// El día de hoy. `Utc`, como el resto de la aplicación — la tolerancia a la
+/// zona horaria del cliente no vive aquí, vive en [`DIAS_DE_GRACIA`].
 pub fn hoy() -> NaiveDate {
-    chrono::Local::now().date_naive()
+    chrono::Utc::now().date_naive()
 }
 
 /// El mismo alfabeto que `firma.rs`: ASCII imprimible `0x21..=0x7e`. Tiene que
@@ -340,7 +383,10 @@ pub fn veredicto(firmado: Option<&str>, vk_hex: Option<&str>, hoy: NaiveDate) ->
         );
     };
 
-    if hoy > hasta {
+    // El día de gracia va AQUÍ y no en la fecha emitida: lo que se guarda
+    // firmado sigue siendo la fecha del contrato, exacta. La tolerancia es de la
+    // comparación, no del dato — ver `DIAS_DE_GRACIA`.
+    if hoy > hasta + chrono::Duration::days(DIAS_DE_GRACIA) {
         // NO se dice «la licencia venció»: LA LICENCIA NO VENCE.
         return Estado::de(
             Situacion::MantenimientoVencido,
@@ -378,6 +424,7 @@ pub fn generar_claves() -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
 
     fn ejemplo() -> Licencia {
         Licencia {
@@ -461,20 +508,49 @@ mod tests {
         assert_eq!(e.datos.unwrap().usuarios, 25);
     }
 
-    /// El día EXACTO del vencimiento todavía está vigente: el Período de
-    /// Mantenimiento va «hasta» esa fecha, inclusive. Un `>=` aquí le quitaría al
-    /// cliente un día que pagó.
+    /// El día EXACTO del vencimiento está vigente, y el siguiente TAMBIÉN.
+    ///
+    /// Lo primero porque el Período de Mantenimiento va «hasta» esa fecha,
+    /// inclusive: un `>=` le quitaría al cliente un día que pagó. Lo segundo es
+    /// [`DIAS_DE_GRACIA`], y no es generosidad: el reloj del servidor puede ir
+    /// hasta 14 h por delante del calendario del cliente, así que sin gracia
+    /// habría zonas horarias en las que el aviso sale antes de ser verdad.
+    ///
+    /// Este par de asertos es lo que impide que alguien «limpie» la comparación
+    /// quitando la gracia: el segundo se cae.
     #[test]
-    fn el_ultimo_dia_del_mantenimiento_esta_vigente() {
+    fn el_ultimo_dia_del_mantenimiento_esta_vigente_y_el_siguiente_tambien() {
         let (vk, sk) = generar_claves();
         let firmado = emitir(&ejemplo(), &sk).unwrap();
+        let situacion = |d: &str| veredicto(Some(&firmado), Some(&vk), dia(d)).situacion;
+
+        assert_eq!(situacion("2027-07-31"), Situacion::Valida, "el último día pagado");
+        assert_eq!(situacion("2027-08-01"), Situacion::Valida, "el día de gracia");
+        assert_eq!(situacion("2027-08-02"), Situacion::MantenimientoVencido, "ya sin excusa");
+    }
+
+    /// Lo que la comprobación de compilación NO puede decir: que la gracia
+    /// tenga el efecto que se le pide sobre un caso concreto.
+    ///
+    /// El `const _: ()` de arriba sujeta la ARITMÉTICA (gracia ≥ desfase
+    /// máximo). Esto sujeta la CONDUCTA: simulando el peor servidor posible —uno
+    /// que va un día por delante del calendario del cliente—, el aviso todavía
+    /// no ha salido el último día que el cliente pagó.
+    #[test]
+    fn ni_el_servidor_mas_adelantado_avisa_antes_de_tiempo() {
+        let (vk, sk) = generar_claves();
+        let firmado = emitir(&ejemplo(), &sk).unwrap();
+
+        // El cliente vive su último día pagado: 2027-07-31. Un servidor en
+        // UTC+14 puede creer que ya es el 1 de agosto.
+        let ultimo_dia_del_cliente = dia("2027-07-31");
+        let lo_que_cree_el_servidor = ultimo_dia_del_cliente + chrono::Duration::days(1);
+
         assert_eq!(
-            veredicto(Some(&firmado), Some(&vk), dia("2027-07-31")).situacion,
-            Situacion::Valida
-        );
-        assert_eq!(
-            veredicto(Some(&firmado), Some(&vk), dia("2027-08-01")).situacion,
-            Situacion::MantenimientoVencido
+            veredicto(Some(&firmado), Some(&vk), lo_que_cree_el_servidor).situacion,
+            Situacion::Valida,
+            "el cliente está en su último día pagado y el servidor va adelantado: \
+             no se le puede decir que venció"
         );
     }
 
