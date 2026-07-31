@@ -2,9 +2,10 @@
 # Despliega la demostración pública en el VPS. Se ejecuta DESDE la máquina de
 # desarrollo; hace ssh al servidor.
 #
-#   ./despliegue/desplegar-demo.sh usuario@192.99.42.108
+#   ./despliegue/desplegar-demo.sh debian@192.99.42.108
 #
 # Qué hace, en orden, y todo idempotente:
+#   0. Comprueba que el servidor le deja entrar, ANTES de construir nada.
 #   1. Construye el artefacto completo (interfaz + binario) con construir.sh.
 #   2. Comprueba ANTES de subir que el binario lleva la interfaz dentro.
 #   3. Copia binario, semilla y unidades a /opt/siger-demo.
@@ -20,7 +21,7 @@ set -euo pipefail
 
 DESTINO="${1:-}"
 if [ -z "$DESTINO" ]; then
-    echo "Uso: $0 usuario@servidor" >&2
+    echo "Uso: $0 usuario@servidor      (por ejemplo: debian@192.99.42.108)" >&2
     exit 2
 fi
 
@@ -28,6 +29,34 @@ RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RAIZ"
 BIN=rust/target/release/siger-api
 REMOTO=/opt/siger-demo
+
+# El acceso se comprueba ANTES de construir. Construir tarda medio minuto y el
+# `ssh` es el primer paso que puede fallar por algo ajeno al código: usuario
+# equivocado, clave no autorizada todavía, servidor apagado. Descubrirlo después
+# de compilar la interfaz y el binario no cambia el resultado, pero hace pensar
+# que falló el despliegue cuando lo que falla es la puerta.
+#
+# NO se pone `BatchMode=yes`: con contraseña y una terminal de verdad, este mismo
+# `ssh` la pide y sirve para abrir la sesión que reutilizan los pasos siguientes.
+# Lanzado sin terminal (por ejemplo desde un agente) fallará aquí, con el aviso
+# de abajo, que es exactamente lo que hace falta.
+echo "==> 0/5  comprobar el acceso a $DESTINO"
+if ! ssh -o ConnectTimeout=10 "$DESTINO" true; then
+    cat >&2 <<AVISO
+
+No se pudo entrar en «$DESTINO». Las causas, por frecuencia:
+
+  · El usuario no es ese. En el VPS de OVH (imagen Debian) es \`debian\`, no
+    \`usuario\` — que es el marcador del ejemplo, no un nombre real.
+  · Su clave pública no está autorizada todavía. Se arregla una vez:
+        ssh-copy-id -i ~/.ssh/id_ed25519.pub $DESTINO
+  · Está lanzando esto sin terminal y el servidor pide contraseña. \`ssh\` no
+    tiene dónde preguntarla: córralo en una terminal, o autorice la clave.
+
+No se construyó nada. Vuelva a lanzarlo cuando el acceso funcione.
+AVISO
+    exit 3
+fi
 
 echo "==> 1/5  construir el artefacto"
 ./rust/construir.sh
