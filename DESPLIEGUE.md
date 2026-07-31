@@ -90,6 +90,39 @@ El freno **no bloquea**: tras cinco fallos seguidos el siguiente intento espera,
 la espera se dobla y se detiene en cinco minutos. Nadie tiene que desbloquear a
 nadie. Un acierto lo borra todo.
 
+### Cuánta memoria puede comerse el cifrado: `SIGER_DESCIFRADOS_PARALELOS`
+
+Solo aplica si `SIGER_CLAVE_REPOSO` está puesta. Descifrar el archivo de una
+entrega cuesta un Argon2id completo: **162 ms y 64 MiB**, y —lo que sorprende—
+**da igual el tamaño del archivo**: 8 KiB y 4 MiB cuestan lo mismo, porque el
+gasto es derivar la clave, no cifrar. Cada archivo lleva su propia sal, así que la
+clave no se puede reutilizar entre archivos.
+
+Con 64 MiB por descifrado, «cuántos a la vez» **es** la memoria del servidor:
+
+| descifrados a la vez | memoria |
+|---|---|
+| 1 | 66 MiB |
+| 4 | 260 MiB |
+| 16 | 1 031 MiB |
+| 32 | 1 931 MiB |
+
+| `SIGER_DESCIFRADOS_PARALELOS` | resultado |
+|---|---|
+| puesta | lo que diga usted (mínimo 1) |
+| ausente | tantos como núcleos |
+
+**El defecto sirve para casi todos.** Súbalo si le sobra memoria y quiere más
+descargas simultáneas; **bájelo a 1 o 2 en un VPS de 1 GB**, donde el defecto de
+un servidor de cuatro núcleos pediría 260 MiB solo para esto. Un valor que no sea
+un entero de 1 en adelante **no arranca**: caer a un defecto le dejaría creyendo
+que acotó la memoria mientras el servidor hace otra cosa.
+
+Cuando todos los turnos están ocupados, una descarga espera hasta 30 s y luego
+responde **503** («reinténtelo»), no 500: el archivo está perfectamente. Y
+`/verificar` responde *no se puede saber*, nunca «la entrega fue alterada» — un
+servidor con tráfico no es una entrega sospechosa.
+
 ### Cerrar todas las sesiones de un usuario
 
 Cada usuario lleva un `token_version` que viaja firmado dentro de la cookie y se

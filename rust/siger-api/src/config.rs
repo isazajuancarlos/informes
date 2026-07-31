@@ -33,6 +33,8 @@ pub enum ErrorConfig {
          (por ejemplo 127.0.0.1 o 0.0.0.0), no un nombre de máquina ni un puerto."
     )]
     NoEsDireccion(String),
+    #[error("{0} tiene que ser un entero de 1 en adelante, y es «{1}»")]
+    NoEsPositivo(&'static str, String),
     #[error("el calendario no se pudo construir: {0}")]
     Calendario(#[from] siger_core::ErrorCalendario),
     #[error(
@@ -146,6 +148,61 @@ pub struct Config {
 
     /// En qué dirección escucha el servidor. Ver [`direccion_de_escucha`].
     pub escucha: std::net::IpAddr,
+
+    /// Cuántos descifrados de archivo pueden correr A LA VEZ. Ver
+    /// [`permisos_de_descifrado`]. Compartido por todos los clones de `Config`,
+    /// que es justo lo que hace de él un tope del PROCESO y no de la petición.
+    pub descifrados: std::sync::Arc<tokio::sync::Semaphore>,
+}
+
+/// Cuántos descifrados simultáneos admite el proceso.
+///
+/// # Por qué hay un tope, medido y no supuesto
+///
+/// Descifrar un archivo de entrega cuesta un Argon2id completo: **162 ms y
+/// 64 MiB**, y —esto es lo que sorprende— **da igual el tamaño del archivo**: 8 KiB
+/// y 4 MiB cuestan lo mismo, porque el gasto es la derivación de la clave, no el
+/// AEAD. Cada blob lleva su propia sal aleatoria, así que la clave derivada no se
+/// puede reutilizar entre archivos: el coste es por archivo y es inherente al
+/// formato, no un descuido.
+///
+/// Con 64 MiB por descifrado, «cuántos a la vez» ES el consumo de memoria del
+/// servidor: 8 en paralelo son 512 MiB y 32 son casi 2 GiB, medidos. En un VPS de
+/// 2 GB eso no es lentitud, es el matarife de memoria del núcleo llevándose el
+/// proceso — y con él las sesiones de todo el mundo.
+///
+/// # Y por qué el tope tiene que ser EXPLÍCITO
+///
+/// Antes había uno accidental: el descifrado se hacía en el hilo del runtime, así
+/// que no podían correr más que hilos de trabajo tiene tokio. Salía barato en
+/// memoria y carísimo en otra cosa —bloqueaba el servidor entero, ver
+/// `leer_en_claro`—. Al mover el descifrado a `spawn_blocking`, ese tope
+/// accidental DESAPARECE: el vivero de tokio admite 512 hilos por defecto, o sea
+/// **32 GiB** de Argon2id simultáneo. Arreglar el bloqueo sin poner este semáforo
+/// habría cambiado un problema de latencia por uno de memoria mucho peor.
+///
+/// Por eso las dos cosas son un solo diseño y no dos parches (directiva 1).
+///
+/// # La cascada
+///
+/// | `SIGER_DESCIFRADOS_PARALELOS` | resultado |
+/// |---|---|
+/// | puesta | lo que diga el operador (mínimo 1) |
+/// | ausente | tantos como núcleos, mínimo 1 |
+///
+/// El defecto conserva el consumo de memoria que el sistema ya tenía —núcleos ×
+/// 64 MiB— y solo le quita el bloqueo. Quien tenga memoria de sobra y quiera más
+/// descargas en paralelo lo sube; quien vaya justo lo baja a 1. Un valor que no
+/// sea un entero positivo **no arranca**: caer a un defecto dejaría al operador
+/// creyendo que acotó la memoria mientras el servidor hace otra cosa.
+pub fn permisos_de_descifrado(valor: Option<&str>) -> Result<usize, ErrorConfig> {
+    match valor.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(n),
+            _ => Err(ErrorConfig::NoEsPositivo("SIGER_DESCIFRADOS_PARALELOS", v.to_string())),
+        },
+        None => Ok(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)),
+    }
 }
 
 /// La dirección en la que liga el servidor, en cascada.
@@ -273,6 +330,9 @@ impl Config {
             correo: None,
             tras_proxy: false,
             escucha: std::net::IpAddr::from([127, 0, 0, 1]),
+            descifrados: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                permisos_de_descifrado(None).expect("el defecto siempre es válido"),
+            )),
         }
     }
 
@@ -326,6 +386,9 @@ impl Config {
             correo: correo_desde_entorno()?,
             tras_proxy,
             escucha: direccion_de_escucha(opcional("SIGER_ESCUCHA").as_deref(), tras_proxy)?,
+            descifrados: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                permisos_de_descifrado(opcional("SIGER_DESCIFRADOS_PARALELOS").as_deref())?,
+            )),
         })
     }
 
@@ -347,6 +410,9 @@ impl Config {
             correo: None,
             tras_proxy: false,
             escucha: std::net::IpAddr::from([127, 0, 0, 1]),
+            descifrados: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                permisos_de_descifrado(None).expect("el defecto siempre es válido"),
+            )),
         }
     }
 }
@@ -385,6 +451,45 @@ mod pruebas {
         assert_eq!(direccion_de_escucha(Some("127.0.0.1"), false).unwrap(), ip("127.0.0.1"));
         // IPv6 también, que es una dirección como cualquier otra.
         assert_eq!(direccion_de_escucha(Some("::1"), false).unwrap(), ip("::1"));
+    }
+
+    #[test]
+    fn sin_valor_los_permisos_de_descifrado_son_los_nucleos() {
+        // El defecto conserva el consumo de memoria que el sistema ya tenía por
+        // accidente (núcleos × 64 MiB) y solo le quita el bloqueo del runtime.
+        let esperado = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+        assert_eq!(permisos_de_descifrado(None).unwrap(), esperado);
+        assert!(esperado >= 1, "nunca cero: cero permisos es un servidor que no sirve");
+    }
+
+    #[test]
+    fn el_operador_puede_subirlos_o_bajarlos_a_uno() {
+        // Quien va justo de memoria lo baja a 1; quien tiene de sobra lo sube. Se
+        // cierra el descuido, no el caso.
+        assert_eq!(permisos_de_descifrado(Some("1")).unwrap(), 1);
+        assert_eq!(permisos_de_descifrado(Some("16")).unwrap(), 16);
+        assert_eq!(permisos_de_descifrado(Some(" 4 ")).unwrap(), 4);
+        // Vacío es «no lo puso»: cae al defecto.
+        assert_eq!(
+            permisos_de_descifrado(Some("  ")).unwrap(),
+            permisos_de_descifrado(None).unwrap()
+        );
+    }
+
+    #[test]
+    fn un_tope_imposible_no_arranca_en_vez_de_caer_al_defecto() {
+        // CERO es el caso que importa: un servidor con cero permisos no descifra
+        // nada nunca, y caer al defecto dejaría al operador creyendo que acotó la
+        // memoria mientras el servidor usa núcleos × 64 MiB.
+        for malo in ["0", "-1", "muchos", "4.5", "1e3"] {
+            assert!(
+                matches!(
+                    permisos_de_descifrado(Some(malo)),
+                    Err(ErrorConfig::NoEsPositivo(_, _))
+                ),
+                "«{malo}» pasó por tope válido"
+            );
+        }
     }
 
     #[test]
