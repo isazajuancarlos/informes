@@ -90,13 +90,24 @@ El freno **no bloquea**: tras cinco fallos seguidos el siguiente intento espera,
 la espera se dobla y se detiene en cinco minutos. Nadie tiene que desbloquear a
 nadie. Un acierto lo borra todo.
 
-### Cuánta memoria puede comerse el cifrado: `SIGER_DESCIFRADOS_PARALELOS`
+### Cuánta memoria puede comerse el Argon2: `SIGER_CRIPTO_PARALELA`
 
-Solo aplica si `SIGER_CLAVE_REPOSO` está puesta. Descifrar el archivo de una
-entrega cuesta un Argon2id completo: **162 ms y 64 MiB**, y —lo que sorprende—
-**da igual el tamaño del archivo**: 8 KiB y 4 MiB cuestan lo mismo, porque el
-gasto es derivar la clave, no cifrar. Cada archivo lleva su propia sal, así que la
-clave no se puede reutilizar entre archivos.
+Hay dos sitios donde el servidor hace trabajo criptográfico caro, y comparten un
+solo cupo porque comparten la memoria de la máquina:
+
+| operación | coste | quién la dispara |
+|---|---|---|
+| descifrar el archivo de una entrega | 162 ms · 64 MiB | usuario con sesión |
+| comprobar la contraseña en el login | 45 ms · 19 MiB | **cualquiera, sin sesión** |
+
+El del login lo paga **todo** intento, también el de un correo que no existe: es a
+propósito, porque si el inexistente saliera gratis el cronómetro diría qué cuentas
+son de verdad.
+
+El del descifrado sorprende: **da igual el tamaño del archivo**: 8 KiB y 4 MiB
+cuestan lo mismo, porque el gasto es derivar la clave, no cifrar. Cada archivo
+lleva su propia sal, así que la clave no se puede reutilizar entre archivos. Solo
+aplica si `SIGER_CLAVE_REPOSO` está puesta.
 
 Con 64 MiB por descifrado, «cuántos a la vez» **es** la memoria del servidor:
 
@@ -107,7 +118,7 @@ Con 64 MiB por descifrado, «cuántos a la vez» **es** la memoria del servidor:
 | 16 | 1 031 MiB |
 | 32 | 1 931 MiB |
 
-| `SIGER_DESCIFRADOS_PARALELOS` | resultado |
+| `SIGER_CRIPTO_PARALELA` | resultado |
 |---|---|
 | puesta | lo que diga usted (mínimo 1) |
 | ausente | tantos como núcleos |
@@ -118,10 +129,16 @@ un servidor de cuatro núcleos pediría 260 MiB solo para esto. Un valor que no 
 un entero de 1 en adelante **no arranca**: caer a un defecto le dejaría creyendo
 que acotó la memoria mientras el servidor hace otra cosa.
 
-Cuando todos los turnos están ocupados, una descarga espera hasta 30 s y luego
-responde **503** («reinténtelo»), no 500: el archivo está perfectamente. Y
-`/verificar` responde *no se puede saber*, nunca «la entrega fue alterada» — un
-servidor con tráfico no es una entrega sospechosa.
+Cuando todos los turnos están ocupados se espera hasta 30 s y luego se responde
+**503** («reinténtelo»), nunca algo que culpe al usuario:
+
+- una **descarga** da 503 y no 500: el archivo está perfectamente;
+- **`/verificar`** dice *no se puede saber*, nunca «la entrega fue alterada» — un
+  servidor con tráfico no es una entrega sospechosa;
+- el **login** da 503 y no «credenciales incorrectas»: decirle a alguien que su
+  contraseña está mal porque el servidor va lleno es mentirle, y además dejaría al
+  freno anotando fallos que nadie cometió. Que el código sea distinto no delata
+  ninguna cuenta: habla del servidor, no del correo.
 
 ### Cerrar todas las sesiones de un usuario
 

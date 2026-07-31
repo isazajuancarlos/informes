@@ -279,8 +279,41 @@ async fn abrir_sesion(
         _ => (None, 0, hash_senuelo().clone()),
     };
 
-    let clave_correcta =
-        Argon2::default().verify_password(cred.clave.as_bytes(), &analizado).is_ok();
+    // Fuera del hilo del runtime, y con turno, por la MISMA razón que el
+    // descifrado (ver `leer_en_claro`) y con un agravante: aquí no hace falta
+    // sesión. El señuelo hace que TODO intento —también el de un correo que no
+    // existe— pague un Argon2 completo, que es lo correcto (sin él, el cronómetro
+    // delata qué cuentas existen), pero eso pone 45 ms de CPU y 19 MiB en manos de
+    // cualquiera. Medido con un solo hilo de trabajo: 32 intentos fallidos a la
+    // vez llevaban `/api/salud` de 0 a 711 ms.
+    let hash_texto = analizado.to_string();
+    let clave = cred.clave.clone();
+    let permiso = match tokio::time::timeout(ESPERA_CRIPTO, e.cfg.cripto.clone().acquire_owned())
+        .await
+    {
+        Ok(Ok(p)) => p,
+        _ => {
+            tracing::warn!("acceso: sin turno de cripto en {} s", ESPERA_CRIPTO.as_secs());
+            // 503 y no el 401 de siempre. Rechazar por «credenciales incorrectas»
+            // cuando el servidor está lleno le contaría al usuario legítimo una
+            // mentira sobre SU contraseña, y de paso dejaría al freno anotando
+            // fallos que nadie cometió. Que sea un código distinto no delata
+            // ninguna cuenta: habla del servidor, no del correo.
+            return Err(Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "el servidor está ocupado; reinténtelo".into(),
+            ));
+        }
+    };
+    let clave_correcta = tokio::task::spawn_blocking(move || {
+        let r = PasswordHash::new(&hash_texto)
+            .map(|h| Argon2::default().verify_password(clave.as_bytes(), &h).is_ok())
+            .unwrap_or(false);
+        drop(permiso); // el turno se libera con la memoria, no antes
+        r
+    })
+    .await
+    .unwrap_or(false);
     // El señuelo nunca casa —nadie tiene esa contraseña—, pero que la respuesta
     // no dependa de si había usuario tiene que ser explícito y no una casualidad
     // del optimizador.
@@ -653,7 +686,9 @@ enum Documento {
     Ocupado,
 }
 
-/// Cuánto se espera un turno para descifrar antes de rendirse.
+/// Cuánto se espera un turno de trabajo criptográfico pesado antes de rendirse.
+///
+/// Lo comparten el descifrado en reposo (64 MiB) y el Argon2 del login (19 MiB).
 ///
 /// Generoso a propósito: lo que se rechaza es la sobrecarga real, no el uso
 /// intenso. Un navegador abre seis conexiones por servidor, así que el peor caso
@@ -662,7 +697,7 @@ enum Documento {
 /// peticiones encima, y siguen por debajo del `proxy_read_timeout` de nginx (60 s),
 /// de modo que quien contesta el 503 es el servidor, que sabe por qué, y no el
 /// proxy con un 504 mudo.
-const ESPERA_DESCIFRADO: std::time::Duration = std::time::Duration::from_secs(30);
+const ESPERA_CRIPTO: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Lee el archivo de una entrega y lo devuelve EN CLARO. Si la fila dice que está
 /// cifrado, lo descifra con la frase de reposo. **Nunca** se sirve un blob
@@ -690,7 +725,7 @@ const ESPERA_DESCIFRADO: std::time::Duration = std::time::Duration::from_secs(30
 /// bastaba un auditor con prisa.
 ///
 /// Ahora el descifrado va a `spawn_blocking` —fuera de los hilos del runtime— y el
-/// semáforo de [`crate::config::permisos_de_descifrado`] limita cuántos corren a la
+/// semáforo de [`crate::config::permisos_de_cripto`] limita cuántos corren a la
 /// vez, que es lo que acota la memoria. Las dos cosas juntas, porque
 /// `spawn_blocking` a secas admitiría 512 en paralelo: 32 GiB.
 async fn leer_en_claro(ruta: &Path, cifrado: bool, cfg: &Config) -> Documento {
@@ -715,8 +750,8 @@ async fn leer_en_claro(ruta: &Path, cifrado: bool, cfg: &Config) -> Documento {
     // semáforo existe para evitar. Soltándolo dentro, el turno solo se libera
     // cuando la memoria de verdad se libera.
     let permiso = match tokio::time::timeout(
-        ESPERA_DESCIFRADO,
-        cfg.descifrados.clone().acquire_owned(),
+        ESPERA_CRIPTO,
+        cfg.cripto.clone().acquire_owned(),
     )
     .await
     {
@@ -727,9 +762,9 @@ async fn leer_en_claro(ruta: &Path, cifrado: bool, cfg: &Config) -> Documento {
         Err(_) => {
             tracing::warn!(
                 "descifrado en cola más de {} s: el servidor está por encima de \
-                 SIGER_DESCIFRADOS_PARALELOS. Si se repite, o sobra memoria para \
+                 SIGER_CRIPTO_PARALELA. Si se repite, o sobra memoria para \
                  subirlo, o falta capacidad.",
-                ESPERA_DESCIFRADO.as_secs()
+                ESPERA_CRIPTO.as_secs()
             );
             return Documento::Ocupado;
         }
@@ -1131,6 +1166,40 @@ mod pruebas_acceso {
             Ok(r) => r,
             Err(err) => err.into_response(),
         }
+    }
+
+    #[tokio::test]
+    async fn el_servidor_lleno_no_le_dice_a_nadie_que_su_clave_esta_mal() {
+        // Con el cupo de cripto agotado, la clave CORRECTA no puede salir por 401.
+        // Sería mentirle al usuario sobre su propia contraseña —y mandarle a
+        // cambiarla— y de paso dejaría al freno anotando un fallo que nadie
+        // cometió: seis tardes con el servidor lleno y la cuenta se frena sola.
+        let e = estado_con_usuario().await;
+
+        // Primero, la mitad que evita que esta prueba pase por la razón
+        // equivocada: con turno libre, la clave buena entra.
+        assert_eq!(
+            intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await.status(),
+            StatusCode::OK,
+            "con turno libre la clave correcta tiene que entrar"
+        );
+
+        // Y ahora sin turno posible. Se CIERRA el semáforo en vez de agotarlo con
+        // el reloj virtual: `pause` + `advance` aquí no vale, porque este camino
+        // consulta la base y el `advance` dispara también el plazo del pool de
+        // sqlx — la petición muere con un 500 antes de llegar al turno. Costó un
+        // rojo entender que el 500 no era mi código. Un semáforo cerrado devuelve
+        // «no hay turno» en el acto, sin relojes, y ejercita exactamente la misma
+        // rama.
+        let mut e = e;
+        e.cfg.cripto = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        e.cfg.cripto.close();
+
+        assert_eq!(
+            intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await.status(),
+            StatusCode::SERVICE_UNAVAILABLE,
+            "sin turno, la clave BUENA salió como credenciales incorrectas"
+        );
     }
 
     #[tokio::test]
@@ -1574,7 +1643,7 @@ mod tests {
 
         let mut cfg = Config::de_prueba();
         cfg.clave_reposo = Some(frase.to_owned());
-        cfg.descifrados = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        cfg.cripto = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
 
         // Con el permiso libre, el mismo archivo se lee perfectamente. Sin esta
         // mitad, la prueba pasaría aunque `leer_en_claro` devolviera `Ocupado`
@@ -1586,13 +1655,13 @@ mod tests {
         );
 
         // Y ahora sin turno: se ocupa el único permiso y no se suelta.
-        let ocupado = cfg.descifrados.clone().acquire_owned().await.unwrap();
+        let ocupado = cfg.cripto.clone().acquire_owned().await.unwrap();
         let cfg_rapido = cfg.clone();
         // `tokio::time::pause` hace que el plazo de 30 s venza al instante en el
         // reloj virtual: la prueba mide la DECISIÓN, no la espera.
         tokio::time::pause();
         let leyendo = tokio::spawn(async move { leer_en_claro(&ruta, true, &cfg_rapido).await });
-        tokio::time::advance(ESPERA_DESCIFRADO + std::time::Duration::from_secs(1)).await;
+        tokio::time::advance(ESPERA_CRIPTO + std::time::Duration::from_secs(1)).await;
         assert_eq!(
             leyendo.await.unwrap(),
             Documento::Ocupado,
@@ -1618,8 +1687,8 @@ mod tests {
 
         let mut cfg = Config::de_prueba();
         cfg.clave_reposo = Some(frase.to_owned());
-        cfg.descifrados = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        let sem = cfg.descifrados.clone();
+        cfg.cripto = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let sem = cfg.cripto.clone();
 
         let leyendo = tokio::spawn(async move { leer_en_claro(&ruta, true, &cfg).await });
         // Esperar a que el turno esté REALMENTE tomado: abortar antes no probaría
@@ -1662,8 +1731,8 @@ mod tests {
 
         let mut cfg = Config::de_prueba();
         cfg.clave_reposo = None;
-        cfg.descifrados = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        let retenido = cfg.descifrados.clone().acquire_owned().await.unwrap();
+        cfg.cripto = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let retenido = cfg.cripto.clone().acquire_owned().await.unwrap();
 
         // Con CERO permisos disponibles responde igual y en el acto: si esperase
         // turno, esto colgaría los 30 s del plazo.

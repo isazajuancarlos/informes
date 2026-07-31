@@ -150,9 +150,9 @@ pub struct Config {
     pub escucha: std::net::IpAddr,
 
     /// Cuántos descifrados de archivo pueden correr A LA VEZ. Ver
-    /// [`permisos_de_descifrado`]. Compartido por todos los clones de `Config`,
+    /// [`permisos_de_cripto`]. Compartido por todos los clones de `Config`,
     /// que es justo lo que hace de él un tope del PROCESO y no de la petición.
-    pub descifrados: std::sync::Arc<tokio::sync::Semaphore>,
+    pub cripto: std::sync::Arc<tokio::sync::Semaphore>,
 }
 
 /// Cuántos descifrados simultáneos admite el proceso.
@@ -185,7 +185,7 @@ pub struct Config {
 ///
 /// # La cascada
 ///
-/// | `SIGER_DESCIFRADOS_PARALELOS` | resultado |
+/// | `SIGER_CRIPTO_PARALELA` | resultado |
 /// |---|---|
 /// | puesta | lo que diga el operador (mínimo 1) |
 /// | ausente | tantos como núcleos, mínimo 1 |
@@ -195,11 +195,11 @@ pub struct Config {
 /// descargas en paralelo lo sube; quien vaya justo lo baja a 1. Un valor que no
 /// sea un entero positivo **no arranca**: caer a un defecto dejaría al operador
 /// creyendo que acotó la memoria mientras el servidor hace otra cosa.
-pub fn permisos_de_descifrado(valor: Option<&str>) -> Result<usize, ErrorConfig> {
+pub fn permisos_de_cripto(valor: Option<&str>) -> Result<usize, ErrorConfig> {
     match valor.map(str::trim).filter(|v| !v.is_empty()) {
         Some(v) => match v.parse::<usize>() {
             Ok(n) if n >= 1 => Ok(n),
-            _ => Err(ErrorConfig::NoEsPositivo("SIGER_DESCIFRADOS_PARALELOS", v.to_string())),
+            _ => Err(ErrorConfig::NoEsPositivo("SIGER_CRIPTO_PARALELA", v.to_string())),
         },
         None => Ok(std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)),
     }
@@ -330,8 +330,8 @@ impl Config {
             correo: None,
             tras_proxy: false,
             escucha: std::net::IpAddr::from([127, 0, 0, 1]),
-            descifrados: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                permisos_de_descifrado(None).expect("el defecto siempre es válido"),
+            cripto: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                permisos_de_cripto(None).expect("el defecto siempre es válido"),
             )),
         }
     }
@@ -386,8 +386,8 @@ impl Config {
             correo: correo_desde_entorno()?,
             tras_proxy,
             escucha: direccion_de_escucha(opcional("SIGER_ESCUCHA").as_deref(), tras_proxy)?,
-            descifrados: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                permisos_de_descifrado(opcional("SIGER_DESCIFRADOS_PARALELOS").as_deref())?,
+            cripto: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                permisos_de_cripto(opcional("SIGER_CRIPTO_PARALELA").as_deref())?,
             )),
         })
     }
@@ -410,8 +410,8 @@ impl Config {
             correo: None,
             tras_proxy: false,
             escucha: std::net::IpAddr::from([127, 0, 0, 1]),
-            descifrados: std::sync::Arc::new(tokio::sync::Semaphore::new(
-                permisos_de_descifrado(None).expect("el defecto siempre es válido"),
+            cripto: std::sync::Arc::new(tokio::sync::Semaphore::new(
+                permisos_de_cripto(None).expect("el defecto siempre es válido"),
             )),
         }
     }
@@ -454,11 +454,11 @@ mod pruebas {
     }
 
     #[test]
-    fn sin_valor_los_permisos_de_descifrado_son_los_nucleos() {
+    fn sin_valor_los_permisos_de_cripto_son_los_nucleos() {
         // El defecto conserva el consumo de memoria que el sistema ya tenía por
         // accidente (núcleos × 64 MiB) y solo le quita el bloqueo del runtime.
         let esperado = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
-        assert_eq!(permisos_de_descifrado(None).unwrap(), esperado);
+        assert_eq!(permisos_de_cripto(None).unwrap(), esperado);
         assert!(esperado >= 1, "nunca cero: cero permisos es un servidor que no sirve");
     }
 
@@ -466,13 +466,13 @@ mod pruebas {
     fn el_operador_puede_subirlos_o_bajarlos_a_uno() {
         // Quien va justo de memoria lo baja a 1; quien tiene de sobra lo sube. Se
         // cierra el descuido, no el caso.
-        assert_eq!(permisos_de_descifrado(Some("1")).unwrap(), 1);
-        assert_eq!(permisos_de_descifrado(Some("16")).unwrap(), 16);
-        assert_eq!(permisos_de_descifrado(Some(" 4 ")).unwrap(), 4);
+        assert_eq!(permisos_de_cripto(Some("1")).unwrap(), 1);
+        assert_eq!(permisos_de_cripto(Some("16")).unwrap(), 16);
+        assert_eq!(permisos_de_cripto(Some(" 4 ")).unwrap(), 4);
         // Vacío es «no lo puso»: cae al defecto.
         assert_eq!(
-            permisos_de_descifrado(Some("  ")).unwrap(),
-            permisos_de_descifrado(None).unwrap()
+            permisos_de_cripto(Some("  ")).unwrap(),
+            permisos_de_cripto(None).unwrap()
         );
     }
 
@@ -484,7 +484,7 @@ mod pruebas {
         for malo in ["0", "-1", "muchos", "4.5", "1e3"] {
             assert!(
                 matches!(
-                    permisos_de_descifrado(Some(malo)),
+                    permisos_de_cripto(Some(malo)),
                     Err(ErrorConfig::NoEsPositivo(_, _))
                 ),
                 "«{malo}» pasó por tope válido"
