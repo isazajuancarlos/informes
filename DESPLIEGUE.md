@@ -187,8 +187,16 @@ regenera los datos cada noche, el sitio de nginx y `desplegar-demo.sh`, que
 construye, comprueba que el binario lleva la interfaz DENTRO, copia y arranca.
 
 ```bash
-./despliegue/desplegar-demo.sh usuario@servidor
+./despliegue/desplegar-demo.sh debian@192.99.42.108
 ```
+
+El primer argumento es el destino de `ssh` **de verdad**, no un marcador: en el
+VPS de OVH con imagen Debian el usuario es `debian`. El guion **comprueba el
+acceso antes de construir nada** — el `ssh` es lo primero que puede fallar por
+algo ajeno al código (usuario equivocado, clave todavía sin autorizar, servidor
+apagado), y descubrirlo tras medio minuto de compilación hace pensar que falló el
+despliegue cuando lo que falla es la puerta. Si su clave no está autorizada aún:
+`ssh-copy-id -i ~/.ssh/id_ed25519.pub debian@192.99.42.108`, una sola vez.
 
 Tres pasos quedan fuera a propósito, porque no son reversibles desde el guion: el
 registro DNS de `informes.xiliux.com`, enlazar el sitio en `sites-enabled/` y
