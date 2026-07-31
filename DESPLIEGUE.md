@@ -248,10 +248,37 @@ apagado), y descubrirlo tras medio minuto de compilación hace pensar que falló
 despliegue cuando lo que falla es la puerta. Si su clave no está autorizada aún:
 `ssh-copy-id -i ~/.ssh/id_ed25519.pub debian@192.99.42.108`, una sola vez.
 
-Tres pasos quedan fuera a propósito, porque no son reversibles desde el guion: el
-registro DNS de `informes.xiliux.com`, enlazar el sitio en `sites-enabled/` y
-pedir el certificado con `certbot --nginx -d informes.xiliux.com` (que exige el
-DNS ya resolviendo). El guion los recuerda al terminar.
+El binario queda **escuchando solo en el bucle local**: hasta publicarlo, nada es
+alcanzable desde fuera. Falta una sola cosa que no depende del guion:
+
+```
+Registro DNS   A   informes.xiliux.com  ->  192.99.42.108     (panel de OVH)
+```
+
+Cuando resuelva, publicar es un comando que además lo comprueba desde fuera:
+
+```bash
+./despliegue/publicar-demo.sh debian@192.99.42.108
+```
+
+**Por qué esto es un guion y no tres líneas aquí.** Lo obvio —enlazar el sitio,
+`nginx -t`, certbot— **no funciona en ese orden**, y falla con el sitio a medio
+publicar:
+
+- `informes.xiliux.com.nginx` trae `listen 443 ssl` con los `ssl_certificate`
+  comentados, porque los escribe certbot. Habilitarlo antes de tener certificado
+  hace fallar `nginx -t`.
+- Pero certbot necesita que alguien conteste en el puerto 80 por ese nombre para
+  el reto HTTP-01, y el sitio por defecto de este servidor responde `444` —cierra
+  sin responder— a todo host desconocido. Sin sitio habilitado, el reto no llega.
+
+No se puede habilitar sin certificado ni obtener certificado sin habilitar.
+`publicar-demo.sh` rompe el círculo con un sitio temporal de solo-HTTP que sirve
+únicamente el reto, pide el certificado con `certonly --webroot` —y no con
+`--nginx`, que reescribiría el archivo del sitio y se llevaría por delante las
+cabeceras, el `limit_req` y el proxy afinados a mano—, y solo entonces instala el
+definitivo. Comprueba el DNS **antes** de tocar nada, y contra la IP del servidor:
+si apunta a otra máquina, para y no deja nada a medias.
 
 Las contraseñas del seed están escritas en el guion (es para mirar, no para
 producción) y las fechas se calculan desde HOY, para que la columna de urgencia

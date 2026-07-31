@@ -150,13 +150,22 @@ echo "==> 5/5  comprobar que responde"
 # que no dice nada sobre el despliegue.
 ssh "$DESTINO" 'sleep 2; curl -sS -o /dev/null -w "http=%{http_code} bytes=%{size_download}\n" --max-time 10 http://127.0.0.1:8003/'
 
-cat <<'FIN'
+cat <<FIN
 
-Desplegado. Lo que falta, y NO lo hace este guion:
+Desplegado, y escuchando solo en el bucle local: hasta que se publique, nada de
+esto es alcanzable desde fuera.
 
-  1. Registro DNS  A  informes.xiliux.com -> 192.99.42.108
-  2. sudo ln -s /etc/nginx/sites-available/informes.xiliux.com \
-                /etc/nginx/sites-enabled/
-     sudo nginx -t && sudo systemctl reload nginx
-  3. sudo certbot --nginx -d informes.xiliux.com     (exige el paso 1 hecho)
+Falta UNA cosa que no depende de aquí:
+
+  Registro DNS   A   informes.xiliux.com  ->  192.99.42.108     (panel de OVH)
+
+Y cuando resuelva, publicar es un solo comando que además lo comprueba:
+
+  ./despliegue/publicar-demo.sh $DESTINO
+
+(Habilitar el sitio y pedir el certificado a mano NO funciona en el orden obvio:
+el sitio trae \`listen 443 ssl\` sin certificado —\`nginx -t\` falla— y certbot
+necesita que alguien conteste por ese nombre en el puerto 80, cosa que el sitio
+por defecto de este servidor no hace: responde 444. \`publicar-demo.sh\` rompe ese
+círculo con un sitio temporal de solo-HTTP.)
 FIN
