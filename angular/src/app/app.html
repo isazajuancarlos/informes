@@ -46,6 +46,31 @@
         </mat-menu>
       </mat-toolbar>
 
+      <!--
+        Aviso de licencia (#175). Una banda, no un diálogo: un modal habría que
+        cerrarlo, y lo que se cierra se cierra sin leer. Aquí no hay botón de
+        descartar a propósito — es visibilidad permanente, que es exactamente lo
+        que el licenciamiento necesita y todo lo que hace.
+
+        No envuelve ni condiciona a <router-outlet>: la aplicación entera
+        funciona igual con la banda puesta. Si alguien la mueve para que tape el
+        contenido, está convirtiendo un aviso en un bloqueo.
+      -->
+      @if (licencia(); as lic) {
+        @if (lic.hay_que_avisar) {
+          <div class="aviso-licencia" [class.grave]="lic.es_grave" role="status">
+            <mat-icon>{{ lic.es_grave ? 'gpp_maybe' : 'info' }}</mat-icon>
+            <span>{{ lic.mensaje }}</span>
+          </div>
+        }
+        @if (lic.exceso_usuarios; as exceso) {
+          <div class="aviso-licencia" role="status">
+            <mat-icon>group</mat-icon>
+            <span>{{ exceso }}</span>
+          </div>
+        }
+      }
+
       <main class="contenido"><router-outlet /></main>
     </mat-sidenav-content>
   </mat-sidenav-container>

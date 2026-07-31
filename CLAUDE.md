@@ -123,11 +123,30 @@ produjo el motor de Python antes del cutover, congelados y vendorizados:
 `tests/oraculo_inferencia.json` + `tests/oraculo_interpretaciones.json`. Una sola
 fecha distinta pone el test rojo.
 
-## Pendiente conocido
+## Licencia offline (`licencia.rs`)
 
-- **Licencia offline — NO portada a Rust.** El Python tenía una licencia firmada
-  por el licenciante, verificada en local (`INFORMES_LICENCIA`). El port no la
-  trae aún; tarea registrada. Mantendrá el modo degradado: **nunca bloquea nada**.
+Archivo firmado por el licenciante, verificado **en local** y sin red, con la
+misma criptografía que sella las entregas. Los campos son los diez del Anexo A
+del EULA, ni uno más: si el Anexo cambia, el módulo cambia con él.
+
+**No bloquea nada. Nunca** — ni ausente, ni con el mantenimiento vencido, ni
+alterada, ni con exceso de usuarios (invariante 2). Da visibilidad y evidencia;
+el remedio ante el exceso es contractual. `veredicto` devuelve `Estado`, no
+`Result`: no hay forma de que un llamante la convierta en un camino de error.
+
+Dos detalles que parecen descuidos y no lo son:
+
+- **`mantenimiento_hasta` NO es la vigencia.** El derecho de uso es perpetuo
+  (3.1, 3.2, 7.6). Pasada la fecha se dice «mantenimiento vencido», nunca
+  «licencia vencida»; y no lleva color de alarma, que solo merece `Invalida`.
+- **El veredicto NO valida contra las listas del Anexo A; la emisión sí.** Un
+  binario viejo que rechazara una edición nueva pintaría de rojo una licencia
+  legítima y bien firmada. Quien dice si el documento es auténtico es la firma.
+
+El par de claves del licenciante es DISTINTO del de las entregas
+(`generar-claves-licencia`), y `INFORMES_LICENCIA_SK` no se acepta por argumento
+—quedaría en el historial del intérprete y a la vista de `ps`—. Despliegue y
+emisión, en `DESPLIEGUE.md`.
 
 ## Documentos de negocio (no se editan sin pedirlo)
 

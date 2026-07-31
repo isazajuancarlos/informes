@@ -298,11 +298,34 @@ enseñe su trabajo sin envejecer. Las contraseñas las cifra el propio binario
   `sqlite3`, no copiando el archivo vivo (una copia de una base en uso puede
   capturar una transacción a medias y producir un respaldo que parece bueno y no
   restaura).
-- **Licencia offline — PENDIENTE de portar a Rust.** En el sistema Python existía
-  una licencia firmada por el licenciante que la app verificaba en local
-  (`INFORMES_LICENCIA`). El port a Rust todavía NO la trae; está registrada como
-  tarea. Cuando exista, mantendrá el principio del modo degradado: la licencia
-  **nunca bloquea nada** —ni ausente, ni vencida, ni alterada—, solo da
-  visibilidad; el remedio ante el exceso es contractual. Si una licencia vencida
-  impidiera registrar una entrega, Xiliux pasaría a ser la causa del
-  incumplimiento del cliente.
+- **Licencia offline**: portada a Rust (`licencia.rs`, #175). Un archivo firmado
+  por el licenciante que la aplicación verifica **en local**, sin red, con la
+  misma criptografía post-cuántica que sella las entregas. La licencia **nunca
+  bloquea nada** —ni ausente, ni con el mantenimiento vencido, ni alterada, ni
+  con exceso de usuarios—: solo da visibilidad (`GET /api/licencia`) y evidencia.
+  El remedio ante el exceso es contractual. Si una licencia vencida impidiera
+  registrar una entrega, Xiliux pasaría a ser la causa del incumplimiento del
+  cliente.
+
+  En el cliente, dos variables, ninguna obligatoria:
+
+  | Variable | Qué es |
+  |---|---|
+  | `INFORMES_LICENCIA` | ruta del archivo. Por defecto `licencia.quipu`, junto al binario. Sin archivo: «ausente», que es normal en evaluación. |
+  | `INFORMES_LICENCIA_PUBKEY` | clave **pública** del licenciante, en hex. Sin ella el veredicto es «sin verificador», nunca «inválida»: no se acusa a una licencia que no se ha podido mirar. |
+
+  En casa del licenciante, y **solo** ahí:
+
+  ```bash
+  siger-api generar-claves-licencia     # una vez; la SK no viaja al cliente
+  INFORMES_LICENCIA_SK=<hex> siger-api emitir-licencia \
+      --licenciatario "ACME S.A.S." --nit 900123456-1 \
+      --edicion profesional --perfil onprem --modalidad asistida \
+      --version 4.0 --usuarios 25 --sedes 3 \
+      --mantenimiento-hasta 2027-07-31 --salida licencia.quipu
+  ```
+
+  `--mantenimiento-hasta` es el fin del **Período de Mantenimiento**, no de la
+  licencia: el derecho de uso es perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA).
+  Pasada esa fecha la interfaz dice «mantenimiento vencido» y **nunca** «licencia
+  vencida», que sería falso y empujaría al cliente a pagar por lo que ya tiene.

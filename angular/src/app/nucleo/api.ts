@@ -163,6 +163,41 @@ export interface OpcionParte {
   detalle: string | null;
 }
 
+/**
+ * El estado de la licencia offline (#175).
+ *
+ * Se trae para AVISAR, nunca para decidir. Ninguna pantalla puede condicionar
+ * una acción a este objeto: la licencia no bloquea nada —ni ausente, ni con el
+ * mantenimiento vencido, ni alterada— y el día que lo hiciera, Xiliux pasaría a
+ * ser la causa del incumplimiento del cliente ante su ente de control.
+ *
+ * `es_grave` es cierto en UNA sola situación, `invalida`. El mantenimiento
+ * vencido no lo es: el derecho de uso es perpetuo y lo único que cesa son las
+ * actualizaciones y el soporte. Pintarlo de rojo asustaría a un cliente que está
+ * en su pleno derecho y entrenaría a ignorar el aviso que sí importa.
+ */
+export interface EstadoLicencia {
+  situacion: 'valida' | 'ausente' | 'invalida' | 'mantenimiento_vencido' | 'sin_verificador';
+  /** Ya redactado por el servidor: la interfaz lo muestra, no lo reescribe. */
+  mensaje: string;
+  hay_que_avisar: boolean;
+  es_grave: boolean;
+  datos: {
+    licenciatario: string;
+    nit: string;
+    edicion: string;
+    perfil: string;
+    version: string;
+    usuarios: number;
+    sedes: number;
+    modalidad: string;
+    emitida: string;
+    mantenimiento_hasta: string;
+  } | null;
+  /** Aviso de exceso de Usuarios Autorizados, o `null`. Informa; no impide. */
+  exceso_usuarios: string | null;
+}
+
 @Injectable({ providedIn: 'root' })
 export class Api {
   private http = inject(HttpClient);
@@ -197,6 +232,10 @@ export class Api {
 
   yo() {
     return this.get<Actor>('/api/yo');
+  }
+
+  licencia() {
+    return this.get<EstadoLicencia>('/api/licencia');
   }
 
   entregas() {

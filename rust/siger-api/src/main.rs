@@ -18,6 +18,7 @@ mod firma;
 mod flujo;
 mod importar;
 mod informes;
+mod licencia;
 mod origen;
 mod participacion;
 mod planificador;
@@ -114,7 +115,123 @@ fn subcomando() -> Option<std::process::ExitCode> {
         return Some(std::process::ExitCode::SUCCESS);
     }
 
+    if std::env::args().nth(1).as_deref() == Some("generar-claves-licencia") {
+        // El par del LICENCIANTE, distinto del de las entregas: uno acredita
+        // quién emitió la licencia y el otro qué se entregó. Compartirlos ataría
+        // la capacidad de emitir licencias a una clave que vive en el .env de
+        // cada instalación de cliente.
+        let (vk, sk) = crate::licencia::generar_claves();
+        println!("INFORMES_LICENCIA_PUBKEY={vk}   # va al .env del CLIENTE");
+        println!("INFORMES_LICENCIA_SK={sk}   # SECRETA: se queda en casa del licenciante");
+        return Some(std::process::ExitCode::SUCCESS);
+    }
+
+    if std::env::args().nth(1).as_deref() == Some("emitir-licencia") {
+        return Some(emitir_licencia_cmd());
+    }
+
     None
+}
+
+/// `siger-api emitir-licencia --licenciatario … --nit … …`
+///
+/// **Lo corre EL LICENCIANTE, no el cliente.** Sale del MISMO binario que
+/// verifica, por la razón de siempre (ver `hashear`): un emisor aparte tendría su
+/// propia copia del formato canónico y el día que divergieran las licencias
+/// dejarían de verificarse sin que nadie supiera por qué.
+///
+/// La clave de firma se lee de `INFORMES_LICENCIA_SK` y **no** se acepta por
+/// argumento: en la línea de órdenes quedaría en el historial del intérprete y a
+/// la vista de cualquier `ps`.
+fn emitir_licencia_cmd() -> std::process::ExitCode {
+    const USO: &str = "uso: siger-api emitir-licencia \\\n  \
+        --licenciatario <razón social> --nit <nit> \\\n  \
+        --edicion <esencial|profesional|corporativa> \\\n  \
+        --perfil <standalone|onprem|cloud> \\\n  \
+        --modalidad <asistente|asistida|air-gapped> \\\n  \
+        --version <versión licenciada> --usuarios <n> --sedes <n> \\\n  \
+        --mantenimiento-hasta <AAAA-MM-DD> [--salida <archivo>]\n\n\
+        La clave de firma sale de INFORMES_LICENCIA_SK (hex), nunca de un argumento.\n\
+        --mantenimiento-hasta es el fin del PERÍODO DE MANTENIMIENTO, no de la\n\
+        licencia: el derecho de uso es perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA).";
+
+    // Los argumentos, en pares `--clave valor`. Uno impar o repetido es un error
+    // y no se adivina: una licencia emitida con un campo que el operador creía
+    // haber puesto es peor que un mensaje de uso.
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let mut campos: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut i = 0;
+    while i < args.len() {
+        let Some(clave) = args[i].strip_prefix("--") else {
+            eprintln!("no entiendo «{}».\n\n{USO}", args[i]);
+            return std::process::ExitCode::FAILURE;
+        };
+        let Some(valor) = args.get(i + 1) else {
+            eprintln!("a --{clave} le falta el valor.\n\n{USO}");
+            return std::process::ExitCode::FAILURE;
+        };
+        if campos.insert(clave.to_string(), valor.clone()).is_some() {
+            eprintln!("--{clave} viene dos veces; ¿cuál vale?\n\n{USO}");
+            return std::process::ExitCode::FAILURE;
+        }
+        i += 2;
+    }
+
+    let dame = |k: &str| campos.get(k).cloned().unwrap_or_default();
+    let numero = |k: &str| campos.get(k).and_then(|v| v.parse::<u32>().ok()).unwrap_or(0);
+
+    let l = licencia::Licencia {
+        licenciatario: dame("licenciatario"),
+        nit: dame("nit"),
+        edicion: dame("edicion"),
+        perfil: dame("perfil"),
+        version: dame("version"),
+        usuarios: numero("usuarios"),
+        sedes: numero("sedes"),
+        modalidad: dame("modalidad"),
+        // La emisión es HOY. No se acepta por argumento: una fecha de emisión
+        // que se teclea es una fecha de emisión que se puede antedatar, y este
+        // campo es de los que un perito miraría.
+        emitida: chrono::Local::now().date_naive().to_string(),
+        mantenimiento_hasta: dame("mantenimiento-hasta"),
+    };
+
+    let Ok(sk) = std::env::var("INFORMES_LICENCIA_SK") else {
+        eprintln!(
+            "falta INFORMES_LICENCIA_SK (la clave de firma, en hex).\n\
+             Genere el par con `siger-api generar-claves-licencia`.\n\n{USO}"
+        );
+        return std::process::ExitCode::FAILURE;
+    };
+
+    let firmado = match licencia::emitir(&l, &sk) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("no se emitió nada:\n  {e}\n\n{USO}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
+    let salida = campos
+        .get("salida")
+        .cloned()
+        .unwrap_or_else(|| licencia::ARCHIVO_POR_DEFECTO.to_string());
+    // No se sobrescribe una licencia existente sin decirlo: el archivo de al
+    // lado puede ser el de otro cliente.
+    if std::path::Path::new(&salida).exists() {
+        eprintln!("«{salida}» ya existe; no lo piso. Elija otro --salida o borre ese.");
+        return std::process::ExitCode::FAILURE;
+    }
+    if let Err(e) = std::fs::write(&salida, &firmado) {
+        eprintln!("no se pudo escribir «{salida}»: {e}");
+        return std::process::ExitCode::FAILURE;
+    }
+    println!(
+        "licencia emitida en «{salida}» para {} ({}): {} · {} · {} usuarios · {} sedes\n\
+         mantenimiento hasta {} — el derecho de uso es PERPETUO y no caduca con esa fecha.",
+        l.licenciatario, l.nit, l.edicion, l.perfil, l.usuarios, l.sedes, l.mantenimiento_hasta
+    );
+    std::process::ExitCode::SUCCESS
 }
 
 /// `siger-api importar <db_origen> <db_destino>`: vuelca la base del sistema

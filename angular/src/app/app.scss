@@ -43,4 +43,27 @@
   color: var(--mat-sys-on-surface-variant);
 }
 
+/* La banda de licencia (#175).
+   Color de INFORMACIÓN por defecto, no de error: la situación normal de un
+   aviso aquí es «sin licencia instalada» (evaluación) o «mantenimiento
+   vencido», y ninguna de las dos es un problema del cliente — el derecho de
+   uso es perpetuo. El rojo se reserva a `.grave`, que solo se pone cuando la
+   licencia no cuadra; si todo fuera rojo, el aviso que importa se perdería
+   entre los que no. */
+.aviso-licencia {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 1.25rem;
+  font-size: 0.9rem;
+  background: var(--mat-sys-secondary-container);
+  color: var(--mat-sys-on-secondary-container);
+  border-bottom: 1px solid var(--mat-sys-outline-variant);
+}
+.aviso-licencia.grave {
+  background: var(--mat-sys-error-container);
+  color: var(--mat-sys-on-error-container);
+}
+.aviso-licencia mat-icon { flex: 0 0 auto; }
+
 .contenido { padding: 1.25rem; }
