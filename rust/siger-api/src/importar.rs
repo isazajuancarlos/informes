@@ -110,9 +110,18 @@ fn rol_usuario(id: i64, email: &str, es_admin: i64, rol_sistema: Option<&str>) -
 ///
 /// No se re-hashea (no tenemos la contraseña) ni se verifica de verdad (haría
 /// falta la contraseña, y correr el KDF por usuario cuesta 45 ms de los suyos).
-/// Se comprueba EXACTAMENTE lo que el login comprueba antes de comparar: que el
-/// PHC parsea, que el algoritmo es de la familia Argon2, y que sus parámetros se
-/// pueden leer. Lo que pasa por aquí, el login lo entiende.
+/// Se comprueban las cinco cosas que el verificador exige antes de llegar a
+/// comparar: PHC legible, algoritmo de la familia Argon2, versión presente **y**
+/// conocida, parámetros que construyan el KDF, y sal y salida presentes.
+///
+/// **El criterio no es esa lista, es su consecuencia**: que no entre en la base
+/// ningún hash con el que el dueño no pueda entrar. La lista es el medio y
+/// envejece; lo que manda es la prueba
+/// `no_pasa_ningun_hash_con_el_que_el_dueno_no_pueda_entrar`, que compara este
+/// chequeo contra el verificador de verdad con la contraseña en la mano. Una
+/// versión anterior de esta función decía «se comprueba EXACTAMENTE lo que el
+/// login comprueba» y no era cierto: le faltaban la versión y la sal, y tres
+/// formas de hash pasaban dejando la cuenta fuera para siempre.
 ///
 /// La familia entera —`argon2i`, `argon2d`, `argon2id`—, no solo el `argon2id`
 /// que emite hoy `hashear`: el origen es passlib y no siempre eligió la misma
@@ -124,8 +133,45 @@ fn clave_argon2(id: i64, email: &str, hash: &str) -> Result<String, ErrorImporta
         .map_err(|e| no(format!("no es un hash PHC legible: {e}")))?;
     argon2::Algorithm::try_from(phc.algorithm)
         .map_err(|_| no(format!("el algoritmo «{}» no es de la familia Argon2", phc.algorithm)))?;
+
+    // La VERSIÓN, y este es el caso que de verdad existe ahí fuera.
+    //
+    // passlib emitía los Argon2 **v1.0 sin campo `v=`**. Ese hash parsea, su
+    // algoritmo es de la familia y sus parámetros se leen: pasaba las tres
+    // comprobaciones anteriores. Pero `PasswordHash` sin versión toma
+    // `Version::default()`, que es **v0x13**, así que el verificador calcula un
+    // digest distinto del que guardó passlib y **ni la contraseña correcta
+    // entra**. Medido con la contraseña en la mano: un v1.0 con su `$v=16` deja
+    // pasar al dueño, y el mismo hash sin el campo, no.
+    //
+    // Un `v=` ausente no es «la versión de siempre»: es una versión que este
+    // sistema no puede saber. Y una que no reconoce el verificador tampoco vale.
+    let Some(version) = phc.version else {
+        return Err(no(
+            "es un Argon2 sin campo «v=». El sistema anterior (passlib) los emitía así \
+             cuando eran de la versión 1.0, y el verificador de hoy los lee como si fueran \
+             de la 1.3: calcula otro digest y ni la contraseña correcta entra"
+                .to_string(),
+        ));
+    };
+    argon2::Version::try_from(version)
+        .map_err(|_| no(format!("la versión de Argon2 «{version}» no la conoce el verificador")))?;
+
     argon2::Params::try_from(&phc)
         .map_err(|e| no(format!("los parámetros del Argon2 no se pueden leer: {e}")))?;
+
+    // La SAL y la SALIDA. Un PHC puede traer solo la cabecera —`$argon2id$v=19$
+    // m=...,t=...,p=...`, que es una descripción de parámetros, no una
+    // credencial—: parsea, es Argon2 y sus parámetros son buenos, pero no hay
+    // nada contra lo que comparar. El verificador lo rechaza siempre.
+    if phc.salt.is_none() || phc.hash.is_none() {
+        return Err(no(
+            "el PHC no trae sal o no trae salida: describe unos parámetros de Argon2, \
+             pero no contiene ninguna contraseña contra la que comparar"
+                .to_string(),
+        ));
+    }
+
     Ok(hash.to_string())
 }
 
@@ -194,7 +240,15 @@ pub async fn importar(origen: &str, destino: &str) -> Result<Resumen, ErrorImpor
         let id: i64 = fila.get("id");
         let email: String = fila.get("email");
         let rol = rol_usuario(id, &email, fila.get("es_admin"), fila.get::<Option<String>, _>("rol_sistema").as_deref())?;
-        let clave = clave_argon2(id, &email, &fila.get::<String, _>("password_hash"))?;
+        // `Option<String>` y no `String`: una columna NULL haría que `get`
+        // entrara en pánico, y un pánico dice mucho menos que el error de al
+        // lado —que nombra la fila y explica qué reponer— sobre exactamente el
+        // mismo problema: esa persona no puede entrar.
+        let clave = clave_argon2(
+            id,
+            &email,
+            fila.get::<Option<String>, _>("password_hash").as_deref().unwrap_or(""),
+        )?;
         sqlx::query(
             "INSERT INTO usuarios (id, nombre, email, clave_hash, rol, activo, stakeholder_id) \
              VALUES (?, ?, ?, ?, ?, ?, NULL)",
@@ -425,6 +479,58 @@ mod tests {
     fn un_argon2_con_parametros_imposibles_tampoco_pasa() {
         let h = "$argon2id$v=19$m=0,t=1,p=1$c2FsdHNhbHRzYWx0c2FsdA$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
         assert!(motivo(h).contains("los parámetros del Argon2 no se pueden leer"), "{}", motivo(h));
+    }
+
+    /// La prueba que mide lo que se afirma: **si el dueño puede entrar**.
+    ///
+    /// Las demás comprueban que el chequeo rechaza formas raras. Esta comprueba
+    /// lo único que importa de verdad — que no quede en la base ningún hash que
+    /// el login no pueda verificar NI CON LA CONTRASEÑA CORRECTA, porque ese es
+    /// el bloqueo silencioso que #231 existe para cerrar.
+    ///
+    /// Salió de una revisión de seguridad, y de una sonda mía anterior que
+    /// medía mal: verificaba con una contraseña cualquiera, así que «no casó»
+    /// no distinguía una clave incorrecta de un hash inservible. Con la
+    /// contraseña en la mano, tres formas pasaban el chequeo y dejaban la
+    /// cuenta fuera para siempre.
+    #[test]
+    fn no_pasa_ningun_hash_con_el_que_el_dueno_no_pueda_entrar() {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        use argon2::{Argon2, PasswordVerifier, Version};
+
+        const CLAVE: &[u8] = b"la-contrasena-del-dueno";
+        let sal = SaltString::from_b64("c2FsdHNhbHRzYWx0c2Fs").unwrap();
+        let bueno = Argon2::default().hash_password(CLAVE, &sal).unwrap().to_string();
+        // Un Argon2 v1.0 de verdad, como los que emitía passlib.
+        let v10 = Argon2::new(argon2::Algorithm::Argon2i, Version::V0x10, argon2::Params::default())
+            .hash_password(CLAVE, &sal)
+            .unwrap()
+            .to_string();
+
+        // El dueño entra con su contraseña, sí o no. Es el ÚNICO criterio.
+        let entra = |h: &str| {
+            argon2::PasswordHash::new(h)
+                .map(|p| Argon2::default().verify_password(CLAVE, &p).is_ok())
+                .unwrap_or(false)
+        };
+
+        for (nombre, h) in [
+            ("un Argon2 recién hecho", bueno.clone()),
+            ("un v1.0 CON su campo v=16", v10.clone()),
+            ("un v1.0 SIN campo v= (passlib)", v10.replace("$v=16", "")),
+            ("una versión que nadie conoce", bueno.replace("v=19", "v=99")),
+            ("solo la cabecera, sin sal ni salida", "$argon2id$v=19$m=19456,t=2,p=1".to_string()),
+        ] {
+            // Los dos controles importan tanto como los casos: sin ellos, un
+            // chequeo que rechazara TODO también pasaría esta prueba.
+            assert_eq!(
+                clave_argon2(1, "a@b.co", &h).is_ok(),
+                entra(&h),
+                "«{nombre}»: el volcado y el login tienen que estar de acuerdo. \
+                 Aceptar lo que el login no verifica deja a esa persona fuera para \
+                 siempre; rechazar lo que sí verifica la deja fuera de la migración."
+            );
+        }
     }
 
     /// Ni el vacío ni la basura caen a un defecto: son la misma parada.
