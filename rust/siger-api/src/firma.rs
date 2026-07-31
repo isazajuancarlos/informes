@@ -190,4 +190,31 @@ mod tests {
         assert!(firmar(&ejemplo(), None).is_none());
         assert!(!verificar(&ejemplo(), "loquesea", None).0);
     }
+
+    /// Una clave PRESENTE pero inservible degrada igual que la ausencia, y no
+    /// rompe nada.
+    ///
+    /// Esta prueba existe porque `de_hex` se movió a `crate::hex` para arreglar
+    /// un pánico, y ese movimiento tocó el camino de FIRMA sin que la firma
+    /// fuera el objeto del cambio. La versión de aquí aceptaba la cadena vacía
+    /// (devolvía `Some(vec![])`) y la nueva la rechaza: el resultado observable
+    /// tiene que ser el mismo —ninguna firma, ninguna verificación, ningún
+    /// pánico—, y sin esto no había nada que lo sujetara. El caso multibyte es
+    /// el pánico original.
+    #[test]
+    fn una_clave_inservible_degrada_igual_que_la_ausencia() {
+        for clave in ["", "  ", "impar", "zz", "no-es-hex", "€a", "añb1", "—"] {
+            assert!(
+                firmar(&ejemplo(), Some(clave)).is_none(),
+                "con la clave {clave:?} no se puede firmar, y tampoco reventar"
+            );
+            let (ok, _) = verificar(&ejemplo(), "loquesea", Some(clave));
+            assert!(!ok, "con la clave {clave:?} nada puede verificar");
+        }
+        // Y el control: con una clave BUENA sí se firma y sí verifica. Sin esto,
+        // un `firmar` que devolviera siempre `None` pasaría la prueba entera.
+        let (vk, sk) = generar_claves();
+        let f = firmar(&ejemplo(), Some(&sk)).expect("con clave buena se firma");
+        assert!(verificar(&ejemplo(), &f, Some(&vk)).0);
+    }
 }
