@@ -52,6 +52,14 @@ pub enum ErrorImportar {
     EntregaSinInforme(i64),
     #[error("informe id={0} ({1}): la recurrencia guardada no se puede leer: {2}")]
     Recurrencia(i64, String, String),
+    #[error(
+        "usuario id={0} ({1}): la contraseña guardada no la reconoce el sistema nuevo ({2}). \
+         El sistema anterior rehasheaba a Argon2 en cada acceso correcto, así que un hash de \
+         otro esquema es de alguien que no ha entrado desde entonces. Copiarlo lo dejaría fuera \
+         PARA SIEMPRE y sin señal: el login responde a un hash ilegible exactamente lo mismo que \
+         a una contraseña mala. Reponga esa contraseña en el origen y reintente el volcado."
+    )]
+    ClaveIlegible(i64, String, String),
 }
 
 /// Lo copiado, por tabla. Se imprime al terminar y se compara contra el origen.
@@ -83,6 +91,42 @@ fn rol_usuario(id: i64, email: &str, es_admin: i64, rol_sistema: Option<&str>) -
     } else {
         Err(ErrorImportar::RolUsuario(id, email.to_string(), r))
     }
+}
+
+/// El hash de la contraseña, comprobado contra el mismo reconocedor que usará el
+/// login.
+///
+/// Es el único campo que el volcado copiaba verbatim sobre una suposición —«los
+/// hashes ya son Argon2 en el origen»— que nadie comprobaba. Si es falsa para una
+/// fila, esa cuenta no vuelve a entrar JAMÁS y nadie se entera: el login no
+/// reconoce el formato, así que responde «credenciales incorrectas», que es
+/// palabra por palabra lo que responde a una contraseña mala. El usuario cambia
+/// una contraseña que ya era correcta y sigue sin entrar.
+///
+/// Y el log tampoco lo salva del todo. `rutas.rs` deja el aviso «el hash del
+/// usuario N no lo reconoce ningún esquema» solo cuando falla `PasswordHash::new`;
+/// un hash de otro esquema que SÍ es PHC válido —`$scrypt$…`— atraviesa ese
+/// parseo, muere después en `verify_password` y no escribe nada en ninguna parte.
+///
+/// No se re-hashea (no tenemos la contraseña) ni se verifica de verdad (haría
+/// falta la contraseña, y correr el KDF por usuario cuesta 45 ms de los suyos).
+/// Se comprueba EXACTAMENTE lo que el login comprueba antes de comparar: que el
+/// PHC parsea, que el algoritmo es de la familia Argon2, y que sus parámetros se
+/// pueden leer. Lo que pasa por aquí, el login lo entiende.
+///
+/// La familia entera —`argon2i`, `argon2d`, `argon2id`—, no solo el `argon2id`
+/// que emite hoy `hashear`: el origen es passlib y no siempre eligió la misma
+/// variante. Rechazar una que el verificador acepta dejaría fuera a un usuario
+/// legítimo, que es el error contrario y peor.
+fn clave_argon2(id: i64, email: &str, hash: &str) -> Result<String, ErrorImportar> {
+    let no = |motivo: String| ErrorImportar::ClaveIlegible(id, email.to_string(), motivo);
+    let phc = argon2::PasswordHash::new(hash)
+        .map_err(|e| no(format!("no es un hash PHC legible: {e}")))?;
+    argon2::Algorithm::try_from(phc.algorithm)
+        .map_err(|_| no(format!("el algoritmo «{}» no es de la familia Argon2", phc.algorithm)))?;
+    argon2::Params::try_from(&phc)
+        .map_err(|e| no(format!("los parámetros del Argon2 no se pueden leer: {e}")))?;
+    Ok(hash.to_string())
 }
 
 /// La fecha SOLA, en `%Y-%m-%d`. El sistema viejo guardaba un `datetime`
@@ -136,8 +180,11 @@ pub async fn importar(origen: &str, destino: &str) -> Result<Resumen, ErrorImpor
     let mut r = Resumen::default();
     let mut tx = dst.begin().await?;
 
-    // 1) usuarios. Los hashes ya son Argon2 en el origen, así que verifican con el
-    //    sistema nuevo sin re-hashear: se copian tal cual.
+    // 1) usuarios. El hash se copia tal cual —no tenemos la contraseña para
+    //    re-hashear— pero antes se COMPRUEBA que el sistema nuevo lo reconozca.
+    //    Copiar uno que no reconoce deja a esa persona fuera para siempre y sin
+    //    señal; ver `clave_argon2`. Es el mismo motivo por el que la recurrencia
+    //    se valida tres bloques más abajo: el fallo aparecería lejos del volcado.
     for fila in sqlx::query(
         "SELECT id, nombre, email, password_hash, es_admin, rol_sistema, activo FROM usuarios ORDER BY id",
     )
@@ -147,6 +194,7 @@ pub async fn importar(origen: &str, destino: &str) -> Result<Resumen, ErrorImpor
         let id: i64 = fila.get("id");
         let email: String = fila.get("email");
         let rol = rol_usuario(id, &email, fila.get("es_admin"), fila.get::<Option<String>, _>("rol_sistema").as_deref())?;
+        let clave = clave_argon2(id, &email, &fila.get::<String, _>("password_hash"))?;
         sqlx::query(
             "INSERT INTO usuarios (id, nombre, email, clave_hash, rol, activo, stakeholder_id) \
              VALUES (?, ?, ?, ?, ?, ?, NULL)",
@@ -154,7 +202,7 @@ pub async fn importar(origen: &str, destino: &str) -> Result<Resumen, ErrorImpor
         .bind(id)
         .bind(fila.get::<String, _>("nombre"))
         .bind(email)
-        .bind(fila.get::<String, _>("password_hash"))
+        .bind(clave)
         .bind(rol)
         .bind(fila.get::<i64, _>("activo"))
         .execute(&mut *tx)
@@ -305,6 +353,87 @@ pub async fn importar(origen: &str, destino: &str) -> Result<Resumen, ErrorImpor
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// El motivo del rechazo, para poder afirmar QUÉ capa lo paró.
+    ///
+    /// Las tres comprobaciones de `clave_argon2` están en cascada, así que una
+    /// entrada mal elegida las atraviesa todas por la primera y deja las otras
+    /// dos sin probar — verde indistinguible del verde real. Cada prueba de aquí
+    /// abajo nombra su capa; si un cambio mueve el rechazo de sitio, se cae.
+    fn motivo(h: &str) -> String {
+        clave_argon2(1, "a@b.co", h).unwrap_err().to_string()
+    }
+
+    /// Un hash Argon2 del origen pasa tal cual: es el caso normal, y la
+    /// comprobación no puede estorbarlo (directiva 21: la regla se prueba contra
+    /// el cliente legítimo, no contra el atacante).
+    #[test]
+    fn el_hash_argon2_del_origen_pasa_verbatim() {
+        // El que emite HOY el propio sistema (`hashear`), generado aquí y no
+        // copiado a mano: si algún día cambian sus parámetros, esta prueba se
+        // entera. Los otros dos son literales porque el origen es passlib, que
+        // no siempre eligió argon2id — rechazar argon2i dejaría fuera cuentas
+        // legítimas, que es el error contrario y peor.
+        use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
+        let propio = argon2::Argon2::default()
+            .hash_password(b"cualquiera", &SaltString::generate(&mut OsRng))
+            .expect("el hasher del sistema produce un PHC válido")
+            .to_string();
+
+        for h in [
+            propio.as_str(),
+            "$argon2i$v=19$m=4096,t=3,p=1$c2Fsc2Fsc2Fsc2Fsc2Fs$3wLKm4Cy0S4KEC0N/EOKuqhKz9WlFtHiJvQMHNKqvT4",
+            "$argon2d$v=19$m=4096,t=3,p=1$c2Fsc2Fsc2Fsc2Fsc2Fs$3wLKm4Cy0S4KEC0N/EOKuqhKz9WlFtHiJvQMHNKqvT4",
+        ] {
+            assert_eq!(clave_argon2(1, "a@b.co", h).unwrap(), h, "rechazado: {h}");
+        }
+    }
+
+    /// El caso de #231. Un bcrypt superviviente no lo reconoce ningún esquema
+    /// del sistema nuevo: copiarlo deja esa cuenta fuera PARA SIEMPRE, y el
+    /// login responde exactamente lo mismo que ante una clave mala, así que
+    /// quien lo sufre no tiene ninguna señal. El volcado se detiene.
+    #[test]
+    fn un_bcrypt_superviviente_detiene_el_volcado() {
+        let h = "$2b$12$KIXQd7yPQhLpqZ0e0O9K0eXhO0LNnRZQ1B3D8dQPmZfJPjMcCsGvC";
+        let e = clave_argon2(7, "quedo@fuera.co", h).unwrap_err();
+        assert!(matches!(e, ErrorImportar::ClaveIlegible(7, _, _)), "{e}");
+        // El mensaje nombra la fila: sin eso, quien migra no sabe a QUIÉN
+        // reponerle la contraseña.
+        assert!(e.to_string().contains("quedo@fuera.co"), "{e}");
+        // Y lo para la PRIMERA capa: bcrypt no llega ni a ser PHC (su «salt» de
+        // dos dígitos es más corto que el mínimo).
+        assert!(e.to_string().contains("no es un hash PHC legible"), "{e}");
+    }
+
+    /// El agujero que la prueba anterior no cubre: un hash de otro esquema que
+    /// SÍ es un PHC válido —scrypt— atraviesa el `PasswordHash::new` del login
+    /// sin activar su rama de error, muere después en `verify_password` y NO
+    /// deja rastro en ningún log. Por eso parsear no basta: hay que exigir la
+    /// familia del algoritmo, que es la SEGUNDA capa.
+    #[test]
+    fn un_phc_valido_que_no_es_argon2_tampoco_pasa() {
+        let h = "$scrypt$ln=16,r=8,p=1$c2FsdHNhbHRzYWx0c2FsdA$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        let e = clave_argon2(9, "otro@esquema.co", h).unwrap_err();
+        assert!(matches!(e, ErrorImportar::ClaveIlegible(9, _, _)), "{e}");
+        assert!(e.to_string().contains("«scrypt» no es de la familia Argon2"), "{e}");
+    }
+
+    /// TERCERA capa: es Argon2 y parsea, pero sus parámetros no construyen un
+    /// KDF. El login lo tomaría por bueno hasta el momento de verificar.
+    #[test]
+    fn un_argon2_con_parametros_imposibles_tampoco_pasa() {
+        let h = "$argon2id$v=19$m=0,t=1,p=1$c2FsdHNhbHRzYWx0c2FsdA$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+        assert!(motivo(h).contains("los parámetros del Argon2 no se pueden leer"), "{}", motivo(h));
+    }
+
+    /// Ni el vacío ni la basura caen a un defecto: son la misma parada.
+    #[test]
+    fn una_clave_ausente_o_ilegible_no_cae_a_un_defecto() {
+        for h in ["", "         ", "contraseña-en-claro"] {
+            assert!(motivo(h).contains("no es un hash PHC legible"), "{h:?}: {}", motivo(h));
+        }
+    }
 
     #[test]
     fn el_rol_admin_manda_sobre_rol_sistema() {
