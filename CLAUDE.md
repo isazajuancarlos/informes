@@ -134,7 +134,13 @@ alterada, ni con exceso de usuarios (invariante 2). Da visibilidad y evidencia;
 el remedio ante el exceso es contractual. `veredicto` devuelve `Estado`, no
 `Result`: no hay forma de que un llamante la convierta en un camino de error.
 
-Dos detalles que parecen descuidos y no lo son:
+`GET /api/licencia` reparte en dos: el **aviso** (situación, mensaje, si es
+grave) lo ve cualquiera con sesión —es la visibilidad que justifica el módulo—,
+y los **datos del Anexo A** más el exceso de usuarios solo `Admin` o
+`Supervisor`, porque llevan NIT, alcance contratado y el recuento exacto de
+usuarios activos, que `/api/usuarios` ya le niega a un `Tercero`.
+
+Tres detalles que parecen descuidos y no lo son:
 
 - **`mantenimiento_hasta` NO es la vigencia.** El derecho de uso es perpetuo
   (3.1, 3.2, 7.6). Pasada la fecha se dice «mantenimiento vencido», nunca
@@ -142,6 +148,10 @@ Dos detalles que parecen descuidos y no lo son:
 - **El veredicto NO valida contra las listas del Anexo A; la emisión sí.** Un
   binario viejo que rechazara una edición nueva pintaría de rojo una licencia
   legítima y bien firmada. Quien dice si el documento es auténtico es la firma.
+- **El reloj es LOCAL, no UTC**, en las dos mitades (`licencia::hoy`), a
+  diferencia del resto de la aplicación. `mantenimiento_hasta` no es un
+  instante: es una fecha de un contrato firmado en Colombia, y comparar con UTC
+  le quitaba al cliente las últimas cinco horas del día que pagó.
 
 El par de claves del licenciante es DISTINTO del de las entregas
 (`generar-claves-licencia`), y `INFORMES_LICENCIA_SK` no se acepta por argumento

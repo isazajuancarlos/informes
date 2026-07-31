@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use quipu::api::{decode_verified, encode_signed};
 use quipu::dictionary::Dictionary;
 use quipu::pqsign::{generate_keypair, SigningKey, VerifyingKey};
+use crate::hex::{a_hex, de_hex};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -42,20 +43,6 @@ pub fn sha256_hex(datos: &[u8]) -> String {
     format!("{:x}", h.finalize())
 }
 
-fn de_hex(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-fn a_hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 /// Los campos auditables de una entrega. Es lo que se firma; cualquier cambio
 /// posterior en cualquiera de ellos invalida la firma.

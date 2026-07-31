@@ -421,15 +421,23 @@ async fn yo(actor: Actor) -> Json<Actor> {
 
 /// El estado de la licencia offline, para el aviso de la cabecera (#175).
 ///
-/// Pide sesión —trae la razón social, el NIT y el alcance contratado, que no
-/// tienen por qué estar a la vista de quien no ha entrado— pero **no pide rol**:
-/// el aviso lo ve todo el mundo, y esconderlo a los operadores convertiría la
-/// «visibilidad» que justifica este módulo en visibilidad para uno solo.
+/// **La respuesta tiene dos mitades y no se reparten igual**, que es lo que
+/// señaló la revisión de seguridad:
+///
+/// - El **aviso** —situación, mensaje, si hay que avisar, si es grave— lo ve
+///   todo el que tenga sesión. Es la «visibilidad» que justifica este módulo;
+///   esconderla a los operadores la convertiría en visibilidad para uno solo.
+/// - Los **datos del Anexo A** y el aviso de exceso solo los ve `Admin` o
+///   `Supervisor`. Traen razón social, NIT, alcance contratado y —cuando hay
+///   exceso— **el número exacto de usuarios activos**, que es un dato que
+///   `/api/usuarios` ya le niega a un `Tercero`. Dárselo por esta puerta sería
+///   una incoherencia entre dos endpoints sobre el mismo dato, y el `Tercero`
+///   es por definición quien no pertenece a la organización.
 ///
 /// Ni esta ruta ni ninguna otra consultan la licencia para DECIDIR nada. Si un
 /// día alguien quiere que un endpoint dependa de esto, que lea primero la nota
 /// de módulo de `licencia.rs`.
-async fn licencia(_actor: Actor, State(e): State<Estado>) -> Json<serde_json::Value> {
+async fn licencia(actor: Actor, State(e): State<Estado>) -> Json<serde_json::Value> {
     // Se lee del disco en cada consulta, sin caché: una licencia que se
     // sustituye en caliente tiene que verse sin reiniciar el binario. Un archivo
     // ilegible se trata como ausente — que es lo que es desde aquí— y no como
@@ -438,26 +446,33 @@ async fn licencia(_actor: Actor, State(e): State<Estado>) -> Json<serde_json::Va
     let estado = crate::licencia::veredicto(
         firmado.as_deref(),
         e.cfg.licencia_pubkey.as_deref(),
-        chrono::Utc::now().date_naive(),
+        crate::licencia::hoy(),
     );
+
+    // ¿Quién ve el detalle? Admin y Supervisor. Ver la nota de arriba.
+    let ve_el_detalle = matches!(actor.rol, crate::autz::Rol::Admin | crate::autz::Rol::Supervisor);
 
     // El exceso de Usuarios Autorizados se mide contra los usuarios ACTIVOS, que
     // es la definición del Anexo A (credencial nominal vigente). Si la consulta
-    // falla, no se inventa un número: no hay aviso.
-    let activos: Option<i64> = sqlx::query_scalar("SELECT COUNT(*) FROM usuarios WHERE activo != 0")
-        .fetch_one(&e.bd)
-        .await
-        .ok();
-    let exceso = activos
-        .and_then(|n| u32::try_from(n).ok())
-        .and_then(|n| crate::licencia::excede_usuarios(&estado, n));
+    // falla, no se inventa un número: no hay aviso. Y no se cuenta siquiera si
+    // quien pregunta no va a poder verlo.
+    let exceso = if ve_el_detalle {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM usuarios WHERE activo != 0")
+            .fetch_one(&e.bd)
+            .await
+            .ok()
+            .and_then(|n| u32::try_from(n).ok())
+            .and_then(|n| crate::licencia::excede_usuarios(&estado, n))
+    } else {
+        None
+    };
 
     Json(serde_json::json!({
         "situacion": estado.situacion,
         "mensaje": estado.mensaje,
         "hay_que_avisar": estado.hay_que_avisar(),
         "es_grave": estado.es_grave(),
-        "datos": estado.datos,
+        "datos": if ve_el_detalle { estado.datos } else { None },
         "exceso_usuarios": exceso,
     }))
 }
@@ -1243,11 +1258,15 @@ mod pruebas_licencia {
     use crate::licencia::Licencia;
 
     fn actor() -> Actor {
+        con_rol(crate::autz::Rol::Admin)
+    }
+
+    fn con_rol(rol: crate::autz::Rol) -> Actor {
         Actor {
             id: 1,
             nombre: "Ada".into(),
             email: "ada@x.co".into(),
-            rol: crate::autz::Rol::Admin,
+            rol,
             stakeholder_id: None,
         }
     }
@@ -1337,6 +1356,56 @@ mod pruebas_licencia {
         assert_eq!(v["es_grave"], false);
         let aviso = v["exceso_usuarios"].as_str().expect("3 > 2 tiene que avisar");
         assert!(aviso.contains('3') && aviso.contains('2'), "{aviso}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// El AVISO lo ve todo el mundo; el DETALLE, solo Admin y Supervisor.
+    ///
+    /// Lo señaló una revisión de seguridad: `datos` trae razón social, NIT y
+    /// alcance contratado, y `exceso_usuarios` lleva dentro **el número exacto
+    /// de usuarios activos** — un dato que `/api/usuarios` ya le niega a un
+    /// `Tercero`, que por definición no pertenece a la organización. Dárselo por
+    /// esta otra puerta sería que dos endpoints digan cosas distintas sobre el
+    /// mismo dato.
+    ///
+    /// Y la otra mitad importa igual: al `Tercero` **no** se le esconde el
+    /// aviso. Ocultárselo convertiría la visibilidad que justifica el módulo en
+    /// visibilidad para dos roles.
+    #[tokio::test]
+    async fn el_aviso_es_para_todos_y_el_detalle_no() {
+        let (vk, sk) = crate::licencia::generar_claves();
+        // Tope de 2 y tres usuarios activos: hay exceso que contar.
+        let firmado = crate::licencia::emitir(&ejemplo(), &sk).unwrap();
+        let dir = std::env::temp_dir().join(format!("siger-lic-rol-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("licencia.quipu");
+        std::fs::write(&ruta, &firmado).unwrap();
+
+        for (rol, ve) in [
+            (crate::autz::Rol::Admin, true),
+            (crate::autz::Rol::Supervisor, true),
+            (crate::autz::Rol::Operador, false),
+            (crate::autz::Rol::Tercero, false),
+        ] {
+            let e = estado_con(3, ruta.to_str().unwrap(), Some(vk.clone())).await;
+            let Json(v) = licencia(con_rol(rol), State(e)).await;
+
+            // El aviso, para todos: sin mensaje no hay nada que enseñar.
+            assert_eq!(v["situacion"], "valida", "{rol:?}: {v}");
+            assert!(v["mensaje"].as_str().is_some_and(|m| !m.is_empty()), "{rol:?}");
+            assert_eq!(v["es_grave"], false, "{rol:?}");
+
+            // El detalle, solo a quien corresponde.
+            assert_eq!(v["datos"].is_null(), !ve, "{rol:?}: datos");
+            assert_eq!(v["exceso_usuarios"].is_null(), !ve, "{rol:?}: exceso");
+            if ve {
+                // Y cuando se ve, se ve entero: sin esto, un `datos` vacío
+                // pasaría la prueba por el lado equivocado.
+                assert_eq!(v["datos"]["nit"], "900123456-1", "{rol:?}");
+                assert!(v["exceso_usuarios"].as_str().unwrap().contains('3'), "{rol:?}");
+            }
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -15,6 +15,7 @@ mod db;
 mod estadisticas;
 mod estaticos;
 mod firma;
+mod hex;
 mod flujo;
 mod importar;
 mod informes;
@@ -155,6 +156,17 @@ fn emitir_licencia_cmd() -> std::process::ExitCode {
         --mantenimiento-hasta es el fin del PERÍODO DE MANTENIMIENTO, no de la\n\
         licencia: el derecho de uso es perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA).";
 
+    // Las claves que este subcomando entiende. Es una lista CERRADA, y por un
+    // caso concreto: `--salidaa` se tragaba sin rechistar, el campo `salida`
+    // quedaba sin poner, y la licencia del cliente aparecía en `licencia.quipu`
+    // del directorio actual en vez de donde el operador creyó mandarla. El resto
+    // de erratas (`--usuarioss`) acaban en «faltan campos obligatorios», que es
+    // ruidoso pero no dice la causa. Lo señaló una revisión de seguridad.
+    const CONOCIDAS: &[&str] = &[
+        "licenciatario", "nit", "edicion", "perfil", "version",
+        "usuarios", "sedes", "modalidad", "mantenimiento-hasta", "salida",
+    ];
+
     // Los argumentos, en pares `--clave valor`. Uno impar o repetido es un error
     // y no se adivina: una licencia emitida con un campo que el operador creía
     // haber puesto es peor que un mensaje de uso.
@@ -166,6 +178,14 @@ fn emitir_licencia_cmd() -> std::process::ExitCode {
             eprintln!("no entiendo «{}».\n\n{USO}", args[i]);
             return std::process::ExitCode::FAILURE;
         };
+        if !CONOCIDAS.contains(&clave) {
+            eprintln!(
+                "«--{clave}» no es una opción de este subcomando. \
+                 Las que hay: --{}.\n\n{USO}",
+                CONOCIDAS.join(", --")
+            );
+            return std::process::ExitCode::FAILURE;
+        }
         let Some(valor) = args.get(i + 1) else {
             eprintln!("a --{clave} le falta el valor.\n\n{USO}");
             return std::process::ExitCode::FAILURE;
@@ -192,7 +212,10 @@ fn emitir_licencia_cmd() -> std::process::ExitCode {
         // La emisión es HOY. No se acepta por argumento: una fecha de emisión
         // que se teclea es una fecha de emisión que se puede antedatar, y este
         // campo es de los que un perito miraría.
-        emitida: chrono::Local::now().date_naive().to_string(),
+        // El MISMO reloj que usa el veredicto (`licencia::hoy`). Que la emisión
+        // y la comprobación miren relojes distintos es cómo el aviso de
+        // «mantenimiento vencido» acaba apareciendo un día antes de tiempo.
+        emitida: licencia::hoy().to_string(),
         mantenimiento_hasta: dame("mantenimiento-hasta"),
     };
 

@@ -303,6 +303,8 @@ enseñe su trabajo sin envejecer. Las contraseñas las cifra el propio binario
   misma criptografía post-cuántica que sella las entregas. La licencia **nunca
   bloquea nada** —ni ausente, ni con el mantenimiento vencido, ni alterada, ni
   con exceso de usuarios—: solo da visibilidad (`GET /api/licencia`) y evidencia.
+  Ese endpoint reparte en dos: el aviso lo ve cualquiera con sesión; los datos
+  del Anexo A y el exceso de usuarios, solo `Admin` y `Supervisor`.
   El remedio ante el exceso es contractual. Si una licencia vencida impidiera
   registrar una entrega, Xiliux pasaría a ser la causa del incumplimiento del
   cliente.

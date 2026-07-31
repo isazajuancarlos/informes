@@ -60,6 +60,7 @@ use chrono::NaiveDate;
 use quipu::api::{decode_verified, encode_signed};
 use quipu::dictionary::Dictionary;
 use quipu::pqsign::{generate_keypair, SigningKey, VerifyingKey};
+use crate::hex::{a_hex, de_hex};
 use serde_json::Value;
 
 /// Ediciones válidas (Anexo A del EULA).
@@ -72,27 +73,32 @@ pub const MODALIDADES: &[&str] = &["asistente", "asistida", "air-gapped"];
 /// Nombre por defecto del archivo de licencia, junto al binario.
 pub const ARCHIVO_POR_DEFECTO: &str = "licencia.quipu";
 
+/// El día de hoy **en el calendario del cliente**, y es el único reloj que este
+/// módulo usa: lo mira la emisión y lo mira el veredicto.
+///
+/// Tenía las dos mitades con relojes distintos —`Local` al emitir, `Utc` al
+/// juzgar— y lo cazó una revisión de seguridad. En Colombia (UTC-5) eso hace que
+/// el aviso de «mantenimiento vencido» aparezca a las **19:00 hora local del
+/// último día pagado**: el cliente pierde cinco horas del día que contrató y el
+/// sistema le dice algo que todavía no es verdad. Es exactamente lo que la nota
+/// de módulo jura no hacer.
+///
+/// El resto de la aplicación compara con `Utc` (planificador, estadísticas,
+/// alertas), y aquí NO se sigue esa costumbre a propósito:
+/// `mantenimiento_hasta` no es un instante, es **una fecha de un contrato
+/// firmado en Colombia**. La comparación tiene que ocurrir en el calendario en
+/// el que se pactó. Que el planificador use otro reloj es asunto suyo —y
+/// pendiente propio—, no una razón para heredar aquí un defecto.
+pub fn hoy() -> NaiveDate {
+    chrono::Local::now().date_naive()
+}
+
 /// El mismo alfabeto que `firma.rs`: ASCII imprimible `0x21..=0x7e`. Tiene que
 /// coincidir con el de la rueda de Python (`default_dict`) o el artefacto emitido
 /// por una implementación no se lee con la otra.
 fn dict() -> Dictionary {
     Dictionary::new((0x21u8..=0x7e).map(|b| b as char).collect())
         .expect("el alfabeto ASCII por defecto es válido")
-}
-
-fn de_hex(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    if s.is_empty() || s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-fn a_hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Los diez campos del Anexo A. Ni uno más: lo que no está en el Anexo no puede
@@ -510,11 +516,26 @@ mod tests {
     /// Sin clave pública NO se dice «inválida»: no lo sabemos. Decirlo pintaría
     /// de rojo la instalación de un cliente cuyo único pecado es no haber puesto
     /// una variable de entorno.
+    ///
+    /// La lista incluye claves con caracteres MULTIBYTE, y no por exotismo: la
+    /// forma obvia de decodificar hex rebana el `&str` por índices de byte y
+    /// entra en pánico si el corte cae dentro de un carácter. Esto corre en cada
+    /// consulta, así que una tilde pegada por error en el `.env` mataría la
+    /// petición en vez de dar «sin verificador». Lo cazó una revisión de
+    /// seguridad; `firma.rs` tenía la misma copia y va arreglada igual.
     #[test]
     fn sin_clave_publica_no_se_acusa_a_la_licencia() {
         let (_, sk) = generar_claves();
         let firmado = emitir(&ejemplo(), &sk).unwrap();
-        for vk in [None, Some(""), Some("no-es-hex"), Some("abc")] {
+        for vk in [
+            None,
+            Some(""),
+            Some("no-es-hex"),
+            Some("abc"),
+            Some("€a"),          // 3 bytes + 1: el corte caería dentro del €
+            Some("añb1"),        // multibyte en medio
+            Some("—"),           // guion tipográfico, lo que pega un gestor de correo
+        ] {
             let e = veredicto(Some(&firmado), vk, dia("2026-08-01"));
             assert_eq!(e.situacion, Situacion::SinVerificador, "vk={vk:?}: {}", e.mensaje);
             assert!(!e.es_grave(), "vk={vk:?}");
