@@ -38,6 +38,72 @@ pub struct Estado {
     pub motor: std::sync::Arc<siger_core::Motor>,
 }
 
+/// La política de contenido. Ver [`cabeceras_de_seguridad`].
+///
+/// Cada directiva está aquí porque se comprobó contra el Angular COMPILADO, no
+/// porque venga en una lista de buenas prácticas.
+const CSP: &str = "default-src 'self'; \
+                   script-src 'self'; \
+                   style-src 'self' 'unsafe-inline'; \
+                   img-src 'self' data:; \
+                   font-src 'self'; \
+                   connect-src 'self'; \
+                   object-src 'none'; \
+                   base-uri 'self'; \
+                   form-action 'self'; \
+                   frame-ancestors 'none'";
+
+/// Cabeceras que van en TODA respuesta, también en la interfaz.
+///
+/// # Por qué en la aplicación y no solo en nginx
+///
+/// `despliegue/informes.xiliux.com.nginx` ya pone tres de estas. Pero esa es la
+/// configuración de UN despliegue: una instalación en casa del cliente, un
+/// contenedor, o cualquiera que ponga su propio proxy se queda sin ninguna. Lo
+/// que viaja dentro del binario protege siempre; lo que vive en el proxy protege
+/// donde alguien se acordó de copiarlo.
+///
+/// # La CSP: qué se cerró y qué no, con su razón
+///
+/// - **`script-src 'self'`, sin `'unsafe-inline'` ni `'unsafe-eval'`.** Es la
+///   directiva que de verdad para un XSS, y es la que costó trabajo: el
+///   `index.html` que producía Angular traía
+///   `onload="this.media='all'"` en la hoja de estilos —un manejador en línea, o
+///   sea script— porque `inlineCritical` estaba encendido. Con esta directiva el
+///   navegador no lo ejecuta, la hoja se queda en `media="print"` y la
+///   aplicación se ve SIN ESTILOS *sin dar un solo error*. Se apagó
+///   `inlineCritical` en `angular.json`; el `index.html` ya no lleva nada en
+///   línea que ejecutar.
+/// - **`style-src` sí lleva `'unsafe-inline'`, y no es pereza.** Angular Material
+///   escribe estilos en tiempo de ejecución y usa atributos `style="…"` para
+///   animaciones y ondas. Un *nonce* no lo arreglaría: los nonces valen para
+///   elementos `<style>`, no para atributos `style`, que necesitarían
+///   `'unsafe-hashes'`. Quitarlo rompe la interfaz y el riesgo que deja abierto
+///   —inyectar CSS— es mucho menor que el de ejecutar código.
+/// - **`frame-ancestors 'none'`** duplica a `X-Frame-Options`. La cabecera vieja
+///   se queda para los navegadores que aún no leen la directiva.
+/// - **Nada de HSTS aquí**: el TLS termina en nginx, que es quien puede
+///   prometerlo con conocimiento de causa.
+pub async fn cabeceras_de_seguridad(
+    peticion: axum::extract::Request,
+    siguiente: axum::middleware::Next,
+) -> Response {
+    let mut r = siguiente.run(peticion).await;
+    let h = r.headers_mut();
+    // No reinterpretes el tipo que declaro.
+    h.insert(header::X_CONTENT_TYPE_OPTIONS, header::HeaderValue::from_static("nosniff"));
+    // Nadie enmarca esto: sin ello un sitio ajeno la mete en un iframe y engaña a
+    // quien la usa para que pulse donde no cree.
+    h.insert(header::X_FRAME_OPTIONS, header::HeaderValue::from_static("DENY"));
+    // La ruta de un informe no viaja como `Referer` a terceros.
+    h.insert(
+        header::REFERRER_POLICY,
+        header::HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    h.insert(header::CONTENT_SECURITY_POLICY, header::HeaderValue::from_static(CSP));
+    r
+}
+
 pub fn router(estado: Estado) -> Router {
     let tope_mb = estado.cfg.max_mb;
     Router::new()
