@@ -12,7 +12,10 @@ publish.workspace = true
 siger-core = { path = "../siger-core" }
 
 axum = { version = "0.8", features = ["multipart"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+# `sync` (semáforo) y `time` (el plazo de espera) acotan cuántos descifrados
+# corren a la vez: cada uno reserva 64 MiB de Argon2id, así que el tope es de
+# memoria, no de gusto. Ver `permisos_de_descifrado` en config.rs.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
 tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
 
 sqlx = { version = "0.8", default-features = false, features = [
@@ -63,7 +66,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # envío colgado falle ruidosamente en vez de parecer una compilación lenta. No
 # entra en el binario de producción.
 [dev-dependencies]
-tokio = { version = "1", features = ["time"] }
+# `test-util` da el reloj virtual (`pause`/`advance`): la prueba del semáforo lleno
+# comprueba la DECISIÓN —«ocupado», no «no descifra»— sin esperar de verdad los 30
+# segundos del plazo. Una prueba que duerme medio minuto acaba borrándose.
+tokio = { version = "1", features = ["time", "test-util"] }
 # Las pruebas del respaldo necesitan bases en DISCO, no en memoria: `VACUUM INTO`
 # escribe un archivo y lo que se está probando es precisamente que ese archivo
 # sirva. Una base `:memory:` no ejercería nada de eso.

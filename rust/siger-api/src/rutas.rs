@@ -441,11 +441,19 @@ async fn descargar_archivo(
         Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into())
     })?;
 
-    let datos = match leer_en_claro(&ruta, cifrado != 0, e.cfg.clave_reposo.as_deref()).await {
+    let datos = match leer_en_claro(&ruta, cifrado != 0, &e.cfg).await {
         Documento::Claro(d) => d,
         // Que no esté es un 404 esté cifrado o no: el estado del despliegue no
         // cambia qué le pasó al archivo.
         Documento::NoEsta => return Err(no_existe()),
+        // 503 y no 500: el archivo está perfectamente y volver a pedirlo dentro de
+        // un rato funcionará. Un 500 mandaría a buscar una avería que no existe.
+        Documento::Ocupado => {
+            return Err(Error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "el servidor está atendiendo demasiadas descargas cifradas; reinténtelo".into(),
+            ));
+        }
         Documento::NoDescifra => {
             tracing::error!(
                 "entrega {id}: no se pudo descifrar el archivo (¿falta SIGER_CLAVE_REPOSO, está rotada, o el blob fue alterado?)"
@@ -595,11 +603,18 @@ async fn sha_del_documento(
     };
     // Se descifra ANTES de hashear: el SHA firmado es el del documento en claro,
     // no el del blob.
-    match leer_en_claro(&ruta, cifrado, cfg.clave_reposo.as_deref()).await {
+    match leer_en_claro(&ruta, cifrado, cfg).await {
         Documento::Claro(d) => Ok(Some(crate::firma::sha256_hex(&d))),
         Documento::NoEsta => {
             tracing::error!("entrega {id}: el archivo firmado no está en el almacén");
             Err("el archivo de la entrega no está en el almacén")
+        }
+        // «No se puede saber», que es exactamente lo que pasó: no se llegó a leer
+        // el documento. Decir «alterada» porque el servidor estaba lleno sería la
+        // acusación falsa que documenta la cabecera de esta función.
+        Documento::Ocupado => {
+            tracing::warn!("entrega {id}: no se verificó, el servidor estaba saturado de descifrados");
+            Err("el servidor estaba ocupado y no se pudo leer el archivo; reinténtelo")
         }
         Documento::NoDescifra => {
             tracing::error!(
@@ -625,22 +640,117 @@ enum Documento {
     /// El archivo está y la fila lo declara cifrado, pero no se pudo descifrar:
     /// falta la frase de reposo, está rotada, o el blob fue alterado.
     NoDescifra,
+    /// No se llegó a MIRAR el archivo: el servidor tenía ya todos sus descifrados
+    /// en marcha y el turno no llegó a tiempo.
+    ///
+    /// **Es un caso aparte de `NoDescifra` a propósito**, y por la misma razón que
+    /// `NoEsta` lo es. «No descifra» dice algo sobre el ARCHIVO —que está alterado,
+    /// o que la frase no corresponde— y el verificador lo traduce en una duda sobre
+    /// la entrega. «Ocupado» no dice nada sobre el archivo: dice que el servidor
+    /// estaba lleno. Meterlos en el mismo cajón haría que una tarde de mucho
+    /// tráfico se leyera como una entrega sospechosa, que es exactamente la
+    /// acusación falsa que este módulo existe para no hacer.
+    Ocupado,
 }
+
+/// Cuánto se espera un turno para descifrar antes de rendirse.
+///
+/// Generoso a propósito: lo que se rechaza es la sobrecarga real, no el uso
+/// intenso. Un navegador abre seis conexiones por servidor, así que el peor caso
+/// de un usuario normal —seis descargas a la vez con un solo permiso— espera cerca
+/// de un segundo. Treinta segundos solo se alcanzan si de verdad hay cientos de
+/// peticiones encima, y siguen por debajo del `proxy_read_timeout` de nginx (60 s),
+/// de modo que quien contesta el 503 es el servidor, que sabe por qué, y no el
+/// proxy con un 504 mudo.
+const ESPERA_DESCIFRADO: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Lee el archivo de una entrega y lo devuelve EN CLARO. Si la fila dice que está
 /// cifrado, lo descifra con la frase de reposo. **Nunca** se sirve un blob
 /// cifrado como si fuera el documento (directiva 20: ante la ausencia de la clave
 /// se falla, no se entrega basura).
-async fn leer_en_claro(ruta: &Path, cifrado: bool, clave: Option<&str>) -> Documento {
+/// # Por qué el descifrado NO corre aquí
+///
+/// `guaca::reposo::descifrar` es un Argon2id completo: 162 ms de CPU y 64 MiB,
+/// medidos, y **da igual el tamaño del archivo**. Hasta hoy se llamaba en esta
+/// misma función `async`, es decir SOBRE un hilo de trabajo de tokio, que se
+/// quedaba clavado esos 162 ms sin poder atender nada más.
+///
+/// No era una teoría. Contra el binario real, con un solo hilo de trabajo —un VPS
+/// de 1 vCPU— la latencia máxima de `/api/salud`, el punto más barato del sistema:
+///
+/// | descargas cifradas en paralelo | `/api/salud` peor caso |
+/// |---|---|
+/// | 0 | 0 ms |
+/// | 4 | 329 ms |
+/// | 16 | 2 019 ms |
+/// | 32 | 2 744 ms |
+///
+/// Es decir: un puñado de descargas AUTENTICADAS y perfectamente legítimas
+/// congelaban el inicio de sesión de todos los demás. No hacía falta un atacante,
+/// bastaba un auditor con prisa.
+///
+/// Ahora el descifrado va a `spawn_blocking` —fuera de los hilos del runtime— y el
+/// semáforo de [`crate::config::permisos_de_descifrado`] limita cuántos corren a la
+/// vez, que es lo que acota la memoria. Las dos cosas juntas, porque
+/// `spawn_blocking` a secas admitiría 512 en paralelo: 32 GiB.
+async fn leer_en_claro(ruta: &Path, cifrado: bool, cfg: &Config) -> Documento {
     let Ok(crudo) = tokio::fs::read(ruta).await else {
         return Documento::NoEsta;
     };
     if !cifrado {
         return Documento::Claro(crudo);
     }
-    match clave.and_then(|c| guaca::reposo::descifrar(&crudo, c).ok()) {
-        Some(claro) => Documento::Claro(claro),
-        None => Documento::NoDescifra,
+    // Sin frase no hay nada que esperar: se responde ya, sin ocupar un turno que
+    // otro sí puede aprovechar.
+    let Some(clave) = cfg.clave_reposo.clone() else {
+        return Documento::NoDescifra;
+    };
+
+    // `acquire_owned` y no `acquire`, y el permiso viaja DENTRO de la tarea
+    // bloqueante. No es un detalle de préstamos: si el permiso se soltara aquí, al
+    // terminar este `await`, un cliente que corta la conexión a mitad de descarga
+    // haría que axum tirase esta función —liberando el permiso— mientras el
+    // Argon2id sigue corriendo con sus 64 MiB. Repetido deprisa, el tope dejaría
+    // de acotar nada y volveríamos al techo de 512 hilos, que es justo lo que el
+    // semáforo existe para evitar. Soltándolo dentro, el turno solo se libera
+    // cuando la memoria de verdad se libera.
+    let permiso = match tokio::time::timeout(
+        ESPERA_DESCIFRADO,
+        cfg.descifrados.clone().acquire_owned(),
+    )
+    .await
+    {
+        // El semáforo vive en `Config`, que vive tanto como el proceso: solo se
+        // cierra si alguien llama a `close()`, y nadie lo hace.
+        Ok(Ok(p)) => p,
+        Ok(Err(_)) => return Documento::Ocupado,
+        Err(_) => {
+            tracing::warn!(
+                "descifrado en cola más de {} s: el servidor está por encima de \
+                 SIGER_DESCIFRADOS_PARALELOS. Si se repite, o sobra memoria para \
+                 subirlo, o falta capacidad.",
+                ESPERA_DESCIFRADO.as_secs()
+            );
+            return Documento::Ocupado;
+        }
+    };
+
+    let resultado = tokio::task::spawn_blocking(move || {
+        let r = guaca::reposo::descifrar(&crudo, &clave);
+        drop(permiso); // el turno se libera con la memoria, no antes
+        r
+    })
+    .await;
+
+    match resultado {
+        Ok(Ok(claro)) => Documento::Claro(claro),
+        Ok(Err(_)) => Documento::NoDescifra,
+        // La tarea bloqueante entró en pánico o el runtime está cerrando. No es un
+        // hecho sobre el archivo, así que tampoco puede salir por `NoDescifra`.
+        Err(e) => {
+            tracing::error!("el descifrado no llegó a terminar: {e}");
+            Documento::Ocupado
+        }
     }
 }
 
@@ -1386,7 +1496,9 @@ mod tests {
         let en_disco = std::fs::read(&ruta).unwrap();
         assert!(!en_disco.windows(documento.len()).any(|w| w == documento));
 
-        let Documento::Claro(claro) = leer_en_claro(&ruta, true, Some(frase)).await else {
+        let mut cfg = Config::de_prueba();
+        cfg.clave_reposo = Some(frase.to_owned());
+        let Documento::Claro(claro) = leer_en_claro(&ruta, true, &cfg).await else {
             panic!("con la frase correcta el documento se lee")
         };
         assert_eq!(crate::firma::sha256_hex(&claro), sha_original);
@@ -1406,17 +1518,22 @@ mod tests {
         // «No descifra» y «no está» son hechos distintos y se devuelven distintos:
         // de eso depende que la verificación no acuse de alteración a quien solo
         // perdió la frase.
-        assert_eq!(leer_en_claro(&ruta, true, None).await, Documento::NoDescifra);
+        let con = |f: Option<&str>| {
+            let mut c = Config::de_prueba();
+            c.clave_reposo = f.map(str::to_owned);
+            c
+        };
+        assert_eq!(leer_en_claro(&ruta, true, &con(None)).await, Documento::NoDescifra);
         assert_eq!(
-            leer_en_claro(&ruta, true, Some("frase-equivocada")).await,
+            leer_en_claro(&ruta, true, &con(Some("frase-equivocada"))).await,
             Documento::NoDescifra
         );
         assert_eq!(
-            leer_en_claro(&dir.join("no-existe.bin"), true, Some(frase)).await,
+            leer_en_claro(&dir.join("no-existe.bin"), true, &con(Some(frase))).await,
             Documento::NoEsta
         );
         assert_eq!(
-            leer_en_claro(&ruta, true, Some(frase)).await,
+            leer_en_claro(&ruta, true, &con(Some(frase))).await,
             Documento::Claro(b"secreto".to_vec())
         );
 
@@ -1432,9 +1549,126 @@ mod tests {
         let ruta = dir.join("viejo.pdf");
         std::fs::write(&ruta, b"documento viejo en claro").unwrap();
         assert_eq!(
-            leer_en_claro(&ruta, false, Some("hay-frase-pero-la-fila-dice-claro")).await,
+            leer_en_claro(&ruta, false, &{
+                let mut c = Config::de_prueba();
+                c.clave_reposo = Some("hay-frase-pero-la-fila-dice-claro".into());
+                c
+            })
+            .await,
             Documento::Claro(b"documento viejo en claro".to_vec())
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn el_servidor_lleno_dice_ocupado_y_no_no_descifra() {
+        // LA prueba de este cambio, y la que DISCRIMINA: con el semáforo agotado,
+        // un archivo PERFECTO tiene que salir por `Ocupado`. Si saliera por
+        // `NoDescifra`, `verificar` acusaría de alteración a una entrega intacta
+        // solo porque el servidor tenía tráfico — la acusación falsa que el resto
+        // de este módulo se dedica a evitar.
+        let frase = "frase-de-reposo-correcta-y-larga-del-despliegue";
+        let dir = dir_tmp("ocupado");
+        let ruta = dir.join("e.bin");
+        std::fs::write(&ruta, guaca::reposo::cifrar(b"documento intacto", frase)).unwrap();
+
+        let mut cfg = Config::de_prueba();
+        cfg.clave_reposo = Some(frase.to_owned());
+        cfg.descifrados = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+
+        // Con el permiso libre, el mismo archivo se lee perfectamente. Sin esta
+        // mitad, la prueba pasaría aunque `leer_en_claro` devolviera `Ocupado`
+        // siempre.
+        assert_eq!(
+            leer_en_claro(&ruta, true, &cfg).await,
+            Documento::Claro(b"documento intacto".to_vec()),
+            "con turno libre el archivo se lee"
+        );
+
+        // Y ahora sin turno: se ocupa el único permiso y no se suelta.
+        let ocupado = cfg.descifrados.clone().acquire_owned().await.unwrap();
+        let cfg_rapido = cfg.clone();
+        // `tokio::time::pause` hace que el plazo de 30 s venza al instante en el
+        // reloj virtual: la prueba mide la DECISIÓN, no la espera.
+        tokio::time::pause();
+        let leyendo = tokio::spawn(async move { leer_en_claro(&ruta, true, &cfg_rapido).await });
+        tokio::time::advance(ESPERA_DESCIFRADO + std::time::Duration::from_secs(1)).await;
+        assert_eq!(
+            leyendo.await.unwrap(),
+            Documento::Ocupado,
+            "sin turno, un archivo intacto NO puede salir como «no descifra»"
+        );
+        drop(ocupado);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cortar_la_descarga_no_devuelve_el_turno_antes_que_la_memoria() {
+        // El fallo que esto cierra, y que no se ve leyendo el código deprisa: si el
+        // permiso se soltara al terminar el `await` de `spawn_blocking`, un cliente
+        // que corta la conexión a mitad de descarga haría que axum tirase la función
+        // —liberando el turno— mientras el Argon2id sigue corriendo con sus 64 MiB.
+        // Repetido deprisa, el tope no acotaría nada. El turno tiene que soltarse
+        // con la MEMORIA, no con la petición.
+        let frase = "frase-de-reposo-correcta-y-larga-del-despliegue";
+        let dir = dir_tmp("cortar");
+        let ruta = dir.join("e.bin");
+        std::fs::write(&ruta, guaca::reposo::cifrar(b"documento", frase)).unwrap();
+
+        let mut cfg = Config::de_prueba();
+        cfg.clave_reposo = Some(frase.to_owned());
+        cfg.descifrados = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let sem = cfg.descifrados.clone();
+
+        let leyendo = tokio::spawn(async move { leer_en_claro(&ruta, true, &cfg).await });
+        // Esperar a que el turno esté REALMENTE tomado: abortar antes no probaría
+        // nada, porque no habría permiso que devolver.
+        for _ in 0..2000 {
+            if sem.available_permits() == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+        assert_eq!(sem.available_permits(), 0, "el descifrado nunca tomó su turno");
+
+        leyendo.abort();
+        // Y ESPERAR a que el aborto de verdad ocurra. `abort()` solo lo señala: si
+        // se comprueba el semáforo inmediatamente después, se mide la latencia de la
+        // cancelación y la prueba pasa con el código roto — pasó, y por eso está
+        // esta línea. Al `await` del handle abortado se vuelve cuando la función ya
+        // fue tirada, que es el instante en que un permiso mal colocado se soltaría.
+        let _ = leyendo.await;
+
+        // El descifrado dura ~162 ms, así que sigue en marcha con su memoria. Si el
+        // permiso viviera en la función tirada, ya estaría libre y el tope sería
+        // decorativo.
+        assert!(
+            sem.try_acquire().is_err(),
+            "abortar la petición devolvió el turno mientras el Argon2id seguía usando su memoria"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn sin_frase_no_se_consume_un_turno() {
+        // Esperar un permiso para después descubrir que no hay frase gastaría el
+        // turno de alguien que sí puede usarlo, y convertiría un despliegue mal
+        // configurado en una cola.
+        let dir = dir_tmp("sinfrase");
+        let ruta = dir.join("e.bin");
+        std::fs::write(&ruta, guaca::reposo::cifrar(b"x", "una-frase-larga-cualquiera-1234")).unwrap();
+
+        let mut cfg = Config::de_prueba();
+        cfg.clave_reposo = None;
+        cfg.descifrados = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let retenido = cfg.descifrados.clone().acquire_owned().await.unwrap();
+
+        // Con CERO permisos disponibles responde igual y en el acto: si esperase
+        // turno, esto colgaría los 30 s del plazo.
+        assert_eq!(leer_en_claro(&ruta, true, &cfg).await, Documento::NoDescifra);
+        drop(retenido);
         std::fs::remove_dir_all(&dir).ok();
     }
 
