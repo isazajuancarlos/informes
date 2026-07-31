@@ -434,6 +434,15 @@ async fn yo(actor: Actor) -> Json<Actor> {
 ///   una incoherencia entre dos endpoints sobre el mismo dato, y el `Tercero`
 ///   es por definición quien no pertenece a la organización.
 ///
+/// **Lo único del licenciatario que SÍ atraviesa el reparto es la fecha de fin
+/// de mantenimiento**, que viaja dentro de `mensaje` («Mantenimiento vigente
+/// hasta …»). Es deliberado y no un descuido: sin ella el aviso no dice nada
+/// —«mantenimiento vencido» sin decir cuándo no sirve a quien tiene que
+/// renovarlo—, y una fecha de renovación no identifica a nadie ni revela el
+/// alcance contratado. Ni NIT, ni razón social, ni edición, ni recuentos pasan
+/// por ahí. Lo señaló la re-revisión, y se anota aquí para que la próxima
+/// persona que lea esta lista sepa que la fecha se dejó pasar a propósito.
+///
 /// Ni esta ruta ni ninguna otra consultan la licencia para DECIDIR nada. Si un
 /// día alguien quiere que un endpoint dependa de esto, que lea primero la nota
 /// de módulo de `licencia.rs`.
