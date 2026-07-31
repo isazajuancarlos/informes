@@ -36,12 +36,22 @@ server {
     http2 on;
     server_name informes.xiliux.com;
 
-    # Estas cuatro líneas las gestiona certbot; se dejan nombradas para que el
-    # archivo sea legible antes de que las escriba.
-    # ssl_certificate     /etc/letsencrypt/live/informes.xiliux.com/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/informes.xiliux.com/privkey.pem;
-    # include             /etc/letsencrypt/options-ssl-nginx.conf;
-    # ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+    # Estas cuatro rutas las CREA certbot, pero no las escribe él: `publicar-demo.sh`
+    # usa `certonly --webroot` justamente para que certbot no reescriba este
+    # archivo —se llevaría por delante las cabeceras, el limit_req y el proxy
+    # afinados a mano—. Por eso van descomentadas y no hay ningún paso que las
+    # destape: el guion instala este archivo DESPUÉS de que el certificado exista,
+    # y comprueba que existe antes de recargar.
+    #
+    # Estuvieron comentadas y con un `sed` que las destapaba al instalar. El `sed`
+    # llevaba un error —`|` como delimitador y como alternancia a la vez—, falló,
+    # y como iba en una tubería hacia `tee`, dejó el archivo del sitio VACÍO. Un
+    # mecanismo que solo existía para deshacer lo que este mismo archivo había
+    # hecho a propósito.
+    ssl_certificate     /etc/letsencrypt/live/informes.xiliux.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/informes.xiliux.com/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
 
     # El tope de subida es el del binario (SIGER_MAX_MB=50) más margen para el
     # sobre multipart. Si nginx admitiera más, el rechazo llegaría del binario
@@ -55,9 +65,19 @@ server {
     # sirve el mismo puerto 80 que un atacante en la red puede interceptar.
     # Certbot NO añade la cabecera; solo el certificado.
     add_header Strict-Transport-Security "max-age=31536000" always;
-    add_header X-Frame-Options SAMEORIGIN always;
-    add_header X-Content-Type-Options nosniff always;
-    add_header Referrer-Policy strict-origin-when-cross-origin always;
+    # Y AQUÍ NO VAN `X-Frame-Options`, `X-Content-Type-Options` ni
+    # `Referrer-Policy`: las pone el binario, en TODA respuesta, junto con la CSP.
+    #
+    # Estuvieron. `add_header` no sustituye lo que llega del `proxy_pass`: AÑADE.
+    # Medido contra el sitio ya publicado, la respuesta salía con
+    # `x-frame-options: DENY` (del binario) **y** `x-frame-options: SAMEORIGIN`
+    # (de aquí). Duplicada con valores contradictorios, un navegador puede
+    # descartar la cabecera entera — o sea que la línea que parecía reforzar la
+    # protección era justo la que podía anularla, y encima aflojaba DENY a
+    # SAMEORIGIN. Las otras dos coincidían en valor, pero duplicar tampoco aporta.
+    #
+    # HSTS sí se queda: el binario no la pone a propósito, porque el TLS termina
+    # aquí y solo aquí se sabe que se puede prometer.
     # La demostración NO debe indexarse: sus credenciales son públicas y no
     # queremos que una búsqueda de «SIGER» lleve a una base que se borra cada
     # noche antes que al portafolio.
