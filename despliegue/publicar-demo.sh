@@ -95,16 +95,27 @@ echo "==> 3/6  pedir el certificado"
 sudo certbot certonly --webroot -w /var/www/html -d "$DOMINIO" \
      --non-interactive --agree-tos -m "$CORREO" --keep-until-expiring
 
-echo "==> 4/6  instalar el sitio definitivo con las líneas de TLS activas"
-# Se descomentan las cuatro que certbot habría escrito. `sed` sobre estas líneas
-# concretas y no sobre «cualquier comentario»: el archivo tiene prosa que explica
-# por qué está cada cosa, y descomentarla lo rompería.
-sudo sed -E 's|^(\s*)# (ssl_certificate |ssl_certificate_key |include  |ssl_dhparam )|\1\2|' \
-     "/tmp/$DOMINIO.nginx" | sudo tee "/etc/nginx/sites-available/$DOMINIO" >/dev/null
-if ! sudo grep -qE '^\s*ssl_certificate\s' "/etc/nginx/sites-available/$DOMINIO"; then
-    echo "no se descomentó ssl_certificate: el sitio quedaría sin TLS. Se aborta." >&2
+echo "==> 4/6  instalar el sitio definitivo"
+# Se comprueba que EXISTE lo que el sitio va a exigir, antes de ponerlo. Si
+# faltara, `nginx -t` fallaría con el sitio ya instalado y el temporal ya
+# sustituido: el peor sitio donde parar.
+for necesario in \
+    "/etc/letsencrypt/live/$DOMINIO/fullchain.pem" \
+    "/etc/letsencrypt/live/$DOMINIO/privkey.pem" \
+    /etc/letsencrypt/options-ssl-nginx.conf \
+    /etc/letsencrypt/ssl-dhparams.pem
+do
+    sudo test -f "$necesario" || { echo "falta $necesario; no se instala el sitio" >&2; exit 5; }
+done
+# `install` de un archivo a otro, y NUNCA una tubería hacia el archivo del sitio.
+# La versión anterior hacía `sed … | tee /etc/nginx/sites-available/…`: el `sed`
+# falló, no escribió nada, y `tee` dejó la configuración del sitio VACÍA. Una
+# tubería trunca el destino ANTES de saber si el productor va a producir algo.
+sudo install -m 644 "/tmp/$DOMINIO.nginx" "/etc/nginx/sites-available/$DOMINIO"
+sudo grep -qE '^\s*ssl_certificate\s' "/etc/nginx/sites-available/$DOMINIO" || {
+    echo "el sitio instalado no declara ssl_certificate: quedaría sin TLS. Se aborta." >&2
     exit 5
-fi
+}
 
 echo "==> 5/6  comprobar y recargar"
 sudo nginx -t
