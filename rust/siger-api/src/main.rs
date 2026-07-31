@@ -291,6 +291,10 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
         .merge(rutas::router(estado))
         // Lo que no es API es la interfaz, que viaja dentro del binario.
         .fallback(get(estaticos::servir))
+        // DESPUÉS del `fallback`, para que las cabeceras cubran también la
+        // interfaz: la CSP no sirve de nada si va solo en las respuestas de la
+        // API y no en el HTML que el navegador interpreta.
+        .layer(axum::middleware::from_fn(rutas::cabeceras_de_seguridad))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http());
 

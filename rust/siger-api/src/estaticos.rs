@@ -52,3 +52,60 @@ pub async fn servir(uri: Uri) -> Response {
             .into_response(),
     }
 }
+
+#[cfg(test)]
+mod pruebas {
+    use super::*;
+
+    /// El `index.html` que se empotró **puede ejecutarse bajo `script-src 'self'`**.
+    ///
+    /// Esta prueba existe porque el fallo que cierra no se ve: con
+    /// `inlineCritical` encendido, Angular emite
+    /// `<link ... media="print" onload="this.media='all'">`. Ese `onload` es
+    /// script en línea; con la CSP puesta el navegador NO lo ejecuta, la hoja se
+    /// queda en «print» y la aplicación se ve sin estilos **sin un solo error en
+    /// consola ni en el servidor**. Se apagó en `angular.json`, pero eso es una
+    /// opción de configuración que cualquier actualización de Angular o un
+    /// `ng update` puede revertir sin que nadie lo note.
+    ///
+    /// Se salta si no hay interfaz empaquetada (copia limpia sin `ng build`): lo
+    /// que no está no se puede comprobar, y fallar ahí sería castigar a quien solo
+    /// compiló el servidor.
+    #[test]
+    fn el_index_empotrado_no_lleva_nada_en_linea_que_ejecutar() {
+        let Some(index) = Interfaz::get("index.html") else {
+            eprintln!("sin interfaz empaquetada: nada que comprobar");
+            return;
+        };
+        let html = String::from_utf8_lossy(&index.data);
+
+        // Manejadores en línea (`onload=`, `onclick=`…). Se busca con el signo
+        // delante para no cazar `content=`, que contiene «on».
+        for pista in [" onload=", " onclick=", " onerror=", " onchange=", " onsubmit="] {
+            assert!(
+                !html.contains(pista),
+                "el index empotrado trae «{}», que `script-src 'self'` NO ejecuta. \
+                 Casi seguro volvió `inlineCritical` en angular.json.",
+                pista.trim()
+            );
+        }
+
+        // Un `<script>` sin `src` es código en línea.
+        for trozo in html.split("<script").skip(1) {
+            let etiqueta = trozo.split('>').next().unwrap_or("");
+            assert!(
+                etiqueta.contains("src="),
+                "hay un <script> en línea en el index: `script-src 'self'` no lo ejecuta"
+            );
+        }
+
+        // Y nada traído de fuera: los perfiles `onprem` y `standalone` no tienen
+        // internet, así que un host externo no es solo una fuga de privacidad —
+        // es una tipografía que no carga en casa del cliente.
+        assert!(
+            !html.contains("http://") && !html.contains("https://"),
+            "el index empotrado apunta a un host externo; `default-src 'self'` lo bloquea \
+             y en un despliegue sin internet no cargaría igualmente"
+        );
+    }
+}
