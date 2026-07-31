@@ -1290,6 +1290,52 @@ mod pruebas_acceso {
         assert!(espera >= 1, "Retry-After: 0 invita a reintentar ya mismo");
     }
 
+    /// Insistir durante la espera NO la alarga.
+    ///
+    /// El intento frenado sale por 429 y NO se anota, y eso hay que sujetarlo con
+    /// una prueba porque el razonamiento contrario es convincente: «si no se
+    /// anota, insistir sale gratis». Sale caro de otra manera. Anotarlo hace que
+    /// cada reintento sume un fallo, y como la espera dobla por fallo, la
+    /// impaciencia multiplica lo que hay que esperar hasta el techo — medido en
+    /// medico, que lo hacía así: tres clics llevaban la espera de 30 s a 300 s, y
+    /// al vencer, otro clic devolvía arriba. El freno dejaba de limitar el ritmo
+    /// de ensayo y pasaba a ser un bloqueo que la víctima se renueva sola.
+    ///
+    /// Al atacante paciente no le afecta: él espera. Le afecta a quien pulsa tres
+    /// veces creyendo que la página se colgó.
+    ///
+    /// No se exige que el `Retry-After` sea el mismo —el tiempo corre—, sino que
+    /// NO HAYA CRECIDO.
+    #[tokio::test]
+    async fn insistir_durante_la_espera_no_alarga_la_espera() {
+        let e = estado_con_usuario().await;
+        for _ in 0..6 {
+            intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+        }
+        let espera = |r: Response| -> u64 {
+            assert_eq!(r.status(), StatusCode::TOO_MANY_REQUESTS, "se esperaba estar frenado");
+            r.headers()
+                .get(header::RETRY_AFTER)
+                .expect("un 429 sin Retry-After no dice cuándo volver")
+                .to_str()
+                .unwrap()
+                .parse()
+                .expect("Retry-After no es un número de segundos")
+        };
+        let inicial = espera(intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await);
+        assert!(inicial >= 1, "no llegó a frenar");
+
+        for _ in 0..3 {
+            intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await;
+        }
+        let despues = espera(intentar(&e, "ada@x.co", "no-es", "203.0.113.9").await);
+        assert!(
+            despues <= inicial,
+            "insistir alargó la espera de {inicial}s a {despues}s: el intento frenado se \
+             está anotando, y eso convierte el freno en un bloqueo"
+        );
+    }
+
     #[tokio::test]
     async fn con_la_clave_buena_se_entra_y_el_freno_se_borra() {
         let e = estado_con_usuario().await;
