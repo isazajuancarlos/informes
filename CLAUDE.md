@@ -52,11 +52,27 @@ cargo test  --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings   # el CI usa -D warnings
 
 cd ../angular && npm ci && npx ng build                  # reconstruir la interfaz
+
+./rust/construir.sh              # el ARTEFACTO: interfaz dentro del binario
+./rust/humo.sh                   # y probarlo por HTTP, como lo prueba el mundo
 ```
 
 MSRV 1.85 (evitar API que exija más; p. ej. `% 2 != 0`, no `is_multiple_of`).
-El CI (`.github/workflows/ci.yml`) tiene dos trabajos: `rust` (test + clippy) y
-`frontend` (ng build).
+El CI (`.github/workflows/ci.yml`) tiene cuatro trabajos: `rust` (test +
+clippy), `frontend` (ng build), `cargo-audit (RustSec)` y `cargo-deny (supply
+chain)`. Se dispara en los PR contra `main` y en los empujes a `main`; **una
+rama sin PR abierto no lanza CI**, y es deliberado: este repositorio es privado
+y sus minutos salen del cupo de la cuenta.
+
+**Lo que el CI NO comprueba, y por eso existen los dos guiones de arriba:** no
+construye el artefacto ni empotra la interfaz, así que la prueba
+`estaticos::pruebas` —la que exige que el index empotrado se pueda ejecutar bajo
+`script-src 'self'`— **se salta siempre allí**. Su verde en el CI no dice nada
+del binario. `construir.sh` la corre con la interfaz ya dentro (paso 4/4, y
+exige que se haya EJECUTADO, no solo que salga 0), y `humo.sh` arranca el
+binario de release contra una base temporal y le habla por socket: interfaz
+servida de verdad, el `.js` que el index pide viviendo DENTRO, las cabeceras en
+la respuesta real y el freno del login frenando al sexto intento.
 
 Subcomandos del binario: `importar <origen> <destino>` (vuelca una base del
 Python anterior), `alertas` (una pasada, para un timer), `generar-secreto`,
