@@ -91,6 +91,16 @@ comprobar "sin sesión, /api/cuentas rechaza (401, no 404)" \
                                                   401 "$(codigo api/cuentas)"
 comprobar "sin sesión, /api/mi-clave rechaza (401, no 404)" \
                                                   401 "$(codigo api/mi-clave /dev/null -X POST)"
+
+# El segundo factor (#212), con el mismo criterio. `verificar` es el extremo del
+# SEGUNDO paso del login: si se cayera del router, quien tenga 2FA se quedaría
+# con un token pendiente y ninguna puerta donde usarlo — y las pruebas de
+# `cargo test` no lo verían, porque llaman al manejador.
+comprobar "sin sesión, /api/2fa rechaza (401, no 404)" \
+                                                  401 "$(codigo api/2fa)"
+comprobar "sin token pendiente, /api/2fa/verificar rechaza (401, no 404)" \
+                                                  401 "$(codigo api/2fa/verificar /dev/null -X POST \
+                                                          -H 'Content-Type: application/json' -d '{"codigo":"000000"}')"
 comprobar "una ruta del SPA devuelve el index"    200 "$(codigo cronograma)"
 comprobar "un /api/ inexistente es 404, no index" 404 "$(codigo api/no-existe)"
 

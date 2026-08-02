@@ -13,6 +13,7 @@ mod autz;
 mod config;
 mod cuentas;
 mod db;
+mod dosfactores;
 mod estadisticas;
 mod estaticos;
 mod firma;
@@ -26,6 +27,7 @@ mod planificador;
 mod pruebas_cronograma;
 mod respaldo;
 mod rutas;
+mod segundofactor;
 mod sesion;
 
 use axum::{routing::get, Router};

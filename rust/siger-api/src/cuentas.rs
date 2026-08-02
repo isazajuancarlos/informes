@@ -189,7 +189,7 @@ fn rol_valido(texto: &str) -> Result<Rol, Error> {
 /// dejarla suelta en el hilo del runtime bloquea el servidor entero. Que aquí
 /// haga falta sesión no lo hace gratis — un operador autenticado que repita el
 /// cambio de contraseña pagaría lo mismo que un atacante.
-async fn con_turno<T, F>(e: &Estado, que: &str, trabajo: F) -> Result<T, Error>
+pub(crate) async fn con_turno<T, F>(e: &Estado, que: &str, trabajo: F) -> Result<T, Error>
 where
     F: FnOnce() -> T + Send + 'static,
     T: Send + 'static,
@@ -227,7 +227,7 @@ where
 /// su causa —el alta termina bien, anuncia unas credenciales, y no se puede
 /// entrar con ellas—. Ya pasó una vez en la versión de Python; por eso el
 /// subcomando `hashear` existe y por eso esto no lo reimplementa.
-async fn hashear(e: &Estado, clave: String) -> Result<String, Error> {
+pub(crate) async fn hashear(e: &Estado, clave: String) -> Result<String, Error> {
     let hecho = con_turno(e, "hashear", move || {
         let sal = SaltString::generate(&mut OsRng);
         Argon2::default().hash_password(clave.as_bytes(), &sal).map(|h| h.to_string())
@@ -239,7 +239,7 @@ async fn hashear(e: &Estado, clave: String) -> Result<String, Error> {
     })
 }
 
-async fn clave_correcta(e: &Estado, hash_texto: String, clave: String) -> Result<bool, Error> {
+pub(crate) async fn clave_correcta(e: &Estado, hash_texto: String, clave: String) -> Result<bool, Error> {
     con_turno(e, "verificar clave", move || {
         PasswordHash::new(&hash_texto)
             .map(|h| Argon2::default().verify_password(clave.as_bytes(), &h).is_ok())

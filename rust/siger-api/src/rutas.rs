@@ -142,6 +142,15 @@ pub fn router(estado: Estado) -> Router {
             get(crate::participacion::listar).put(crate::participacion::reemplazar),
         )
         .route("/api/mi-clave", post(crate::cuentas::cambiar_mi_clave))
+        // El segundo factor (#212). `verificar` es el ÚNICO que no exige sesión:
+        // se llama con el token pendiente, que es lo que emite el login cuando la
+        // cuenta tiene 2FA. Los otros cuatro son de la cuenta propia y cualquier
+        // rol los usa — el segundo factor no es un privilegio de administración.
+        .route("/api/2fa", get(crate::segundofactor::estado))
+        .route("/api/2fa/iniciar", post(crate::segundofactor::iniciar))
+        .route("/api/2fa/activar", post(crate::segundofactor::activar))
+        .route("/api/2fa/desactivar", post(crate::segundofactor::desactivar))
+        .route("/api/2fa/verificar", post(crate::segundofactor::verificar))
         // Administración de cuentas. Recurso propio y no `/api/usuarios`, que
         // significa «quién puede ser parte de un flujo» y lo consume el selector
         // de partes: ver la cabecera de `cuentas.rs`.
@@ -330,19 +339,25 @@ async fn abrir_sesion(
             .into_response());
     }
 
-    let fila = sqlx::query_as::<_, (i64, String, i64, i64)>(
-        "SELECT id, clave_hash, activo, token_version FROM usuarios WHERE email = ?",
+    // `totp_confirmado_en` viaja en la MISMA consulta que ya se hacía. Traerlo
+    // después, con el usuario ya identificado, sería una segunda consulta que
+    // solo ocurre cuando el correo existe — y el cronómetro volvería a decir
+    // cuáles existen, que es justo lo que el señuelo evita.
+    let fila = sqlx::query_as::<_, (i64, String, i64, i64, Option<String>)>(
+        "SELECT id, clave_hash, activo, token_version, totp_confirmado_en \
+         FROM usuarios WHERE email = ?",
     )
     .bind(&email)
     .fetch_optional(&e.bd)
     .await?;
+    let con_segundo_factor = matches!(&fila, Some((_, _, _, _, Some(_))));
 
     // Mismo mensaje y mismo trabajo para «no existe» y «clave incorrecta»: la
     // diferencia —cualquiera de las dos— le dice a quien prueba qué correos son
     // de verdad. Ver `hash_senuelo` para la mitad que faltaba.
     let rechazo = Error(StatusCode::UNAUTHORIZED, "credenciales incorrectas".into());
     let (id, version, analizado) = match &fila {
-        Some((id, hash, activo, version)) if *activo != 0 => match PasswordHash::new(hash) {
+        Some((id, hash, activo, version, _)) if *activo != 0 => match PasswordHash::new(hash) {
             Ok(h) => (Some(*id), *version, h),
             Err(_) => {
                 // Un hash que ningún esquema reconoce no deja entrar, pero se
@@ -403,6 +418,26 @@ async fn abrir_sesion(
     }
     let id = id.expect("`entra` exige que haya usuario");
 
+    // Con segundo factor, la contraseña correcta **no abre nada**: emite el token
+    // pendiente, que solo sirve para `/api/2fa/verificar` y dura cinco minutos.
+    // El intento NO se anota como acceso todavía —el acceso lo anota el segundo
+    // paso— pero sí se le quita el fallo al freno: la contraseña era buena, y
+    // dejar el fallo puesto frenaría a quien está a punto de teclear su código.
+    if con_segundo_factor {
+        auditar(&e.bd, "acceso_falta_segundo_factor", Some(&email), None).await;
+        let valor = sesion::emitir_pendiente(&e.cfg.secreto_sesion, id, version);
+        let mut cabeceras = HeaderMap::new();
+        cabeceras.insert(
+            header::SET_COOKIE,
+            sesion::cabecera_pendiente(&valor).parse().expect("la cabecera es ASCII"),
+        );
+        return Ok((
+            cabeceras,
+            Json(serde_json::json!({ "ok": false, "segundo_factor": true })),
+        )
+            .into_response());
+    }
+
     auditar(&e.bd, "acceso", Some(&email), None).await;
     let valor = sesion::emitir(&e.cfg.secreto_sesion, id, version, e.cfg.minutos_sesion);
     let mut cabeceras = HeaderMap::new();
@@ -412,7 +447,7 @@ async fn abrir_sesion(
             .parse()
             .expect("la cabecera es ASCII"),
     );
-    Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
+    Ok((cabeceras, Json(serde_json::json!({ "ok": true, "segundo_factor": false }))).into_response())
 }
 
 async fn cerrar_sesion(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {

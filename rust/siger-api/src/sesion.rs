@@ -61,7 +61,23 @@ fn ahora() -> i64 {
 }
 
 fn firmar(secreto: &[u8], carga: &str) -> String {
+    firmar_en(secreto, "", carga)
+}
+
+/// Firma dentro de un DOMINIO.
+///
+/// El dominio entra en lo que se firma y no viaja en la cookie: dos tokens con la
+/// misma carga y distinto dominio tienen firmas que no se parecen, así que
+/// ninguno de los dos verificadores acepta el token del otro. Es lo que separa la
+/// sesión de verdad del token «pendiente de segundo factor» — ver
+/// [`emitir_pendiente`].
+///
+/// La sesión normal usa el dominio VACÍO, no uno con nombre: así las cookies ya
+/// emitidas siguen valiendo. Ponerle nombre habría sido más simétrico y habría
+/// echado a todo el mundo el día del despliegue, a cambio de nada.
+fn firmar_en(secreto: &[u8], dominio: &str, carga: &str) -> String {
     let mut mac = HmacSha256::new_from_slice(secreto).expect("HMAC acepta cualquier longitud");
+    mac.update(dominio.as_bytes());
     mac.update(carga.as_bytes());
     URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
 }
@@ -108,6 +124,76 @@ pub fn verificar(secreto: &[u8], valor: &str) -> Option<Sesion> {
     Some(sesion)
 }
 
+// --- El paso intermedio del segundo factor (#212) ------------------------------
+
+/// El dominio de firma del token pendiente. Ver [`firmar_en`].
+const DOMINIO_PENDIENTE: &str = "pendiente-de-segundo-factor|";
+
+/// Cookie del paso intermedio. Es OTRA cookie y no la de sesión con un campo
+/// más: mientras el segundo factor no se comprueba, esto no es una sesión, y
+/// dejarlas viajar en el mismo sitio invita a que un día una valga por la otra.
+pub const NOMBRE_COOKIE_PENDIENTE: &str = "siger_pendiente";
+
+/// Lo que dura el paso intermedio. Cinco minutos: lo que tarda alguien en sacar
+/// el teléfono, no lo que dura una jornada. Es un token que ya pasó la
+/// contraseña, así que su vida corta ES la mitigación.
+pub const MINUTOS_PENDIENTE: i64 = 5;
+
+/// El token que se emite cuando la contraseña es correcta pero falta el código.
+///
+/// **No sirve para nada más que para `POST /api/2fa/verificar`.** No lo garantiza
+/// una comprobación en cada extremo —eso se olvida en el extremo número doce—
+/// sino que ningún extractor de sesión lo mira: viaja en otra cookie y su firma
+/// pertenece a otro dominio, así que para [`verificar`] es basura.
+pub fn emitir_pendiente(secreto: &[u8], usuario_id: i64, version: i64) -> String {
+    let caduca = ahora() + MINUTOS_PENDIENTE * 60;
+    let carga = format!("{usuario_id}|{version}|{caduca}");
+    let firma = firmar_en(secreto, DOMINIO_PENDIENTE, &carga);
+    format!("{carga}|{firma}")
+}
+
+/// Lee y verifica un token pendiente. Mismas reglas que [`verificar`]: ante
+/// cualquier duda, `None`.
+pub fn verificar_pendiente(secreto: &[u8], valor: &str) -> Option<Sesion> {
+    let (carga, firma) = valor.rsplit_once('|')?;
+    let esperada = firmar_en(secreto, DOMINIO_PENDIENTE, carga);
+    if !constante_iguales(esperada.as_bytes(), firma.as_bytes()) {
+        return None;
+    }
+    let campos: Vec<&str> = carga.split('|').collect();
+    let [id, version, caduca] = campos[..] else {
+        return None;
+    };
+    let s = Sesion {
+        usuario_id: id.parse().ok()?,
+        version: version.parse().ok()?,
+        caduca_en: caduca.parse().ok()?,
+    };
+    if s.caduca_en <= ahora() {
+        return None;
+    }
+    Some(s)
+}
+
+/// La cabecera del paso intermedio.
+pub fn cabecera_pendiente(valor: &str) -> String {
+    format!(
+        "{NOMBRE_COOKIE_PENDIENTE}={valor}; HttpOnly; SameSite=Strict; Path=/; Max-Age={}",
+        MINUTOS_PENDIENTE * 60
+    )
+}
+
+/// La que lo borra. Se manda al completar el segundo factor y al fallar: un
+/// pendiente que sobrevive a su uso es un segundo intento gratis.
+pub fn cabecera_pendiente_cerrar() -> String {
+    format!("{NOMBRE_COOKIE_PENDIENTE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
+}
+
+/// Extrae el valor de la cookie pendiente.
+pub fn pendiente_de_cabeceras(cabeceras: &HeaderMap) -> Option<String> {
+    de_cabeceras_llamada(cabeceras, NOMBRE_COOKIE_PENDIENTE)
+}
+
 fn constante_iguales(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
         return false;
@@ -135,11 +221,15 @@ pub fn cabecera_cerrar() -> String {
 
 /// Extrae el valor de la cookie de las cabeceras.
 pub fn de_cabeceras(cabeceras: &HeaderMap) -> Option<String> {
+    de_cabeceras_llamada(cabeceras, NOMBRE_COOKIE)
+}
+
+fn de_cabeceras_llamada(cabeceras: &HeaderMap, nombre: &str) -> Option<String> {
     let crudo = cabeceras.get(header::COOKIE)?.to_str().ok()?;
     crudo
         .split(';')
         .filter_map(|p| p.trim().split_once('='))
-        .find(|(k, _)| *k == NOMBRE_COOKIE)
+        .find(|(k, _)| *k == nombre)
         .map(|(_, v)| v.to_string())
 }
 
@@ -198,6 +288,62 @@ mod tests {
         let carga = format!("42|{caduca}");
         let vieja = format!("{carga}|{}", firmar(SECRETO, &carga));
         assert!(verificar(SECRETO, &vieja).is_none(), "una cookie de dos campos entró");
+    }
+
+    /// **La prueba del segundo factor entero.**
+    ///
+    /// Si un token pendiente valiera como sesión, teclear la contraseña bastaría
+    /// para entrar y el código sería decoración. La ficha #212 proponía meter el
+    /// estado pendiente como un campo más dentro de la carga firmada; aquí no se
+    /// puede —`verificar` exige exactamente tres campos, y eso tiene su prueba—,
+    /// así que la separación es de DOMINIO DE FIRMA: misma carga, firma distinta.
+    #[test]
+    fn un_token_pendiente_no_vale_como_sesion_ni_al_reves() {
+        let pendiente = emitir_pendiente(SECRETO, 42, 3);
+        assert!(
+            verificar(SECRETO, &pendiente).is_none(),
+            "un token pendiente entró como sesión: el segundo factor no pinta nada"
+        );
+
+        let sesion = emitir(SECRETO, 42, 3, 60);
+        assert!(
+            verificar_pendiente(SECRETO, &sesion).is_none(),
+            "una sesión completa pasó por el extremo del segundo factor"
+        );
+
+        // Y la mitad que evita que esto pase por la razón equivocada: cada uno
+        // SÍ vale en su sitio, con los mismos datos dentro.
+        let p = verificar_pendiente(SECRETO, &pendiente).expect("el pendiente vale en su extremo");
+        assert_eq!((p.usuario_id, p.version), (42, 3));
+        let s = verificar(SECRETO, &sesion).expect("la sesión vale en el suyo");
+        assert_eq!((s.usuario_id, s.version), (42, 3));
+    }
+
+    #[test]
+    fn el_pendiente_caduca_en_minutos_y_no_en_horas() {
+        // Cinco minutos, no la vida de una sesión: ya pasó la contraseña, así que
+        // lo único que lo contiene es que dure poco.
+        let p = emitir_pendiente(SECRETO, 42, 1);
+        let s = verificar_pendiente(SECRETO, &p).unwrap();
+        let vida = s.caduca_en - ahora();
+        assert!(vida <= MINUTOS_PENDIENTE * 60, "vive {vida} s");
+        assert!(vida > MINUTOS_PENDIENTE * 60 - 5, "vive {vida} s");
+    }
+
+    #[test]
+    fn las_dos_cookies_no_se_confunden_al_leerlas() {
+        // Viajan juntas en la misma cabecera durante el paso intermedio, así que
+        // el lector tiene que sacar cada una de la suya: si `de_cabeceras`
+        // devolviera la pendiente, el extractor de sesión la rechazaría por firma
+        // —bien— pero el usuario vería «no autorizado» en vez de la casilla del
+        // código.
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::COOKIE,
+            format!("{NOMBRE_COOKIE_PENDIENTE}=PPP; {NOMBRE_COOKIE}=SSS").parse().unwrap(),
+        );
+        assert_eq!(de_cabeceras(&h).as_deref(), Some("SSS"));
+        assert_eq!(pendiente_de_cabeceras(&h).as_deref(), Some("PPP"));
     }
 
     #[test]

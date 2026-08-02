@@ -284,6 +284,66 @@ Las tres respuestas de rechazo —correo inexistente, cuenta desactivada, clave
 mala— cuestan **lo mismo**: cuando no hay usuario se verifica contra un hash
 señuelo. Sin eso, el mensaje es idéntico y el cronómetro dice qué correos existen.
 
+## El segundo factor (`dosfactores.rs`, `segundofactor.rs`, #212)
+
+TOTP (RFC 6238), 6 dígitos, paso de 30 s, **una** ventana de tolerancia a cada
+lado. El reparto es el mismo que el del freno: la REGLA en `dosfactores.rs` —sin
+`sqlx`, sin `Config`, sin ningún tipo de SIGER— y las columnas en
+`segundofactor.rs`. `dosfactores.rs` está escrito **para mudarse a `guaca`** el
+día que medico necesite lo mismo; hasta entonces vive aquí, porque guaca se
+lleva desde otra instancia y se consume por `rev` fijado.
+
+`GET /api/2fa` (estado), `POST /api/2fa/{iniciar,activar,desactivar}` (cuenta
+propia, cualquier rol) y `POST /api/2fa/verificar` — el único que **no** exige
+sesión, porque es el segundo paso del login.
+
+Seis cosas que se rompen solas si alguien las "simplifica":
+
+1. **El login con 2FA no emite cookie de sesión**, sino un token *pendiente* en
+   **otra cookie** (`siger_pendiente`, 5 min) y firmado en **otro dominio**
+   (`firmar_en`). La ficha #212 proponía meterlo como un campo más de la carga
+   firmada: **no se puede**, `sesion::verificar` exige exactamente tres campos y
+   eso tiene su prueba. La separación por dominio es más fuerte — misma carga,
+   firma distinta— y no toca el formato.
+2. **El freno cubre los DOS pasos.** `/api/2fa/verificar` consulta `guaca::freno`
+   y anota en `intento_acceso` igual que el login. Sin eso, quien ya tiene la
+   contraseña prueba el millón de códigos y el segundo factor no añade nada.
+3. **El contador usado se guarda** (`totp_ultimo_contador`). Es todo el
+   antirreplay: un código visto por encima del hombro sirve 90 s si no se
+   quema.
+4. **Activar exige teclear un código correcto.** Activar al generar el QR dejaría
+   fuera de su cuenta a quien tenga el reloj mal, y sin poder entrar a
+   arreglarlo.
+5. **Sin `SIGER_CLAVE_REPOSO` no se puede enrolar, y se dice.** El secreto se
+   guarda cifrado con `guaca::reposo`; en claro, quien copie el archivo genera
+   los códigos igual que su dueño. No se guarda en claro «mientras tanto». Esto
+   **no** rompe el modo degradado (#71): sin frase el sistema funciona entero y
+   nadie queda fuera — lo único que no se puede es activar un factor nuevo.
+6. **Desactivar exige la contraseña actual**, y se lleva los códigos de
+   recuperación. Sin eso, una sesión robada apaga el segundo factor.
+
+`Veredicto` tiene **cuatro** estados por la misma razón que `Documento`:
+`SecretoIlegible` es una avería del despliegue y no se cobra al usuario —ni
+cuenta como fallo para el freno ni le dice que su código está mal—, y
+`Reutilizado` se anota aparte de `Incorrecto` aunque el cliente reciba lo mismo:
+un código repetido escondido entre los dedazos es un ataque que no se ve.
+
+Recuperación: diez códigos de un solo uso, entregados **una vez** y guardados
+solo como hash Argon2. `gastar_codigo_recuperacion` los compara **todos** sin
+salir en el primer acierto (si no, el tiempo diría cuántos quedan) y los marca
+con `usado_en IS NULL` en el `UPDATE`, que es lo que impide gastar uno dos veces
+en peticiones simultáneas.
+
+`totp-rs` va con `default-features = false` (su base es HMAC + base32; `qr` e
+`image` no entran en un binario offline) y **`TOTP::generate` toma SEGUNDOS, no
+el contador** — pasarle el contador compila, valida el código actual y multiplica
+la ventana por 30, de 30 s a 15 minutos. Lo caza
+`un_codigo_no_sirve_mas_de_noventa_segundos`.
+
+**Falta la interfaz**: las tres pantallas (QR de enrolamiento, casilla del código
+en el login, gestión en el perfil) no están. El backend está completo y probado
+por el router.
+
 ## Firma de entregas (`firma.rs`, Quipu, opcional)
 
 Firma post-cuántica (ML-DSA-87 + Ed25519) de los campos auditables **dentro de la
