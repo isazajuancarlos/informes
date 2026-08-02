@@ -258,9 +258,17 @@ el index empotrado, y `humo.sh` por socket. No cites `npm test` como verde.
 
 ## Pendiente conocido
 
-- **Licencia offline — NO portada a Rust.** El Python tenía una licencia firmada
-  por el licenciante, verificada en local (`INFORMES_LICENCIA`). El port no la
-  trae aún; tarea registrada. Mantendrá el modo degradado: **nunca bloquea nada**.
+- **Licencia offline — escrita, sin mergear.** No está en `main`, pero **no la
+  escribas de nuevo**: vive en la rama `feat/licencia-offline-rust` (PR #17), son
+  712 líneas de `licencia.rs` más interfaz, `hex.rs` y `DESPLIEGUE.md`, y su CI
+  estaba en verde antes del corte de facturación. Mantiene el modo degradado:
+  **nunca bloquea nada**. Solo espera turno de merge.
+- **Volcado: el hash de contraseña (#231)** — igual, escrito y sin mergear, en
+  `fix/volcado-comprueba-el-hash` (PR #16).
+
+**Antes de dar por pendiente cualquier cosa de esta sección, mira las ramas y los
+PR abiertos.** Dos de los tres «pendientes» de `main` son en realidad trabajo
+terminado esperando el lunes, y el CI parado hace que se acumulen.
 
 Es lo **único** pendiente, y `rust/README.md` dice lo mismo. Si encuentras otro
 documento que dé por pendiente la inferencia, la firma, el planificador, la
