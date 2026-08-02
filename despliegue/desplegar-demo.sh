@@ -73,7 +73,20 @@ fi
 
 echo "==> 3/5  copiar a $DESTINO:$REMOTO"
 ssh "$DESTINO" "sudo mkdir -p $REMOTO /etc/siger-demo && sudo chown -R \$(id -un):\$(id -gn) $REMOTO"
-scp "$BIN" rust/sembrar_demo.py "$DESTINO:$REMOTO/"
+# El binario viaja con OTRO NOMBRE y se pone en su sitio abajo, con el servicio
+# ya parado. Escribir encima del ejecutable que un proceso está corriendo lo
+# rechaza el núcleo —ETXTBSY—, y `scp` lo cuenta como
+# `dest open "…/siger-api": Failure`, que no se parece en nada a la causa.
+#
+# No se veía en el primer despliegue, porque entonces no había servicio que
+# parar: apareció en el primero que REPITE (2026-08-02). Y dejaba el destino a
+# medias — el `chown` de arriba ya había pasado, así que la base quedaba con el
+# dueño equivocado y el servicio viejo sin poder escribirla.
+#
+# Parar el servicio antes de copiar también valdría, pero alarga la caída todo lo
+# que tarde la subida. Así la ventana es el `mv`, que es un renombrado.
+scp "$BIN" "$DESTINO:$REMOTO/siger-api.nuevo"
+scp rust/sembrar_demo.py "$DESTINO:$REMOTO/"
 scp despliegue/siger-demo.service despliegue/siger-demo-sembrar.service \
     despliegue/siger-demo-sembrar.timer "$DESTINO:/tmp/"
 # El respaldo NO se instala aquí: la demostración se regenera cada noche, así que
@@ -128,6 +141,14 @@ sudo install -m 644 /tmp/informes.xiliux.com.nginx \
      /etc/nginx/sites-available/informes.xiliux.com
 
 sudo systemctl stop siger-demo.service 2>/dev/null || true
+
+# Y AHORA el binario nuevo ocupa su sitio, con el servicio ya parado. `mv` sobre
+# un ejecutable en uso sí está permitido —renombrar no es escribir dentro—, pero
+# se hace igualmente con el servicio abajo: si el `mv` fallara, lo que quedaría
+# corriendo sería el binario viejo, entero, y no uno a medio escribir.
+if [ -f "$REMOTO/siger-api.nuevo" ]; then
+    sudo mv "$REMOTO/siger-api.nuevo" "$REMOTO/siger-api"
+fi
 sudo chown -R siger:siger "$REMOTO"
 # …pero el binario y el guion de siembra vuelven a root. `siger` tiene que poder
 # ESCRIBIR la base y el almacén, no el ejecutable que corre ni el guion que root
