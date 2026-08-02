@@ -195,6 +195,19 @@ export class Api {
       .pipe(catchError((e) => this.falla(e)));
   }
 
+  /**
+   * Cierra la sesión en TODOS los dispositivos (#194).
+   *
+   * No lleva cuerpo, y eso es la garantía: el servidor revoca al usuario que la
+   * cookie identifica, nunca a un id que venga de aquí. Si esta llamada aceptara
+   * un usuario, sería un botón para echar a cualquiera sabiendo su número.
+   */
+  salirDeTodo() {
+    return this.http
+      .post<{ ok: boolean }>('/api/salir-todo', null, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
   yo() {
     return this.get<Actor>('/api/yo');
   }

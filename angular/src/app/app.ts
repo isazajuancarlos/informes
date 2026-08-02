@@ -53,9 +53,28 @@ export class App {
     () => this.menu.find((e) => this.ruta().startsWith(e.ruta))?.titulo ?? 'SIGER',
   );
 
+  /** Lo que falló al cerrar en todos los dispositivos, si falló. */
+  readonly errorCuenta = signal('');
+
   constructor() {
     this.router.events
       .pipe(filter((e): e is NavigationEnd => e instanceof NavigationEnd))
       .subscribe((e) => this.ruta.set(e.urlAfterRedirects));
+  }
+
+  /**
+   * «Cerrar sesión en todos los dispositivos» (#194).
+   *
+   * Si el servidor no pudo revocar, se queda aquí y lo dice. No se navega al
+   * acceso: salir de la pantalla sería indistinguible del caso en que sí
+   * funcionó, y esto se pulsa justo cuando saberlo importa.
+   */
+  async cerrarEnTodos() {
+    this.errorCuenta.set('');
+    try {
+      await this.sesion.salirDeTodo();
+    } catch (e) {
+      this.errorCuenta.set((e as Error).message);
+    }
   }
 }

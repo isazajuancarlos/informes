@@ -74,6 +74,14 @@ for c in x-content-type-options x-frame-options content-security-policy referrer
 done
 
 comprobar "sin sesión, /api/yo rechaza"           401 "$(codigo api/yo)"
+
+# 401 y NO 404, y la diferencia es todo el valor de esta línea: un 404 diría que
+# la ruta no viajó en el binario. El botón «cerrar sesión en todos los
+# dispositivos» es lo único que sube `token_version`, así que si el extremo se
+# cae del router la revocación vuelve a ser un mecanismo sin gatillo — y eso, sin
+# esta comprobación, no lo delata nada: el resto de pruebas llaman al manejador.
+comprobar "sin sesión, /api/salir-todo rechaza (401, no 404)" \
+                                                  401 "$(codigo api/salir-todo /dev/null -X POST)"
 comprobar "una ruta del SPA devuelve el index"    200 "$(codigo cronograma)"
 comprobar "un /api/ inexistente es 404, no index" 404 "$(codigo api/no-existe)"
 

@@ -169,6 +169,20 @@ del usuario: viaja firmado y se compara en la misma relectura que ya se hacía
 para el rol, así que **subir el entero cierra de golpe todas las sesiones de esa
 persona** sin guardar estado de sesión en el servidor.
 
+Quien sube el entero es `acceso::revocar_sesiones`, y su único llamante es
+`POST /api/salir-todo` («cerrar sesión en todos los dispositivos»). **No recibe
+cuerpo ni id**: revoca al usuario que la cookie firmada identifica. Si aceptara
+un id sería un botón para echar a cualquiera sabiendo su número. Un administrador
+que quiera dejar fuera a alguien usa el camino que ya existe —desactivar la
+cuenta, que `activo` se relee en cada petición—; no hay revocación de sesiones
+ajenas porque no resuelve ningún caso que ése no cubra.
+
+Dos detalles que se rompen solos si alguien los "simplifica": el incremento es
+`token_version + 1` **dentro del SQL** (calcularlo en Rust pierde incrementos
+bajo concurrencia — medido: 6 de 100), y el `bool` que devuelve **no se
+descarta** (cero filas no es un error de SQL, así que descartarlo respondería
+«cerré todas tus sesiones» sin haber cerrado ninguna).
+
 El freno al ensayo de contraseñas cuenta por pareja **(correo, origen)**: cinco
 fallos sin castigo, luego 15 s doblando con techo en 5 min, y un acierto lo borra.
 **No bloquea la cuenta** — un bloqueo deja fuera al usuario legítimo, que es peor

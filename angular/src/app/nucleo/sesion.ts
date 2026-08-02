@@ -68,6 +68,27 @@ export class Sesion {
       this.router.navigate(['/acceso']);
     }
   }
+
+  /**
+   * Cierra la sesión en TODOS los dispositivos (#194).
+   *
+   * # Por qué esto NO lleva el `finally` de `salir()`, que es la asimetría
+   *
+   * En `salir()`, tragarse el error es lo correcto: lo que el usuario pide es
+   * dejar de estar dentro AQUÍ, y eso se consigue vaciando el estado local pase
+   * lo que pase en el servidor.
+   *
+   * Aquí lo que pide es lo contrario: que dejen de valer sesiones que están en
+   * OTRAS máquinas, y eso solo lo puede hacer el servidor. Si la llamada falla y
+   * aun así vaciáramos la pantalla y volviéramos al acceso, la persona se iría
+   * convencida de haber echado a quien le robó el portátil, sin que se hubiera
+   * echado a nadie. El error se propaga para que la pantalla lo diga.
+   */
+  async salirDeTodo() {
+    await firstValueFrom(this.api.salirDeTodo());
+    this._actor.set(null);
+    this.router.navigate(['/acceso']);
+  }
 }
 
 /** Guarda de ruta. Es comodidad de navegación, no una barrera. */

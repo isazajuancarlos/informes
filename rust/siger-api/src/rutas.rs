@@ -109,6 +109,7 @@ pub fn router(estado: Estado) -> Router {
     Router::new()
         .route("/api/salud", get(salud))
         .route("/api/sesion", post(abrir_sesion).delete(cerrar_sesion))
+        .route("/api/salir-todo", post(salir_todo))
         .route("/api/yo", get(yo))
         .route("/api/entregas", get(listar_entregas))
         .route("/api/entregas/{id}/verificar", get(verificar_entrega))
@@ -406,6 +407,43 @@ async fn abrir_sesion(
 
 async fn cerrar_sesion(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
     auditar(&e.bd, "salida", Some(&actor.email), None).await;
+    let mut cabeceras = HeaderMap::new();
+    cabeceras.insert(
+        header::SET_COOKIE,
+        sesion::cabecera_cerrar().parse().expect("la cabecera es ASCII"),
+    );
+    Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
+}
+
+/// `POST /api/salir-todo` — «cerrar sesión en todos los dispositivos» (#194).
+///
+/// Sube el `token_version` del usuario, con lo que toda cookie ya emitida —la de
+/// este navegador incluida— deja de valer en la siguiente petición, y de paso
+/// borra la de aquí para que la pantalla no se quede enseñando una sesión muerta.
+///
+/// # Actúa sobre el usuario AUTENTICADO, nunca sobre un id del cliente
+///
+/// No recibe cuerpo ni parámetro. Si el id viniera de fuera, este extremo sería
+/// un botón para echar a cualquiera de su sesión con solo saber su número: una
+/// denegación de servicio contra una persona concreta, servida por la propia
+/// aplicación. El `Actor` sale del extractor, que lo saca de la cookie firmada.
+///
+/// Es de uso propio a propósito. Un administrador que quiera dejar fuera a
+/// alguien tiene ya el camino correcto —desactivar la cuenta, que `activo` se
+/// relee en cada petición—; revocar sesiones ajenas sin desactivar la cuenta no
+/// resuelve ningún caso que ese camino no cubra ya (directiva 1).
+async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+    let revocadas = crate::acceso::revocar_sesiones(&e.bd, actor.id).await?;
+    if !revocadas {
+        // La sentencia no tocó ninguna fila: el usuario que acabamos de
+        // autenticar ya no está en la base. No hubo revocación, así que tampoco
+        // hay 200 — descartar este booleano sería fingir el cierre que el
+        // doc-comment promete no fingir, y en el peor sitio para hacerlo.
+        tracing::error!("revocación sin efecto: el usuario {} ya no existe", actor.id);
+        return Err(Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into()));
+    }
+
+    auditar(&e.bd, "salida_total", Some(&actor.email), None).await;
     let mut cabeceras = HeaderMap::new();
     cabeceras.insert(
         header::SET_COOKIE,
@@ -1590,6 +1628,220 @@ mod pruebas_acceso {
             StatusCode::TOO_MANY_REQUESTS,
             "120 fallos seguidos no dejaron el freno puesto"
         );
+    }
+
+    // --- «Cerrar sesión en todos los dispositivos» (#194) ---------------------
+    //
+    // Hasta esta tanda, `token_version` solo lo subía una prueba con un `UPDATE`
+    // a mano: el mecanismo estaba entero y sin gatillo. Lo que se prueba aquí es
+    // el gatillo, y sobre todo que apunte SOLO a quien lo aprieta.
+
+    /// El valor de la cookie que trae una respuesta de login.
+    fn cookie_de(r: &Response) -> String {
+        r.headers()
+            .get(header::SET_COOKIE)
+            .expect("la respuesta no trae Set-Cookie")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .split_once('=')
+            .unwrap()
+            .1
+            .to_string()
+    }
+
+    /// Un segundo usuario, para poder comprobar que la revocación NO le llega.
+    async fn anadir_segundo_usuario(e: &Estado) {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let sal = SaltString::from_b64("c2Fsc2VndW5kb3VzdWFyaW9wcnU").unwrap();
+        let hash = Argon2::default().hash_password(CLAVE.as_bytes(), &sal).unwrap().to_string();
+        sqlx::query(
+            "INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) \
+             VALUES (2,'Bruno','bruno@x.co',?,'OPERADOR',1)",
+        )
+        .bind(&hash)
+        .execute(&e.bd)
+        .await
+        .unwrap();
+    }
+
+    async fn salir_todo_con(e: &Estado, actor: Actor) -> Response {
+        match salir_todo(State(e.clone()), actor).await {
+            Ok(r) => r,
+            Err(err) => err.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cerrar_en_todos_los_dispositivos_echa_tambien_a_las_otras_sesiones() {
+        // El caso que da nombre al botón: se entra desde tres sitios, se pulsa en
+        // uno, y los tres quedan fuera. Si solo cayera el que pulsa, el botón
+        // sería un «salir» con otro nombre — y quien lo pulsa porque cree que le
+        // robaron el portátil se quedaría tranquilo sin motivo.
+        let e = estado_con_usuario().await;
+        let mut cookies = Vec::new();
+        for origen in ["203.0.113.9", "198.51.100.4", "10.0.0.5"] {
+            let r = intentar(&e, "ada@x.co", CLAVE, origen).await;
+            assert_eq!(r.status(), StatusCode::OK);
+            cookies.push(cookie_de(&r));
+        }
+        for (i, c) in cookies.iter().enumerate() {
+            assert!(actor_con(&e, c).await.is_ok(), "la sesión {i} no valía ya antes de revocar");
+        }
+
+        let actor = actor_con(&e, &cookies[0]).await.unwrap();
+        assert_eq!(salir_todo_con(&e, actor).await.status(), StatusCode::OK);
+
+        for (i, c) in cookies.iter().enumerate() {
+            assert!(
+                actor_con(&e, c).await.is_err(),
+                "la sesión {i} siguió valiendo tras «cerrar en todos los dispositivos»"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cerrar_en_todos_los_dispositivos_no_toca_a_los_demas() {
+        // La prueba que DISCRIMINA. Sin ella, un manejador que subiera la versión
+        // de TODAS las filas —un `UPDATE` sin `WHERE`, que es un carácter de
+        // distancia— pasaría la anterior tan campante, y el fallo se vería en
+        // producción como «a todo el mundo se le cerró la sesión de golpe».
+        let e = estado_con_usuario().await;
+        anadir_segundo_usuario(&e).await;
+
+        let de_ada = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let de_bruno = cookie_de(&intentar(&e, "bruno@x.co", CLAVE, "198.51.100.4").await);
+        assert!(actor_con(&e, &de_bruno).await.is_ok(), "Bruno no llegó a entrar");
+
+        let ada = actor_con(&e, &de_ada).await.unwrap();
+        assert_eq!(salir_todo_con(&e, ada).await.status(), StatusCode::OK);
+
+        assert!(actor_con(&e, &de_ada).await.is_err(), "Ada siguió dentro");
+        assert!(
+            actor_con(&e, &de_bruno).await.is_ok(),
+            "revocar las sesiones de Ada echó también a Bruno: el UPDATE no lleva WHERE"
+        );
+    }
+
+    #[tokio::test]
+    async fn cerrar_en_todos_los_dispositivos_borra_la_cookie_de_este_navegador() {
+        // La sesión ya no vale, pero el navegador la seguiría mandando: la
+        // pantalla enseñaría a alguien dentro hasta que una petición fallara.
+        let e = estado_con_usuario().await;
+        let cookie = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let actor = actor_con(&e, &cookie).await.unwrap();
+
+        let r = salir_todo_con(&e, actor).await;
+        let set = r.headers().get(header::SET_COOKIE).expect("no borra la cookie de aquí");
+        assert!(set.to_str().unwrap().contains("Max-Age=0"), "la cookie no se borra: {set:?}");
+    }
+
+    #[tokio::test]
+    async fn sin_sesion_no_se_puede_cerrar_en_todos_los_dispositivos() {
+        // El extractor es la única puerta. Que este extremo no reciba un id del
+        // cliente es lo que impide usarlo para echar a otro, así que sin cookie
+        // no hay a quién revocar.
+        let e = estado_con_usuario().await;
+        let req = axum::http::Request::builder().body(axum::body::Body::empty()).unwrap();
+        let (mut parts, _) = req.into_parts();
+        assert!(Actor::from_request_parts(&mut parts, &e).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn si_la_revocacion_no_toca_ninguna_fila_no_se_finge_el_cierre() {
+        // Camino de error inyectado: un actor autenticado cuyo usuario ya no está
+        // en la base (borrado entre la lectura de la cookie y esta escritura).
+        // El `UPDATE` no falla —cero filas no es un error de SQL—, así que sin la
+        // comprobación del booleano esto respondería «listo, cerré todas tus
+        // sesiones» sin haber cerrado ninguna.
+        let e = estado_con_usuario().await;
+        let fantasma = Actor {
+            id: 9999,
+            nombre: "Nadie".into(),
+            email: "nadie@x.co".into(),
+            rol: crate::autz::Rol::Admin,
+            stakeholder_id: None,
+        };
+        assert_eq!(
+            salir_todo_con(&e, fantasma).await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "se fingió un cierre de sesiones que no ocurrió"
+        );
+    }
+
+    /// El extremo existe **en el router**, no solo como función.
+    ///
+    /// Las pruebas de arriba llaman a `salir_todo` directamente, y por eso no
+    /// verían el fallo más fácil de cometer: que la línea del `.route(...)` no
+    /// esté. Borrarla las dejaría a todas en verde y el botón daría 404 — el
+    /// mismo patrón por el que un DELETE sin ruta pasó una revisión entera.
+    /// Aquí entra una petición HTTP por la puerta y sale una respuesta.
+    #[tokio::test]
+    async fn el_extremo_de_salir_de_todo_esta_cableado_en_el_router() {
+        use tower::ServiceExt;
+
+        let e = estado_con_usuario().await;
+        let cookie = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let app = router(e.clone());
+
+        let peticion = |c: Option<&str>| {
+            let mut b = axum::http::Request::builder().method("POST").uri("/api/salir-todo");
+            if let Some(c) = c {
+                b = b.header(header::COOKIE, format!("{}={c}", sesion::NOMBRE_COOKIE));
+            }
+            b.body(axum::body::Body::empty()).unwrap()
+        };
+
+        // Sin cookie: 401, y NO 404. La diferencia es la que importa — un 404
+        // diría que la ruta no existe, y es justo lo que esta prueba vigila.
+        let r = app.clone().oneshot(peticion(None)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "¿está la ruta en el router?");
+
+        let r = app.clone().oneshot(peticion(Some(&cookie))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(actor_con(&e, &cookie).await.is_err(), "la sesión sobrevivió a su propia revocación");
+    }
+
+    /// Directiva #8: 100 revocaciones concurrentes del mismo usuario.
+    ///
+    /// Sujeta la afirmación del doc-comment de `revocar_sesiones`: el `+1` lo hace
+    /// SQLite dentro de la sentencia, no un número leído antes en Rust. Si se
+    /// calculara aquí, dos revocaciones simultáneas leerían la misma versión y
+    /// escribirían la misma, y el contador subiría menos de 100 — que es la forma
+    /// que tiene esta carrera de aparecer: no un error, un incremento que se pierde.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cien_revocaciones_a_la_vez_no_pierden_ni_un_incremento() {
+        let e = estado_con_usuario().await;
+        let cookie = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let antes: i64 = sqlx::query_scalar("SELECT token_version FROM usuarios WHERE id = 1")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+
+        let plazo = std::time::Duration::from_secs(120);
+        let mut tareas = Vec::new();
+        for _ in 0..100 {
+            let bd = e.bd.clone();
+            tareas.push(tokio::spawn(
+                async move { crate::acceso::revocar_sesiones(&bd, 1).await },
+            ));
+        }
+        for t in tareas {
+            assert!(tokio::time::timeout(plazo, t)
+                .await
+                .expect("una revocación no respondió a tiempo: ¿interbloqueo?")
+                .expect("la tarea no debía entrar en panic")
+                .expect("una revocación falló"));
+        }
+
+        let despues: i64 = sqlx::query_scalar("SELECT token_version FROM usuarios WHERE id = 1")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(despues - antes, 100, "se perdieron incrementos bajo concurrencia");
+        assert!(actor_con(&e, &cookie).await.is_err(), "la sesión sobrevivió a 100 revocaciones");
     }
 }
 
