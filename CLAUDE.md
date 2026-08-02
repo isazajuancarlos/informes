@@ -194,6 +194,54 @@ por un banco de mutación, ver abajo):
 El hash sale del **mismo** Argon2 que verifica el acceso, con turno del semáforo
 de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo.
 
+## La bitácora (`auditoria`, escrita por `rutas::auditar`)
+
+Una tabla —`momento`, `evento`, `email`, `detalle`— y **una sola función que la
+escribe**. Que el registro falle no tumba la operación, pero tampoco pasa en
+silencio: se anota en el log del proceso.
+
+**SIGER no trata dato sensible** (art. 5 de la Ley 1581): `stakeholders` es
+nombre + externo, `usuarios` es nombre, correo y rol, y las entregas son
+documentos institucionales. Por eso el hallazgo M2 —la bitácora de acceso a la
+historia clínica— **no se traslada tal cual desde medico**; lo que sí aplica aquí
+es que quien SACA un documento o el padrón de personas quede registrado.
+
+Lo que se anota, y por qué esa lista y no otra:
+
+| Evento | Cuándo |
+|---|---|
+| `entrega_descargada` | el documento **salió** — se anota tras `Documento::Claro`, no al entrar |
+| `entrega_ajena_solicitada` | alguien pidió una entrega que EXISTE y no le corresponde (descarga o verificación) |
+| `cuentas_listadas` | se leyó el padrón completo de personas, con cuántas filas y sin ids |
+| `acceso`, `acceso_fallido`, `acceso_frenado`, `salida`, `salida_total` | la puerta |
+| `cuenta_creada`, `cuenta_actualizada`, `clave_restablecida`, `clave_cambiada`, `clave_propia_rechazada` | administración de cuentas |
+| `informe_creado`, `informe_actualizado`, `participacion_actualizada`, `justificacion_*`, `entrega_registrada`, `entrega_contenido_no_concuerda` | el flujo |
+
+Tres decisiones que se rompen solas si alguien las "simplifica":
+
+1. **`entrega_descargada` se escribe DESPUÉS de leer el documento.** Los otros
+   tres estados de `Documento` no entregaron nada, y anotar una lectura que no
+   ocurrió es la misma clase de mentira que acusar de alteración al que estaba
+   ocupado.
+2. **Un id inexistente NO se anota; uno ajeno sí.** La segunda consulta
+   (`SELECT 1 FROM entregas WHERE id = ?`) corre solo en el camino de error y
+   existe para DISCRIMINAR: un 404 por enlace viejo llenaría la bitácora de
+   falsos positivos hasta que nadie la mirara (directiva 23). **La respuesta al
+   cliente es el mismo 404 en los dos casos**: lo que discrimina es lo que se
+   escribe, no lo que se contesta. `Alcance::Todas` **no lleva caso aparte** —su
+   `WHERE` es solo `id = ?`, así que llegar ahí ya significa que no existe—, y el
+   banco de mutación lo comprobó: el `if` que había se podía quitar sin que
+   ninguna prueba cayera, porque no decidía nada.
+3. **`listar_entregas`, `/api/usuarios` y `/api/stakeholders` NO se anotan.** Los
+   pide cada pintado de pantalla; una bitácora que crece con cada carga ahoga la
+   señal que existe para dar.
+
+Lo sujetan cinco pruebas en `rutas.rs` y una en `cuentas.rs`, y un banco de
+mutación de siete casos las cubre. Lo que hoy **no** se registra, y está dicho
+aquí para que no se dé por hecho: el intento rechazado por `solo_admin`, y el
+veredicto de `verificar_entrega` (que es trazabilidad de firma, no acceso a dato
+personal).
+
 ## Acceso y alcance (`autz.rs`)
 
 Roles `Admin | Operador | Supervisor | Tercero`. El **alcance** de lo que cada

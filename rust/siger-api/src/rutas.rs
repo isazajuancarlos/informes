@@ -573,14 +573,22 @@ async fn descargar_archivo(
             ),
             Some(s),
         ),
-        Alcance::Ninguna => return Err(no_existe()),
+        Alcance::Ninguna => {
+            auditar_entrega_ajena(&e, &actor, id).await;
+            return Err(no_existe());
+        }
     };
 
     let mut q = sqlx::query_as::<_, (Option<String>, i64)>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (nombre, cifrado) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let Some((nombre, cifrado)) = q.fetch_optional(&e.bd).await? else {
+        auditar_entrega_ajena(&e, &actor, id).await;
+        return Err(no_existe());
+    };
+    // Que la entrega no tenga archivo NO es un acceso ajeno: es suya y está
+    // vacía. Va por el 404 sin anotar nada.
     let nombre = nombre.ok_or_else(no_existe)?;
 
     let ruta = ruta_de_entrega(&e.cfg.dir_entregas, id, &nombre).ok_or_else(|| {
@@ -611,6 +619,19 @@ async fn descargar_archivo(
             ));
         }
     };
+
+    // Se anota AQUÍ y no al entrar: el evento afirma que el documento salió, y
+    // los otros tres estados de `Documento` no lo entregaron. Un «descargada»
+    // sobre un archivo que el servidor no llegó a mirar sería la misma clase de
+    // mentira que acusar de alteración al que estaba ocupado.
+    auditar(
+        &e.bd,
+        "entrega_descargada",
+        Some(&actor.email),
+        Some(&format!("{id}: {nombre}")),
+    )
+    .await;
+
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -651,7 +672,10 @@ async fn verificar_entrega(
             ),
             Some(s),
         ),
-        Alcance::Ninguna => return Err(no_existe()),
+        Alcance::Ninguna => {
+            auditar_entrega_ajena(&e, &actor, id).await;
+            return Err(no_existe());
+        }
     };
 
     type Fila = (
@@ -670,8 +694,12 @@ async fn verificar_entrega(
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma, cifrado) =
-        q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let Some((limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma, cifrado)) =
+        q.fetch_optional(&e.bd).await?
+    else {
+        auditar_entrega_ajena(&e, &actor, id).await;
+        return Err(no_existe());
+    };
 
     let Some(firma) = firma else {
         return Ok(Json(serde_json::json!({ "verificada": false, "motivo": "sin firma" })));
@@ -1213,6 +1241,45 @@ async fn previsualizar(
             })
             .collect(),
     ))
+}
+
+/// Anota el intento de leer una entrega que EXISTE y cae fuera del alcance de
+/// quien la pide.
+///
+/// La segunda consulta corre solo en el camino de error, y existe para
+/// **discriminar**: un id inexistente es un enlace viejo o una entrega borrada, y
+/// anotarlo llenaría la bitácora de falsos positivos hasta que nadie la mirara
+/// (directiva 23). Un id que existe y no le corresponde es la única señal que
+/// dice algo — alguien probando números ajenos.
+///
+/// Quien lo ve todo no necesita un caso aparte, y **no se le pone uno**: para
+/// `Alcance::Todas` el `WHERE` es solo `id = ?`, así que si el manejador llegó
+/// aquí es que la entrega no existe, y esta consulta tampoco la encuentra. Un
+/// `if` que saliera antes ahorraría una consulta y no decidiría nada — y un atajo
+/// que parece salvaguarda sin serlo es peor que la consulta que evita
+/// (directiva 23). Lo sujeta el caso del administrador en
+/// `se_anota_la_entrega_ajena_y_no_la_inexistente`.
+///
+/// La respuesta al cliente no cambia: sigue siendo el mismo 404 en los dos casos.
+/// Lo que se discrimina es lo que se ESCRIBE, no lo que se contesta.
+async fn auditar_entrega_ajena(e: &Estado, actor: &Actor, id: i64) {
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM entregas WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&e.bd)
+        .await
+    {
+        Ok(Some(_)) => {
+            auditar(
+                &e.bd,
+                "entrega_ajena_solicitada",
+                Some(&actor.email),
+                Some(&id.to_string()),
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(err) => tracing::error!("no se pudo comprobar si la entrega {id} existe: {err}"),
+    }
 }
 
 pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle: Option<&str>) {
@@ -2230,6 +2297,138 @@ mod tests {
         let ruta = ruta_de_entrega(&e.cfg.dir_entregas, 9, "e9.pdf").unwrap();
         std::fs::write(&ruta, guaca::reposo::cifrar(b"otro documento", FRASE_REPOSO)).unwrap();
         assert_eq!(motivo_de(&e).await, "la entrega fue alterada tras la firma");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Bitácora de acceso al documento (#186) ------------------------------
+
+    /// Los detalles anotados bajo un evento, en orden. Se lee la TABLA, no el
+    /// valor de retorno de `auditar`: lo que un ente de control abre es la base.
+    async fn anotados(e: &Estado, evento: &str) -> Vec<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT COALESCE(detalle, '') FROM auditoria WHERE evento = ? ORDER BY id",
+        )
+        .bind(evento)
+        .fetch_all(&e.bd)
+        .await
+        .unwrap()
+    }
+
+    fn operador(id: i64) -> Actor {
+        Actor {
+            id,
+            nombre: "Op".into(),
+            email: format!("op{id}@x.co"),
+            rol: Rol::Operador,
+            stakeholder_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn descargar_el_documento_deja_quien_lo_leyo_en_la_bitacora() {
+        // La asimetría que esto cierra: subir se anotaba («entrega_registrada») y
+        // bajar no. El producto vende rastro auditable, y quién SACÓ el documento
+        // es justo lo que un ente de control pregunta.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        let r = descargar_archivo(State(e.clone()), auditor(), RutaParam(9)).await;
+        assert!(r.is_ok(), "el documento tiene que salir para que esto mida algo");
+
+        assert_eq!(anotados(&e, "entrega_descargada").await, vec!["9: e9.pdf".to_string()]);
+        let quien: Vec<String> = sqlx::query_scalar(
+            "SELECT email FROM auditoria WHERE evento = 'entrega_descargada'",
+        )
+        .fetch_all(&e.bd)
+        .await
+        .unwrap();
+        assert_eq!(quien, vec!["adm@x.co".to_string()], "la bitácora sin quién no sirve");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn el_documento_que_no_sale_no_se_anota_como_descargado() {
+        // El evento afirma que el documento SALIÓ. Sin la frase de reposo no sale
+        // —`Documento::NoDescifra`—, y anotarlo igual pondría en el rastro una
+        // lectura que nadie hizo: la bitácora dejaría de ser prueba de nada.
+        let (e, dir) = entrega_firmada_y_cifrada(None).await;
+        let r = descargar_archivo(State(e.clone()), auditor(), RutaParam(9)).await;
+        assert!(r.is_err(), "sin la frase el documento no puede salir");
+        assert!(anotados(&e, "entrega_descargada").await.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn se_anota_la_entrega_ajena_y_no_la_inexistente() {
+        // La prueba de que DISCRIMINA, que es lo único que hace útil este evento.
+        // La entrega 9 es del usuario 1; el operador 7 pide esa y una que no
+        // existe. Las dos le contestan 404 idéntico, pero solo una dice algo.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+
+        assert!(descargar_archivo(State(e.clone()), operador(7), RutaParam(9)).await.is_err());
+        assert_eq!(
+            anotados(&e, "entrega_ajena_solicitada").await,
+            vec!["9".to_string()],
+            "probar el número de otro es la señal que esta bitácora existe para dar"
+        );
+
+        // Un id que no existe es un enlace viejo o una entrega borrada. Si se
+        // anotara, la bitácora se llenaría de falsos positivos hasta que nadie la
+        // mirase (directiva 23).
+        assert!(descargar_archivo(State(e.clone()), operador(7), RutaParam(404)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        // Y el administrador, que lo ve todo, tampoco genera ruido: si su
+        // consulta no encontró la entrega es que no existe, así que su 404 es un
+        // 404 de verdad y anotarlo sería acusarle de sondear.
+        assert!(descargar_archivo(State(e.clone()), auditor(), RutaParam(404)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn verificar_una_entrega_ajena_tambien_se_anota() {
+        // Verificar lee la misma entrega por la misma puerta. Si solo se vigilara
+        // la descarga, el que prueba números se pasaría a este extremo.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        assert!(verificar_entrega(State(e.clone()), operador(7), RutaParam(9)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        assert!(verificar_entrega(State(e.clone()), operador(7), RutaParam(404)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        // Y por la otra rama: `Alcance::Ninguna` sale antes de tocar la base, y
+        // ese retorno temprano es un segundo sitio donde se olvida el registro.
+        // Sin este caso, quitarlo de aquí no lo caza nadie — medido.
+        let huerfano = Actor {
+            id: 3,
+            nombre: "Ter".into(),
+            email: "ter@x.co".into(),
+            rol: Rol::Tercero,
+            stakeholder_id: None,
+        };
+        assert!(verificar_entrega(State(e.clone()), huerfano, RutaParam(9)).await.is_err());
+        assert_eq!(
+            anotados(&e, "entrega_ajena_solicitada").await,
+            vec!["9".to_string(), "9".to_string()]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn un_tercero_sin_entidad_no_se_lleva_el_documento_ni_en_silencio() {
+        // `Alcance::Ninguna` sale antes de tocar la base, y ese retorno temprano es
+        // exactamente donde se olvida el registro.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        let huerfano = Actor {
+            id: 3,
+            nombre: "Ter".into(),
+            email: "ter@x.co".into(),
+            rol: Rol::Tercero,
+            stakeholder_id: None,
+        };
+        assert!(descargar_archivo(State(e.clone()), huerfano, RutaParam(9)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+        assert!(anotados(&e, "entrega_descargada").await.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 

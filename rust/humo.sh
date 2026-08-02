@@ -104,6 +104,20 @@ for n in 1 2 3 4 5; do
 done
 comprobar "el sexto intento SÍ frena"             429 "$(codigo api/sesion /dev/null "${LOGIN[@]}")"
 
+# La bitácora, leída del ARCHIVO que dejó el binario de release (#186). Todo lo
+# demás la comprueba contra una base `:memory:` dentro del propio proceso de
+# prueba: eso mide el SQL, no que el producto instalado escriba en su disco. Los
+# seis intentos de arriba tienen que haber dejado cinco `acceso_fallido` y un
+# `acceso_frenado` — y si no hay python3 esto FALLA, no se salta en silencio.
+CUENTA="$(python3 - "$SALA/humo.db" <<'PY' 2>/dev/null || echo "sin-python3"
+import sqlite3, sys
+bd = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+filas = dict(bd.execute("SELECT evento, COUNT(*) FROM auditoria GROUP BY evento"))
+print(f"{filas.get('acceso_fallido', 0)}/{filas.get('acceso_frenado', 0)}")
+PY
+)"
+comprobar "la bitácora del binario real anotó los rechazos" "5/1" "$CUENTA"
+
 echo
 if [ "$FALLOS" -eq 0 ]; then
   echo "HUMO: todo en orden."

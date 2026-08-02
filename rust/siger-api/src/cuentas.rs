@@ -263,6 +263,24 @@ pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<Fi
     ))
     .fetch_all(&e.bd)
     .await?;
+
+    // El padrón entero de personas —nombre, correo, rol y estado de todas— es la
+    // única lectura del sistema que devuelve dato personal en bloque, y sale de
+    // aquí. Se anota con cuántas filas salieron y SIN los ids: la bitácora no
+    // puede volverse una segunda copia de lo que vigila.
+    //
+    // Los otros dos listados que traen nombres —`/api/usuarios` y
+    // `/api/stakeholders`— no se anotan a propósito: los pide cada pintado del
+    // editor de partes, y una bitácora que crece con cada pantalla ahoga la señal
+    // que esta línea existe para dar (directiva 23).
+    auditar(
+        &e.bd,
+        "cuentas_listadas",
+        Some(&actor.email),
+        Some(&format!("{} cuentas", filas.len())),
+    )
+    .await;
+
     Ok(Json(filas))
 }
 
@@ -899,5 +917,35 @@ mod pruebas {
 
         // Y el desactivado no entra, que es lo que «activo» significa.
         assert!(entrar(&app, "bruno@x.co", CLAVE).await.is_none());
+    }
+
+    /// Leer el padrón de personas deja rastro; el intento rechazado, no (#186).
+    #[tokio::test]
+    async fn sacar_la_lista_de_cuentas_queda_anotado_y_el_intento_rechazado_no() {
+        let (app, e) = servidor().await;
+        let admin = entrar(&app, "ada@x.co", CLAVE).await.unwrap();
+        let (s, _) = llamar(&app, peticion("GET", "/api/cuentas", Some(&admin), None)).await;
+        assert_eq!(s, StatusCode::OK);
+
+        let filas: Vec<(String, String)> = sqlx::query_as(
+            "SELECT email, COALESCE(detalle,'') FROM auditoria WHERE evento = 'cuentas_listadas'",
+        )
+        .fetch_all(&e.bd)
+        .await
+        .unwrap();
+        assert_eq!(filas, vec![("ada@x.co".to_string(), "2 cuentas".to_string())]);
+
+        // El operador no pasa de `solo_admin`, así que no leyó nada: anotarlo
+        // como lectura del padrón sería anotar lo que no ocurrió. Que alguien lo
+        // intente es otro hecho — y hoy el sistema no lo registra: lo dice
+        // `CLAUDE.md`, no una suposición de quien lea esta prueba.
+        let operador = entrar(&app, "bruno@x.co", CLAVE).await.unwrap();
+        let (s, _) = llamar(&app, peticion("GET", "/api/cuentas", Some(&operador), None)).await;
+        assert_eq!(s, StatusCode::FORBIDDEN);
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM auditoria WHERE evento = 'cuentas_listadas'")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }
