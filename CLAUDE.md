@@ -127,7 +127,17 @@ del binario. `construir.sh` la corre con la interfaz ya dentro (paso 4/4, y
 exige que se haya EJECUTADO, no solo que salga 0), y `humo.sh` arranca el
 binario de release contra una base temporal y le habla por socket: interfaz
 servida de verdad, el `.js` que el index pide viviendo DENTRO, las cabeceras en
-la respuesta real y el freno del login frenando al sexto intento.
+la respuesta real, el freno del login frenando al sexto intento y el **login de
+dos pasos completo** —enrolar, activar con el código que daría el teléfono, y
+entrar tecleándolo—. 36 comprobaciones.
+
+Ese último añadido tiene su lección: hasta el 2026-08-02 las siete comprobaciones
+del 2FA afirmaban solo que la puerta se CIERRA (sin sesión rechaza, la contraseña
+sola no entrega cookie), y con eso un `verificar` que no emitiera el `Set-Cookie`
+—o sea, nadie con segundo factor puede entrar— pasaba las 31 en verde. **Por cada
+«X rechaza» hace falta su pareja «y con lo bueno, X ABRE», y que lo abierto
+sirva** para entrar a otra ruta. Comprobado por mutación: quitando ese
+`Set-Cookie` caen las dos comprobaciones nuevas y solo esas.
 
 **`cargo build --release` a secas falla si `estaticos/` está vacío**, y lo hace
 `build.rs` a propósito: `rust-embed` lee del disco en *debug* y empotra en
