@@ -277,6 +277,18 @@ export class Api {
       .pipe(catchError((e) => this.falla(e)));
   }
 
+  /**
+   * Diez códigos de recuperación nuevos, sin tocar el secreto.
+   *
+   * Los viejos dejan de valer. Se entregan una sola vez, igual que en el
+   * enrolamiento, y por eso la pantalla los trata igual.
+   */
+  renovarCodigosRecuperacion(clave: string) {
+    return this.http
+      .post<string[]>('/api/2fa/codigos', { clave }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
   desactivarSegundoFactor(clave: string) {
     return this.http
       .post<void>('/api/2fa/desactivar', { clave }, { withCredentials: true })

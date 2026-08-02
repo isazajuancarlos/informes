@@ -218,6 +218,8 @@ Lo que se anota, y por qué esa lista y no otra:
 | `cuentas_listadas` | se leyó el padrón completo de personas, con cuántas filas y sin ids |
 | `acceso`, `acceso_fallido`, `acceso_frenado`, `salida`, `salida_total` | la puerta |
 | `cuenta_creada`, `cuenta_actualizada`, `clave_restablecida`, `clave_cambiada`, `clave_propia_rechazada` | administración de cuentas |
+| `2fa_enrolamiento_iniciado`, `2fa_activado`, `2fa_desactivado`, `2fa_desactivacion_rechazada`, `2fa_codigos_renovados`, `2fa_codigos_rechazados` | el segundo factor, desde la cuenta propia |
+| `acceso_falta_segundo_factor`, `2fa_fallido`, `2fa_codigo_reutilizado`, `2fa_recuperacion_usada`, `2fa_frenado`, `2fa_secreto_ilegible` | el segundo paso de la puerta |
 | `informe_creado`, `informe_actualizado`, `participacion_actualizada`, `justificacion_*`, `entrega_registrada`, `entrega_contenido_no_concuerda` | el flujo |
 
 Tres decisiones que se rompen solas si alguien las "simplifica":
@@ -298,9 +300,17 @@ lado. El reparto es el mismo que el del freno: la REGLA en `dosfactores.rs` —s
 día que medico necesite lo mismo; hasta entonces vive aquí, porque guaca se
 lleva desde otra instancia y se consume por `rev` fijado.
 
-`GET /api/2fa` (estado), `POST /api/2fa/{iniciar,activar,desactivar}` (cuenta
-propia, cualquier rol) y `POST /api/2fa/verificar` — el único que **no** exige
-sesión, porque es el segundo paso del login.
+`GET /api/2fa` (estado), `POST /api/2fa/{iniciar,activar,desactivar,codigos}`
+(cuenta propia, cualquier rol) y `POST /api/2fa/verificar` — el único que **no**
+exige sesión, porque es el segundo paso del login.
+
+`codigos` renueva los diez de recuperación **sin tocar el secreto**, y exige la
+contraseña por lo mismo que `desactivar`: entrega diez credenciales que entran en
+lugar del segundo factor. Existe porque sin él la única forma de reponerlos era
+desactivar y volver a enrolar —QR nuevo en todos los teléfonos y, sobre todo, un
+rato con la cuenta protegida por la contraseña sola, que es el estado del que el
+segundo factor viene a sacarla—. Quedarse sin códigos es lo normal: se gastan de
+uno en uno, y cada uno se usa el día que el teléfono no está.
 
 Seis cosas que se rompen solas si alguien las "simplifica":
 

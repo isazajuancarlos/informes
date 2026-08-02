@@ -240,8 +240,9 @@ pub async fn activar(
         }
     };
 
-    let codigos = dosfactores::generar_codigos_recuperacion(CODIGOS_RECUPERACION);
     let ahora = chrono::Utc::now().to_rfc3339();
+    let codigos = dosfactores::generar_codigos_recuperacion(CODIGOS_RECUPERACION);
+    let hashes = hashear_codigos(&e, &codigos).await?;
 
     // Todo junto: activar el factor y dejar sus códigos de recuperación. Si se
     // hicieran en dos pasos y el segundo fallara, la cuenta quedaría con segundo
@@ -254,25 +255,102 @@ pub async fn activar(
         .bind(actor.id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM codigo_recuperacion WHERE usuario_id = ?")
-        .bind(actor.id)
-        .execute(&mut *tx)
-        .await?;
-    for codigo in &codigos {
-        let hash = hashear(&e, codigo.clone()).await?;
-        sqlx::query(
-            "INSERT INTO codigo_recuperacion (usuario_id, hash, creado_en) VALUES (?, ?, ?)",
-        )
-        .bind(actor.id)
-        .bind(&hash)
-        .bind(&ahora)
-        .execute(&mut *tx)
-        .await?;
-    }
+    reemplazar_codigos(&mut tx, actor.id, &hashes, &ahora).await?;
     tx.commit().await?;
 
     auditar(&e.bd, "2fa_activado", Some(&actor.email), None).await;
     Ok(Json(codigos))
+}
+
+/// `POST /api/2fa/codigos` — diez códigos de recuperación nuevos, sin tocar el
+/// secreto. Exige la contraseña actual.
+///
+/// # Por qué existe
+///
+/// Sin esto, la única forma de reponerlos era **desactivar y volver a enrolar**:
+/// secreto nuevo, QR nuevo en todos los teléfonos, y —lo que de verdad importa—
+/// un rato con la cuenta protegida por la contraseña sola, que es justo el estado
+/// del que el segundo factor viene a sacarla. Quedarse sin códigos es lo normal:
+/// se gastan de uno en uno y cada uno se usa el día que el teléfono no está.
+///
+/// # Por qué la contraseña
+///
+/// Mismo criterio que `desactivar`: esto entrega diez credenciales que entran en
+/// lugar del segundo factor. Una sesión robada que pueda pedirlas se lleva la
+/// cuenta entera aunque el teléfono siga en el bolsillo de su dueño.
+pub async fn renovar_codigos(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(p): Json<SoloClave>,
+) -> Result<Json<Vec<String>>, Error> {
+    let (hash, confirmado): (String, Option<String>) =
+        sqlx::query_as("SELECT clave_hash, totp_confirmado_en FROM usuarios WHERE id = ?")
+            .bind(actor.id)
+            .fetch_one(&e.bd)
+            .await?;
+    // Sin factor activo no hay nada que respaldar: entregar códigos que entran en
+    // lugar de un segundo factor que no existe sería una segunda contraseña, más
+    // corta y en papel.
+    if confirmado.is_none() {
+        return Err(Error(
+            StatusCode::CONFLICT,
+            "esta cuenta no tiene segundo factor activo".into(),
+        ));
+    }
+    if !clave_correcta(&e, hash, p.clave).await? {
+        auditar(&e.bd, "2fa_codigos_rechazados", Some(&actor.email), None).await;
+        return Err(Error(StatusCode::UNAUTHORIZED, "la contraseña actual no es correcta".into()));
+    }
+
+    let ahora = chrono::Utc::now().to_rfc3339();
+    let codigos = dosfactores::generar_codigos_recuperacion(CODIGOS_RECUPERACION);
+    let hashes = hashear_codigos(&e, &codigos).await?;
+
+    // Los viejos se van en la MISMA transacción en que entran los nuevos. En dos
+    // pasos, un fallo en medio deja a la persona sin ninguno — y con el teléfono
+    // perdido eso es quedarse fuera de la cuenta.
+    let mut tx = e.bd.begin().await?;
+    reemplazar_codigos(&mut tx, actor.id, &hashes, &ahora).await?;
+    tx.commit().await?;
+
+    auditar(&e.bd, "2fa_codigos_renovados", Some(&actor.email), None).await;
+    Ok(Json(codigos))
+}
+
+/// El Argon2 de cada código, FUERA de la transacción.
+///
+/// Diez hashes son diez veces 64 MiB con su turno de semáforo: hacerlos con la
+/// transacción abierta la mantiene viva varios segundos y bloquea a los demás
+/// escritores de SQLite, que es de un solo escritor.
+async fn hashear_codigos(e: &Estado, codigos: &[String]) -> Result<Vec<String>, Error> {
+    let mut hashes = Vec::with_capacity(codigos.len());
+    for codigo in codigos {
+        hashes.push(hashear(e, codigo.clone()).await?);
+    }
+    Ok(hashes)
+}
+
+/// Borra los códigos de esa cuenta y deja los nuevos. Va dentro de la transacción
+/// de quien llama, para que el borrado y el alta no puedan quedar a medias.
+async fn reemplazar_codigos(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    usuario_id: i64,
+    hashes: &[String],
+    ahora: &str,
+) -> Result<(), Error> {
+    sqlx::query("DELETE FROM codigo_recuperacion WHERE usuario_id = ?")
+        .bind(usuario_id)
+        .execute(&mut **tx)
+        .await?;
+    for hash in hashes {
+        sqlx::query("INSERT INTO codigo_recuperacion (usuario_id, hash, creado_en) VALUES (?, ?, ?)")
+            .bind(usuario_id)
+            .bind(hash)
+            .bind(ahora)
+            .execute(&mut **tx)
+            .await?;
+    }
+    Ok(())
 }
 
 /// `POST /api/2fa/desactivar` — exige la contraseña actual.
@@ -624,6 +702,12 @@ mod pruebas {
 
     /// Deja la cuenta 1 con segundo factor activo. Devuelve el secreto.
     async fn enrolar(app: &axum::Router, sesion: &str) -> String {
+        enrolar_con_codigos(app, sesion).await.0
+    }
+
+    /// Igual, pero devuelve también los diez códigos de recuperación que se
+    /// entregaron. Solo lo necesita quien afirme algo sobre ellos.
+    async fn enrolar_con_codigos(app: &axum::Router, sesion: &str) -> (String, Vec<String>) {
         let (s, cuerpo) = llamar(app, peticion("POST", "/api/2fa/iniciar", Some(sesion), None)).await;
         assert_eq!(s, StatusCode::OK, "{cuerpo}");
         let secreto = cuerpo["secreto"].as_str().unwrap().to_string();
@@ -634,7 +718,13 @@ mod pruebas {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{cuerpo}");
-        secreto
+        let codigos = cuerpo
+            .as_array()
+            .expect("activar entrega los códigos")
+            .iter()
+            .map(|c| c.as_str().unwrap().to_string())
+            .collect();
+        (secreto, codigos)
     }
 
     /// Lo que llega a la pantalla de enrolamiento es un QR, y el QR es el del URI
@@ -986,6 +1076,107 @@ mod pruebas {
             StatusCode::TOO_MANY_REQUESTS,
             "volver a entrar con la contraseña le borró los fallos al segundo factor"
         );
+    }
+
+    /// Renovar los códigos mata los viejos y **no toca el secreto**.
+    ///
+    /// Las dos mitades importan y fallan al revés. Si el secreto se regenerara,
+    /// la persona pediría diez papeles nuevos y se quedaría con un teléfono que
+    /// genera códigos que ya no valen —sin saberlo hasta el siguiente acceso—. Y
+    /// si los viejos sobrevivieran, el papel que se tiró a la basura seguiría
+    /// abriendo la cuenta, que es exactamente de lo que se huye al renovarlos.
+    #[tokio::test]
+    async fn renovar_los_codigos_mata_los_viejos_y_deja_el_secreto_donde_estaba() {
+        let (app, e) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+        let (secreto, viejos) = enrolar_con_codigos(&app, &sesion).await;
+
+        // Con la contraseña equivocada no se entregan: son diez credenciales que
+        // entran en lugar del segundo factor.
+        let (s, _) = llamar(
+            &app,
+            peticion("POST", "/api/2fa/codigos", Some(&sesion), Some(r#"{"clave":"otra-cosa"}"#)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "los entregó sin la contraseña");
+
+        let (s, cuerpo) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/codigos",
+                Some(&sesion),
+                Some(&format!(r#"{{"clave":"{CLAVE}"}}"#)),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{cuerpo}");
+        let nuevos: Vec<String> =
+            cuerpo.as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+        assert_eq!(nuevos.len(), 10);
+        assert!(nuevos.iter().all(|n| !viejos.contains(n)), "repitió un código viejo");
+
+        let quedan: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM codigo_recuperacion WHERE usuario_id = 1")
+                .fetch_one(&e.bd)
+                .await
+                .unwrap();
+        assert_eq!(quedan, 10, "quedaron códigos de más: los viejos no se borraron");
+
+        // Un código viejo ya no entra…
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        let (s, _) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/verificar",
+                Some(&pendiente),
+                Some(&format!(r#"{{"codigo":"{}"}}"#, viejos[0])),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "un código viejo siguió abriendo la cuenta");
+
+        // …y el teléfono sigue sirviendo: el secreto es el mismo.
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        let c = codigo(&secreto, ahora() + 30);
+        let (s, cuerpo) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/verificar",
+                Some(&pendiente),
+                Some(&format!(r#"{{"codigo":"{c}"}}"#)),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "renovar los códigos cambió el secreto: {cuerpo}");
+    }
+
+    /// Sin factor activo no se entregan códigos de recuperación.
+    ///
+    /// Serían una segunda contraseña, más corta y en papel, respaldando algo que
+    /// no existe.
+    #[tokio::test]
+    async fn sin_segundo_factor_no_hay_codigos_que_renovar() {
+        let (app, _) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+
+        let (s, _) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/codigos",
+                Some(&sesion),
+                Some(&format!(r#"{{"clave":"{CLAVE}"}}"#)),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CONFLICT);
     }
 
     #[tokio::test]

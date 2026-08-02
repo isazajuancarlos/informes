@@ -117,26 +117,41 @@ import { Api, Enrolamiento, EstadoFactor } from '../nucleo/api';
             <mat-icon>verified_user</mat-icon>
             La verificación en dos pasos está <strong>activa</strong>.
           </p>
-          <p class="guia">
+          <p class="guia" [class.aviso-pocos]="pocosCodigos()">
             Le quedan {{ s.codigos_disponibles }} códigos de recuperación sin usar.
             @if (pocosCodigos()) {
-              <strong>
-                Quedan pocos: desactive y vuelva a activar para generar diez
-                nuevos.
-              </strong>
+              <strong>Quedan pocos: genere diez nuevos antes de quedarse sin ninguno.</strong>
             }
           </p>
 
-          <h3>Desactivar</h3>
-          <p class="guia">
-            Hace falta su contraseña: sin ella, cualquiera con la sesión abierta
-            podría apagarla. Se borrarán también los códigos de recuperación.
-          </p>
+          <!--
+            Una sola casilla de contraseña para las dos acciones: las dos exigen
+            lo mismo y por la misma razón, y dos casillas iguales una encima de
+            otra se teclean en la equivocada.
+          -->
           <mat-form-field>
             <mat-label>Contraseña actual</mat-label>
             <input matInput type="password" autocomplete="current-password"
                    [(ngModel)]="clave" />
+            <mat-hint>Hace falta para las dos acciones de abajo.</mat-hint>
           </mat-form-field>
+
+          <h3>Códigos de recuperación</h3>
+          <p class="guia">
+            Se generan diez nuevos y <strong>los anteriores dejan de valer</strong>.
+            El teléfono sigue igual: esto no cambia el código de seis dígitos.
+          </p>
+          <div class="acciones">
+            <button mat-stroked-button [disabled]="cargando()" (click)="renovarCodigos()">
+              Generar diez nuevos
+            </button>
+          </div>
+
+          <h3>Desactivar</h3>
+          <p class="guia">
+            Sin la contraseña, cualquiera con la sesión abierta podría apagarla.
+            Se borrarán también los códigos de recuperación.
+          </p>
           <div class="acciones">
             <button mat-button (click)="volver()">Volver</button>
             <button mat-stroked-button [disabled]="cargando()" (click)="desactivar()">
@@ -181,6 +196,7 @@ import { Api, Enrolamiento, EstadoFactor } from '../nucleo/api';
       h2, h3 { margin: 0; }
       h3 { margin-top: 1rem; }
       .guia { color: var(--mat-sys-on-surface-variant); font-size: 0.9rem; margin: 0; }
+      .aviso-pocos strong { color: var(--mat-sys-error); }
       .error, .bien, .estado { display: flex; align-items: center; gap: 0.4rem; margin: 0; font-size: 0.95rem; }
       .error { color: var(--mat-sys-error); align-items: flex-start; }
       .bien, .activo { color: var(--mat-sys-primary); }
@@ -219,6 +235,8 @@ export class SegundoFactor {
   readonly estado = signal<EstadoFactor | null>(null);
   readonly enrolamiento = signal<Enrolamiento | null>(null);
   readonly codigos = signal<string[] | null>(null);
+  /** Qué se dirá cuando la persona confirme que guardó los códigos. */
+  private readonly trasGuardar = signal('');
 
   /** Tres o menos. No es una cifra mágica: es cuando conviene avisar antes de
    *  que alguien se quede sin salida con el teléfono perdido. */
@@ -268,6 +286,7 @@ export class SegundoFactor {
     this.cargando.set(true);
     try {
       this.codigos.set(await firstValueFrom(this.api.activarSegundoFactor(this.codigo.trim())));
+      this.trasGuardar.set('Verificación en dos pasos activada.');
       this.codigo = '';
       this.enrolamiento.set(null);
     } catch (e) {
@@ -290,9 +309,34 @@ export class SegundoFactor {
     this.error.set('');
   }
 
+  /**
+   * Diez códigos nuevos sin tocar el secreto.
+   *
+   * Antes esto obligaba a desactivar y volver a enrolar: QR nuevo en todos los
+   * teléfonos y, sobre todo, un rato con la cuenta protegida por la contraseña
+   * sola — que es justo el estado del que el segundo factor viene a sacarla.
+   */
+  async renovarCodigos() {
+    this.error.set('');
+    this.hecho.set('');
+    this.cargando.set(true);
+    try {
+      this.codigos.set(await firstValueFrom(this.api.renovarCodigosRecuperacion(this.clave)));
+      this.trasGuardar.set('Códigos de recuperación renovados. Los anteriores ya no valen.');
+      this.clave = '';
+    } catch (e) {
+      this.error.set((e as Error).message);
+    } finally {
+      this.cargando.set(false);
+    }
+  }
+
   async cerrarCodigos() {
     this.codigos.set(null);
-    this.hecho.set('Verificación en dos pasos activada.');
+    // El mensaje se fijó cuando se generaron: la misma pantalla sirve al
+    // enrolamiento y a la renovación, y decir «activada» tras renovar sería
+    // contarle a alguien que acaba de encender algo que ya tenía encendido.
+    this.hecho.set(this.trasGuardar());
     await this.recargar();
   }
 

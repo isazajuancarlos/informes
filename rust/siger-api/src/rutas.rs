@@ -150,6 +150,7 @@ pub fn router(estado: Estado) -> Router {
         .route("/api/2fa/iniciar", post(crate::segundofactor::iniciar))
         .route("/api/2fa/activar", post(crate::segundofactor::activar))
         .route("/api/2fa/desactivar", post(crate::segundofactor::desactivar))
+        .route("/api/2fa/codigos", post(crate::segundofactor::renovar_codigos))
         .route("/api/2fa/verificar", post(crate::segundofactor::verificar))
         // Administración de cuentas. Recurso propio y no `/api/usuarios`, que
         // significa «quién puede ser parte de un flujo» y lo consume el selector

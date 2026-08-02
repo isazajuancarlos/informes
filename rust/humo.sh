@@ -133,6 +133,44 @@ comprobar "el enrolamiento devuelve un SVG"  0 "$(grep -q '^<svg ' <<<"$QR" && e
 # que hay un código ahí es el trazo: sin él la pantalla enseña un cuadro blanco.
 comprobar "y el SVG lleva su trazo de módulos" 0 "$(grep -q '<path fill="#000000" d="M' <<<"$QR" && echo 0 || echo 1)"
 
+# Y se ACTIVA de verdad contra el binario de release, tecleando el código que
+# generaría el teléfono. Es lo único que ejercita la cadena entera —cifrar el
+# secreto con la frase de reposo, guardarlo, descifrarlo y validar la ventana—
+# fuera del proceso de prueba.
+CODIGO_TOTP="$(python3 - "$SALA/enrolamiento.json" <<'PY' 2>/dev/null
+import base64, hashlib, hmac, json, struct, sys, time
+s = json.load(open(sys.argv[1]))["secreto"]
+clave = base64.b32decode(s + "=" * (-len(s) % 8))
+h = hmac.new(clave, struct.pack(">Q", int(time.time()) // 30), hashlib.sha1).digest()
+o = h[-1] & 15
+print(f"{(struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000:06d}")
+PY
+)"
+comprobar "el código del autenticador activa el segundo factor" 200 \
+  "$(codigo api/2fa/activar /dev/null -X POST -b "$GALLETAS" \
+      -H 'Content-Type: application/json' -d "{\"codigo\":\"$CODIGO_TOTP\"}")"
+
+# Renovar los códigos exige la contraseña. Se comprueba el RECHAZO y no el
+# acierto: el acierto ya lo miden las pruebas del módulo, y lo que aquí no se
+# puede dar por hecho es que el extremo viajara dentro y con su guardia puesta —
+# un 404 diría que no está, y un 200 diría que entrega diez credenciales a
+# cualquiera con la sesión abierta.
+comprobar "renovar códigos sin la contraseña buena rechaza (401, no 404)" 401 \
+  "$(codigo api/2fa/codigos /dev/null -X POST -b "$GALLETAS" \
+      -H 'Content-Type: application/json' -d '{"clave":"la-que-no-es"}')"
+
+# Con el factor puesto, la contraseña sola ya no abre: 200 con `segundo_factor`
+# en true y SIN cookie de sesión. Es la afirmación central de #212, y aquí se
+# mide en la respuesta real y no en el manejador.
+SEGUNDO="$(curl -sS -D "$SALA/cab-2fa.txt" -o "$SALA/login-2fa.json" -X POST "$U/api/sesion" \
+    -H 'Content-Type: application/json' \
+    -d "{\"email\":\"humo@example.com\",\"clave\":\"$CLAVE_HUMO\"}" \
+    -w '%{http_code}')"
+comprobar "con 2FA, la contraseña responde 200…"       200 "$SEGUNDO"
+comprobar "…diciendo que falta el segundo factor"      0 \
+  "$(grep -q '"segundo_factor":true' "$SALA/login-2fa.json" && echo 0 || echo 1)"
+comprobar "…y SIN entregar cookie de sesión"           1 \
+  "$(grep -qi '^set-cookie: siger_sesion=' "$SALA/cab-2fa.txt" && echo 0 || echo 1)"
 # El freno: cinco fallos sin castigo y el sexto frenado. Aquí, y no solo en
 # `cargo test`, porque en release el Argon2 cuesta lo que cuesta y el señuelo
 # tiene que costar lo mismo que un usuario real.
