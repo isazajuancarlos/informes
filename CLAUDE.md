@@ -333,11 +333,25 @@ fecha distinta pone el test rojo.
 
 ## La interfaz (`angular/`)
 
-Angular 22 + `@angular/material` + `material-icons` **empaquetado**, sin una
-sola petición a un CDN — el producto se instala sin internet, y la CSP del
-binario es `script-src 'self'`. PrimeNG está prohibido (ver el general).
-Siete páginas en `src/app/paginas/`, el cliente HTTP y la sesión en
-`src/app/nucleo/`.
+**Angular 22.1.x** (`@angular/cli` y `@angular/build` 22.1.2) + `@angular/material`
+22.1.0 + `material-icons` **empaquetado**, sin una sola petición a un CDN — el
+producto se instala sin internet, y la CSP del binario es `script-src 'self'`.
+PrimeNG está prohibido (ver el general). Siete páginas en `src/app/paginas/`, el
+cliente HTTP y la sesión en `src/app/nucleo/`.
+
+La versión no es libre: la política de Juan (#254) es **una sola versión de
+Angular, común a todos los desarrollos, y la mejor —no la última por serlo—**.
+Hoy informes marca el objetivo (22.1.x, la línea activa) y medico va por detrás
+en 21.2, atado a que su migración de PrimeNG a Material (#255) termine: subirle
+PrimeNG a 22 no es una opción porque **dejó de ser MIT**. Los paquetes de Angular
+se peer-dependen con versión EXACTA entre sí, así que **no se suben de a uno**:
+`ng update @angular/core@22 @angular/cli@22 @angular/material@22`, nunca un
+`npm install` suelto sobre el árbol (da `ERESOLVE`).
+
+Comprobar la subida **en el ejecutable, no en el `ng build`**: la interfaz va
+empotrada y un binario con el bundle de la vez pasada compila igual de verde.
+`humo.sh` sirve para eso —el nombre del `.js` cambia—, y la versión se lee dentro:
+`strings rust/target/release/siger-api | grep ng-version`.
 
 **No hay pruebas unitarias de la interfaz**: `vitest` y `tsconfig.spec.json`
 están declarados, pero no existe ni un `.spec.ts`. `npm test` no comprueba nada
