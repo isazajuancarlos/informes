@@ -1,4 +1,12 @@
-# CLAUDE.md
+# CLAUDE.md — SIGER (informes)
+
+> **Configuración general: `~/.claude/CLAUDE.md`** — reglas que no se rompen,
+> las directivas numeradas y las máquinas montadas. Se carga en toda sesión y
+> **no se copia aquí**; este archivo lleva SOLO lo propio de SIGER.
+>
+> **Esta instancia se arranca desde esta carpeta**: `cd /mnt/data/informes && claude`.
+> Desde el 2026-08-01 no se trabajan varios proyectos desde una sola sesión — y
+> aquí importa doblemente: `/security-review` construye su diff con el `cwd`.
 
 Guía para Claude Code en este repositorio. **Verificado contra el código, no
 citado de memoria. Si algo aquí no cuadra con lo que ves, gana el repositorio —
