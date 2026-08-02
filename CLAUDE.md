@@ -177,7 +177,8 @@ ese formato — y un valor presente pero ilegible **no cae al defecto**, falla.
 ## Administración de cuentas (`cuentas.rs`)
 
 `GET/POST /api/cuentas`, `PUT /api/cuentas/{id}`, `POST /api/cuentas/{id}/clave`
-(restablecer la de otro) y `POST /api/mi-clave` (la propia, cualquier rol).
+(restablecer la de otro), `DELETE /api/cuentas/{id}/2fa` (quitarle el segundo
+factor a otro) y `POST /api/mi-clave` (la propia, cualquier rol).
 Pantallas en `angular/src/app/paginas/{cuentas,mi-clave}.ts`.
 
 **Recurso aparte de `/api/usuarios` a propósito**, siendo la misma tabla:
@@ -186,7 +187,7 @@ activos, porque lo consume el selector de partes. La administración necesita
 también los desactivados —si no, reactivar a alguien exigiría `sqlite3`— y el
 rol. Dos vocabularios sobre una fila; el valor lo fija quien ya lee.
 
-Cuatro reglas que no se pueden relajar sin romper algo (las siete están cubiertas
+Cinco reglas que no se pueden relajar sin romper algo (las siete están cubiertas
 por un banco de mutación, ver abajo):
 
 1. **Solo `Admin`.** `Supervisor` NO, aunque su alcance también sea `Todas`: eso
@@ -203,6 +204,16 @@ por un banco de mutación, ver abajo):
 4. **El último administrador activo no se puede degradar ni desactivar.** Es un
    imposible, no un inusual: sin administrador no se puede ascender a nadie y la
    única salida sería abrir la base a mano.
+5. **`DELETE /api/cuentas/{id}/2fa` no vale sobre uno mismo.** Es el rescate de
+   quien perdió el teléfono **y** los diez códigos —hasta que existió, esa cuenta
+   no tenía ninguna salida que no fuera `sqlite3`: desactivar el factor exige
+   estar dentro, y restablecerle la contraseña no ayuda porque el segundo paso
+   sigue en medio—. Pero si sirviera para el propio sería la puerta de atrás de
+   la regla 6 de #212: una sesión robada de un administrador apagaría su segundo
+   factor sin saber ninguna contraseña. El propio se quita desde `/api/2fa/
+   desactivar`, que la pide. Y no es una grieta nueva: un administrador ya podía
+   restablecer la contraseña de cualquiera. Lo que faltaba era poder hacerlo con
+   su línea en la bitácora en vez de con un cliente de SQLite.
 
 El hash sale del **mismo** Argon2 que verifica el acceso, con turno del semáforo
 de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo.
@@ -227,7 +238,7 @@ Lo que se anota, y por qué esa lista y no otra:
 | `entrega_ajena_solicitada` | alguien pidió una entrega que EXISTE y no le corresponde (descarga o verificación) |
 | `cuentas_listadas` | se leyó el padrón completo de personas, con cuántas filas y sin ids |
 | `acceso`, `acceso_fallido`, `acceso_frenado`, `salida`, `salida_total` | la puerta |
-| `cuenta_creada`, `cuenta_actualizada`, `clave_restablecida`, `clave_cambiada`, `clave_propia_rechazada` | administración de cuentas |
+| `cuenta_creada`, `cuenta_actualizada`, `clave_restablecida`, `clave_cambiada`, `clave_propia_rechazada`, `2fa_retirado_por_admin` | administración de cuentas |
 | `2fa_enrolamiento_iniciado`, `2fa_activado`, `2fa_desactivado`, `2fa_desactivacion_rechazada`, `2fa_codigos_renovados`, `2fa_codigos_rechazados` | el segundo factor, desde la cuenta propia |
 | `acceso_falta_segundo_factor`, `2fa_fallido`, `2fa_codigo_reutilizado`, `2fa_recuperacion_usada`, `2fa_frenado`, `2fa_secreto_ilegible` | el segundo paso de la puerta |
 | `informe_creado`, `informe_actualizado`, `participacion_actualizada`, `justificacion_*`, `entrega_registrada`, `entrega_contenido_no_concuerda` | el flujo |
@@ -312,7 +323,9 @@ lleva desde otra instancia y se consume por `rev` fijado.
 
 `GET /api/2fa` (estado), `POST /api/2fa/{iniciar,activar,desactivar,codigos}`
 (cuenta propia, cualquier rol) y `POST /api/2fa/verificar` — el único que **no**
-exige sesión, porque es el segundo paso del login.
+exige sesión, porque es el segundo paso del login. El sexto extremo no vive aquí
+sino en `cuentas.rs`: `DELETE /api/cuentas/{id}/2fa`, el rescate del que perdió
+el teléfono y los códigos (regla 5 de la administración de cuentas, arriba).
 
 `codigos` renueva los diez de recuperación **sin tocar el secreto**, y exige la
 contraseña por lo mismo que `desactivar`: entrega diez credenciales que entran en
@@ -346,7 +359,14 @@ Seis cosas que se rompen solas si alguien las "simplifica":
    cae si alguien lo revierte —la de los cinco fallos seguidos no lo ve.
 3. **El contador usado se guarda** (`totp_ultimo_contador`). Es todo el
    antirreplay: un código visto por encima del hombro sirve 90 s si no se
-   quema.
+   quema. Y se quema en el **mismo `UPDATE`** que comprueba que nadie lo quemó
+   antes (`... AND (totp_ultimo_contador IS NULL OR totp_ultimo_contador < ?)`,
+   mirando `rows_affected`), igual que `usado_en IS NULL` en los códigos de
+   recuperación: entre leer el contador y escribirlo pasan el turno del semáforo
+   y un Argon2id de 64 MiB descifrando el secreto, así que en dos sentencias dos
+   peticiones simultáneas con el mismo código abrían las dos. Lo sujeta
+   `el_mismo_codigo_a_la_vez_abre_una_sola_sesion`, y solo esa: sin la condición
+   en el SQL, las otras trece pruebas del módulo siguen verdes.
 4. **Activar exige teclear un código correcto.** Activar al generar el QR dejaría
    fuera de su cuenta a quien tenga el reloj mal, y sin poder entrar a
    arreglarlo.

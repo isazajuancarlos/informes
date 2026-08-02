@@ -504,12 +504,34 @@ pub async fn verificar(
         }
     };
 
+    // El contador se quema en el MISMO `UPDATE` que comprueba que nadie lo quemó
+    // antes, igual que `usado_en IS NULL` en los códigos de recuperación. En dos
+    // pasos —leer arriba, escribir aquí— hay un hueco de cientos de milisegundos:
+    // entre la lectura y esta línea pasan el turno del semáforo y un Argon2id de
+    // 64 MiB descifrando el secreto. Dos peticiones con el MISMO código que
+    // entren a la vez leen las dos el contador viejo y abren las dos, que es
+    // exactamente lo que este campo existe para impedir.
+    //
+    // Cero filas significa que otra petición ya avanzó el contador hasta aquí o
+    // más allá: el código está gastado, y esta es la que llegó tarde. No es un
+    // caso raro de laboratorio pero tampoco cuesta nada cerrarlo, y sin esto la
+    // frase «el contador guardado es TODO el antirreplay» no era cierta del todo.
     if let Some(c) = contador_nuevo {
-        sqlx::query("UPDATE usuarios SET totp_ultimo_contador = ? WHERE id = ?")
-            .bind(c as i64)
-            .bind(pendiente.usuario_id)
-            .execute(&e.bd)
-            .await?;
+        let filas = sqlx::query(
+            "UPDATE usuarios SET totp_ultimo_contador = ? \
+             WHERE id = ? AND (totp_ultimo_contador IS NULL OR totp_ultimo_contador < ?)",
+        )
+        .bind(c as i64)
+        .bind(pendiente.usuario_id)
+        .bind(c as i64)
+        .execute(&e.bd)
+        .await?
+        .rows_affected();
+        if filas != 1 {
+            crate::acceso::anotar(&e.bd, &email, &origen, false, ahora).await?;
+            auditar(&e.bd, "2fa_codigo_reutilizado", Some(&email), None).await;
+            return Err(rechazo());
+        }
     }
     crate::acceso::anotar(&e.bd, &email, &origen, true, ahora).await?;
     auditar(&e.bd, "acceso", Some(&email), None).await;
@@ -859,6 +881,45 @@ mod pruebas {
         )
         .await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "un código gastado volvió a servir");
+    }
+
+    /// El mismo código, tres veces A LA VEZ, abre UNA.
+    ///
+    /// El caso de arriba prueba el reintento en fila —el segundo llega cuando el
+    /// primero ya escribió— y lo caza `Veredicto::Reutilizado` sin ayuda de la
+    /// base. Este prueba el otro: tres peticiones que LEEN el contador antes de
+    /// que ninguna lo escriba. Entre la lectura y la escritura pasan el turno del
+    /// semáforo de cripto y un Argon2id de 64 MiB descifrando el secreto, así que
+    /// el hueco son cientos de milisegundos y no un instante teórico.
+    ///
+    /// El token pendiente no ayuda a cerrarlo: es una carga firmada, sin estado
+    /// en el servidor, y vale sus cinco minutos las veces que se presente. Lo
+    /// único que quema el código es el contador.
+    #[tokio::test]
+    async fn el_mismo_codigo_a_la_vez_abre_una_sola_sesion() {
+        let (app, _) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+        let secreto = enrolar(&app, &sesion).await;
+
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+
+        let c = codigo(&secreto, ahora() + 30);
+        let cuerpo = format!(r#"{{"codigo":"{c}"}}"#);
+        let una = || peticion("POST", "/api/2fa/verificar", Some(&pendiente), Some(&cuerpo));
+        let (a, b, d) = tokio::join!(
+            llamar(&app, una()),
+            llamar(&app, una()),
+            llamar(&app, una()),
+        );
+
+        let abiertas = [a.0, b.0, d.0].iter().filter(|s| **s == StatusCode::OK).count();
+        assert_eq!(
+            abiertas, 1,
+            "el mismo código abrió {abiertas} sesiones a la vez: {:?}",
+            [a.0, b.0, d.0]
+        );
     }
 
     #[tokio::test]

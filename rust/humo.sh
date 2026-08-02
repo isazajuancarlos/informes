@@ -92,6 +92,12 @@ comprobar "sin sesión, /api/cuentas rechaza (401, no 404)" \
                                                   401 "$(codigo api/cuentas)"
 comprobar "sin sesión, /api/mi-clave rechaza (401, no 404)" \
                                                   401 "$(codigo api/mi-clave /dev/null -X POST)"
+# Y el rescate del segundo factor, que además es un DELETE: son los que se caen
+# del router sin que nadie lo note, porque casi nada los pide. Si desapareciera,
+# quien pierda el teléfono y los códigos se queda sin cuenta y el único arreglo
+# vuelve a ser abrir la base a mano.
+comprobar "sin sesión, DELETE /api/cuentas/1/2fa rechaza (401, no 404)" \
+                                                  401 "$(codigo api/cuentas/1/2fa /dev/null -X DELETE)"
 
 # El segundo factor (#212), con el mismo criterio. `verificar` es el extremo del
 # SEGUNDO paso del login: si se cayera del router, quien tenga 2FA se quedaría

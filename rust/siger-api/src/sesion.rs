@@ -183,8 +183,14 @@ pub fn cabecera_pendiente(valor: &str) -> String {
     )
 }
 
-/// La que lo borra. Se manda al completar el segundo factor y al fallar: un
-/// pendiente que sobrevive a su uso es un segundo intento gratis.
+/// La que lo borra. Se manda **al completar** el segundo factor, y solo ahí.
+///
+/// Al fallar NO se borra, y es a propósito: un dedazo en seis dígitos no puede
+/// costar volver a teclear la contraseña, y quien repita de verdad se topa con el
+/// freno, que cubre los dos pasos. Lo que sí no puede sobrevivir es el pendiente
+/// YA USADO — si valiera después de abrir sesión sería un segundo intento gratis
+/// con el código siguiente—, y de eso se ocupan esta cabecera y el contador
+/// quemado en `segundofactor::verificar`.
 pub fn cabecera_pendiente_cerrar() -> String {
     format!("{NOMBRE_COOKIE_PENDIENTE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0")
 }

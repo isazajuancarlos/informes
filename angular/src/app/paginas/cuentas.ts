@@ -162,6 +162,16 @@ interface Edicion {
                   title="Restablecer contraseña" aria-label="Restablecer contraseña">
             <mat-icon>lock_reset</mat-icon>
           </button>
+          <!-- El rescate, y SOLO en las filas donde significa algo: quien no
+               tiene segundo factor no tiene nada que retirar, y el propio se
+               quita desde la pantalla que pide la contraseña. -->
+          @if (c.segundo_factor && c.id !== yo()?.id) {
+            <button mat-icon-button (click)="retirarSegundoFactor(c)"
+                    title="Quitar la verificación en dos pasos"
+                    aria-label="Quitar la verificación en dos pasos">
+              <mat-icon>phonelink_erase</mat-icon>
+            </button>
+          }
         </td>
       </ng-container>
       <tr mat-header-row *matHeaderRowDef="columnas"></tr>
@@ -310,6 +320,35 @@ export class Cuentas {
     try {
       await firstValueFrom(this.api.restablecerClave(c.id, clave));
       this.hecho.set(`Contraseña de «${c.nombre}» restablecida y sus sesiones cerradas.`);
+    } catch (e) {
+      this.error.set((e as Error).message);
+    } finally {
+      this.cargando.set(false);
+    }
+  }
+
+  /**
+   * Quitarle el segundo factor a quien perdió el teléfono y los códigos.
+   *
+   * Se confirma porque baja la protección de una cuenta ajena y no se deshace
+   * solo: para volver a tenerla, esa persona tiene que enrolar otra vez desde su
+   * pantalla. Se dice ahí, y no en un aviso aparte, porque es lo que hay que
+   * saber ANTES de pulsar.
+   */
+  async retirarSegundoFactor(c: Cuenta) {
+    const seguro = window.confirm(
+      `¿Quitarle la verificación en dos pasos a «${c.nombre}»?\n\n` +
+        `Volverá a entrar solo con su contraseña, y sus códigos de recuperación ` +
+        `dejarán de valer. Para recuperarla tendrá que activarla de nuevo desde su cuenta.`,
+    );
+    if (!seguro) return;
+    this.cargando.set(true);
+    this.error.set('');
+    this.hecho.set('');
+    try {
+      await firstValueFrom(this.api.retirarSegundoFactorDe(c.id));
+      this.hecho.set(`«${c.nombre}» ya puede entrar con su contraseña; dígale que la active otra vez.`);
+      await this.recargar();
     } catch (e) {
       this.error.set((e as Error).message);
     } finally {

@@ -38,6 +38,8 @@ export interface Cuenta {
   rol: 'ADMIN' | 'OPERADOR' | 'SUPERVISOR' | 'TERCERO';
   activo: boolean;
   stakeholder_id: number | null;
+  /** Si tiene puesta la verificación en dos pasos (#212). */
+  segundo_factor: boolean;
 }
 
 /** Qué tiene esta cuenta en materia de segundo factor (#212). */
@@ -353,6 +355,20 @@ export class Api {
   restablecerClave(id: number, clave_nueva: string) {
     return this.http
       .post<{ ok: boolean }>(`/api/cuentas/${id}/clave`, { clave_nueva }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Le quita el segundo factor a OTRA persona. Solo administradores.
+   *
+   * Es el rescate de quien perdió el teléfono **y** los códigos: su cuenta no
+   * tiene ninguna otra salida, porque desactivarlo desde dentro exige estar
+   * dentro. No sirve sobre uno mismo — para eso está la pantalla propia, que
+   * pide la contraseña.
+   */
+  retirarSegundoFactorDe(id: number) {
+    return this.http
+      .delete<{ ok: boolean }>(`/api/cuentas/${id}/2fa`, { withCredentials: true })
       .pipe(catchError((e) => this.falla(e)));
   }
 

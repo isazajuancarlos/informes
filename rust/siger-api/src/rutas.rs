@@ -15,7 +15,7 @@ use axum::{
     extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path as RutaParam, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use chrono::{Datelike, Utc};
@@ -161,6 +161,10 @@ pub fn router(estado: Estado) -> Router {
         )
         .route("/api/cuentas/{id}", put(crate::cuentas::actualizar))
         .route("/api/cuentas/{id}/clave", post(crate::cuentas::restablecer_clave))
+        // El rescate de quien perdió el teléfono Y los códigos. Es un DELETE, y
+        // los DELETE son los que se caen del router sin que nadie lo note: lo
+        // sujeta `humo.sh` pidiendo 401 —no 404— sin sesión.
+        .route("/api/cuentas/{id}/2fa", delete(crate::cuentas::retirar_segundo_factor))
         .route("/api/usuarios", get(crate::participacion::usuarios))
         .route("/api/stakeholders", get(crate::participacion::stakeholders))
         .route("/api/estadisticas", get(crate::estadisticas::resumen))

@@ -48,9 +48,15 @@ pub struct FichaCuenta {
     pub rol: String,
     pub activo: bool,
     pub stakeholder_id: Option<i64>,
+    /// Si la cuenta tiene el segundo factor puesto. Va como `bool` derivado y no
+    /// como la fecha: la administración solo necesita saber si hay algo que
+    /// retirar —el botón de rescate no puede ofrecerse en las filas donde no
+    /// significa nada—, y la fecha de enrolamiento no es asunto de nadie más.
+    pub segundo_factor: bool,
 }
 
-const COLUMNAS: &str = "id, nombre, email, rol, activo, stakeholder_id";
+const COLUMNAS: &str =
+    "id, nombre, email, rol, activo, stakeholder_id, totp_confirmado_en IS NOT NULL AS segundo_factor";
 
 #[derive(Deserialize)]
 pub struct CuentaNueva {
@@ -453,6 +459,82 @@ pub async fn restablecer_clave(
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
+/// `DELETE /api/cuentas/{id}/2fa` — quitarle el segundo factor a OTRA persona.
+///
+/// # El caso que no tenía salida
+///
+/// Quien pierde el teléfono **y** los diez códigos de recuperación se queda
+/// fuera de su cuenta para siempre: `POST /api/2fa/desactivar` exige teclear la
+/// contraseña *y* estar dentro, y restablecerle la contraseña no ayuda —el
+/// segundo paso sigue en medio—. La única salida era abrir la base con `sqlite3`,
+/// que es exactamente la situación que este módulo existe para eliminar. Y no es
+/// un caso raro: el teléfono se pierde, se moja y se cambia de número.
+///
+/// Tampoco es una grieta nueva. Un administrador ya podía restablecer la
+/// contraseña de cualquiera, así que ya podía entrar a cualquier cuenta; lo que
+/// faltaba era poder hacerlo **sabiendo que lo hace**, con su línea en la
+/// bitácora, en vez de con un cliente de SQLite y sin rastro.
+///
+/// # Por qué NO se puede usar sobre uno mismo
+///
+/// Porque sería la puerta de atrás de la regla 6 de #212: quitar el propio
+/// segundo factor exige la contraseña actual, y si un administrador pudiera
+/// quitárselo por aquí, una sesión suya robada lo apagaría sin saber ninguna
+/// contraseña. Para el propio está `POST /api/2fa/desactivar`.
+pub async fn retirar_segundo_factor(
+    State(e): State<Estado>,
+    actor: Actor,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Error> {
+    solo_admin(&actor)?;
+    if id == actor.id {
+        return Err(Error(
+            StatusCode::BAD_REQUEST,
+            "para quitar el suyo use «verificación en dos pasos», que le pedirá su contraseña".into(),
+        ));
+    }
+
+    let mut tx = e.bd.begin().await?;
+    // El secreto, el contador y los códigos se van JUNTOS. Dejar los códigos
+    // vivos sin secreto sería peor que no hacer nada: diez credenciales de un
+    // solo uso, en un papel, que abren una cuenta que ya no tiene segundo factor.
+    let email: Option<String> = sqlx::query_scalar(
+        "UPDATE usuarios SET totp_secreto_cifrado = NULL, totp_confirmado_en = NULL, \
+         totp_ultimo_contador = NULL WHERE id = ? AND totp_confirmado_en IS NOT NULL \
+         RETURNING email",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    // Cero filas son DOS cosas distintas y se contestan distinto: la cuenta no
+    // existe, o existe y no tenía segundo factor. Responder «hecho» en el segundo
+    // caso mandaría al administrador a buscar por otro lado un bloqueo que él
+    // creería resuelto.
+    let Some(email) = email else {
+        let existe: Option<i64> = sqlx::query_scalar("SELECT id FROM usuarios WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        return Err(match existe {
+            Some(_) => Error(
+                StatusCode::CONFLICT,
+                "esa cuenta no tiene segundo factor activo".into(),
+            ),
+            None => Error(StatusCode::NOT_FOUND, "esa cuenta no existe".into()),
+        });
+    };
+
+    sqlx::query("DELETE FROM codigo_recuperacion WHERE usuario_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+
+    auditar(&e.bd, "2fa_retirado_por_admin", Some(&actor.email), Some(&email)).await;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 /// `POST /api/mi-clave` — cambiar la propia. Cualquier rol.
 ///
 /// # Las dos cosas que hace y por qué van juntas
@@ -629,6 +711,7 @@ mod pruebas {
             ("POST", "/api/cuentas", Some(alta)),
             ("PUT", "/api/cuentas/1", Some(r#"{"nombre":"X","rol":"TERCERO","activo":false}"#)),
             ("POST", "/api/cuentas/1/clave", Some(r#"{"clave_nueva":"otra-clave-larga"}"#)),
+            ("DELETE", "/api/cuentas/1/2fa", None),
         ] {
             let (s, _) = llamar(&app, peticion(m, u, Some(&c), cuerpo)).await;
             assert_eq!(s, StatusCode::FORBIDDEN, "un operador pasó por {m} {u}");
@@ -653,7 +736,7 @@ mod pruebas {
 
     #[tokio::test]
     async fn sin_sesion_la_administracion_es_401_y_no_404() {
-        // Que las cinco rutas ESTÉN en el router. Las pruebas que llaman al
+        // Que las seis rutas ESTÉN en el router. Las pruebas que llaman al
         // manejador no lo verían: borrar un `.route(...)` las dejaría verdes y el
         // extremo daría 404. Un 401 dice «existe y te rechaza»; un 404, «no está».
         let (app, _) = servidor().await;
@@ -662,6 +745,7 @@ mod pruebas {
             ("POST", "/api/cuentas"),
             ("PUT", "/api/cuentas/1"),
             ("POST", "/api/cuentas/1/clave"),
+            ("DELETE", "/api/cuentas/1/2fa"),
             ("POST", "/api/mi-clave"),
         ] {
             let res = app.clone().oneshot(peticion(m, u, None, Some("{}"))).await.unwrap();
@@ -780,6 +864,110 @@ mod pruebas {
         )
         .await;
         assert_eq!(s, StatusCode::OK, "con otro administrador activo, degradarse tiene que poder");
+    }
+
+    // --- El rescate del segundo factor -----------------------------------------
+
+    /// Le pone a Bruno un segundo factor activo con un código de recuperación.
+    ///
+    /// Se escriben las columnas a mano y no se enrola de verdad: lo que se prueba
+    /// aquí es RETIRARLO, y enrolar cuesta dos Argon2id de 64 MiB —el del secreto
+    /// y el del código— que no afirman nada sobre lo que estas pruebas dicen.
+    async fn con_segundo_factor_puesto(e: &crate::rutas::Estado) {
+        sqlx::query(
+            "UPDATE usuarios SET totp_secreto_cifrado = X'00', \
+             totp_confirmado_en = '2026-08-02T00:00:00Z', totp_ultimo_contador = 59000000 \
+             WHERE id = 2",
+        )
+        .execute(&e.bd)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO codigo_recuperacion (usuario_id, hash, creado_en) \
+             VALUES (2, 'no-importa', '2026-08-02T00:00:00Z')",
+        )
+        .execute(&e.bd)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn un_administrador_rescata_a_quien_perdio_el_telefono_y_los_codigos() {
+        // El caso sin salida antes de esto: `desactivar` exige estar DENTRO y
+        // teclear la contraseña, y restablecerle la contraseña no ayuda porque el
+        // segundo paso sigue en medio. La única puerta era `sqlite3` — justo lo
+        // que este módulo existe para eliminar.
+        let (app, e) = servidor().await;
+        con_segundo_factor_puesto(&e).await;
+
+        // La mitad que hace de control: con el factor puesto, la contraseña sola
+        // no abre nada. Lo que `entrar` devuelve entonces NO es una sesión sino el
+        // token pendiente —el login responde 200 y pone `siger_pendiente`—, y con
+        // él `/api/yo` sigue cerrada. Sin este control, la prueba de abajo pasaría
+        // igual aunque el segundo factor nunca hubiera estado puesto.
+        let pendiente = entrar(&app, "bruno@x.co", CLAVE).await.expect("el login responde 200");
+        assert!(
+            !sigue_dentro(&app, &pendiente).await,
+            "con segundo factor, la contraseña sola no puede dejar a nadie dentro"
+        );
+
+        let admin = entrar(&app, "ada@x.co", CLAVE).await.unwrap();
+        let (s, _) = llamar(&app, peticion("DELETE", "/api/cuentas/2/2fa", Some(&admin), None)).await;
+        assert_eq!(s, StatusCode::OK);
+
+        // Y ahora sí entra, que es lo único que le importa a quien llamó por
+        // teléfono a decir que perdió el suyo.
+        let suya = entrar(&app, "bruno@x.co", CLAVE).await.expect("Bruno recuperó su cuenta");
+        assert!(sigue_dentro(&app, &suya).await);
+
+        // Los códigos se van CON el factor. Dejarlos vivos sería peor que no
+        // hacer nada: credenciales de un solo uso, en un papel, que abren una
+        // cuenta que ya no tiene segundo factor.
+        let quedan: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codigo_recuperacion WHERE usuario_id = 2")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(quedan, 0, "quedaron códigos de recuperación de una cerradura que ya no existe");
+    }
+
+    #[tokio::test]
+    async fn un_administrador_no_se_quita_el_suyo_por_esta_puerta() {
+        // Sería la puerta de atrás de la regla 6 de #212: quitarse el propio
+        // segundo factor exige la contraseña actual, y por aquí una sesión robada
+        // lo apagaría sin saber ninguna.
+        let (app, e) = servidor().await;
+        // La sesión se abre ANTES de ponerle el factor: con él puesto el login es
+        // de dos pasos y no entrega cookie, y lo que esta prueba mira es la
+        // guarda del extremo, no cómo se llegó a tener una sesión válida.
+        let admin = entrar(&app, "ada@x.co", CLAVE).await.unwrap();
+        sqlx::query("UPDATE usuarios SET totp_confirmado_en = '2026-08-02T00:00:00Z' WHERE id = 1")
+            .execute(&e.bd)
+            .await
+            .unwrap();
+
+        let (s, _) = llamar(&app, peticion("DELETE", "/api/cuentas/1/2fa", Some(&admin), None)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST);
+        let sigue: Option<String> =
+            sqlx::query_scalar("SELECT totp_confirmado_en FROM usuarios WHERE id = 1")
+                .fetch_one(&e.bd)
+                .await
+                .unwrap();
+        assert!(sigue.is_some(), "el administrador se quitó el suyo saltándose la contraseña");
+    }
+
+    #[tokio::test]
+    async fn retirar_un_factor_que_no_esta_no_responde_hecho() {
+        // Cero filas son DOS cosas y se contestan distinto. Decir «hecho» cuando
+        // no había nada que quitar manda al administrador a buscar por otro lado
+        // un bloqueo que él creería resuelto (directiva 20).
+        let (app, _) = servidor().await;
+        let admin = entrar(&app, "ada@x.co", CLAVE).await.unwrap();
+
+        let (s, _) = llamar(&app, peticion("DELETE", "/api/cuentas/2/2fa", Some(&admin), None)).await;
+        assert_eq!(s, StatusCode::CONFLICT, "existe y no tenía factor");
+
+        let (s, _) = llamar(&app, peticion("DELETE", "/api/cuentas/99/2fa", Some(&admin), None)).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "esa cuenta no existe");
     }
 
     // --- Contraseñas -----------------------------------------------------------
