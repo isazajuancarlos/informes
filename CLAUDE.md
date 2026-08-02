@@ -275,7 +275,9 @@ descarta** (cero filas no es un error de SQL, así que descartarlo respondería
 «cerré todas tus sesiones» sin haber cerrado ninguna).
 
 El freno al ensayo de contraseñas cuenta por pareja **(correo, origen)**: cinco
-fallos sin castigo, luego 15 s doblando con techo en 5 min, y un acierto lo borra.
+fallos sin castigo, luego 15 s doblando con techo en 5 min, y un acierto lo borra
+—que un acierto borre es lo que obliga a mirar **quién escribe el acierto**: ver
+el punto 2 del segundo factor, más abajo—.
 **No bloquea la cuenta** — un bloqueo deja fuera al usuario legítimo, que es peor
 que el ataque que evita. La REGLA vive en `guaca::freno`, compartida con medico;
 aquí solo están las dos consultas. El origen es la dirección del socket salvo que
@@ -308,9 +310,20 @@ Seis cosas que se rompen solas si alguien las "simplifica":
    firmada: **no se puede**, `sesion::verificar` exige exactamente tres campos y
    eso tiene su prueba. La separación por dominio es más fuerte — misma carga,
    firma distinta— y no toca el formato.
-2. **El freno cubre los DOS pasos.** `/api/2fa/verificar` consulta `guaca::freno`
-   y anota en `intento_acceso` igual que el login. Sin eso, quien ya tiene la
-   contraseña prueba el millón de códigos y el segundo factor no añade nada.
+2. **El freno cubre los DOS pasos, y el primero no lo repone.**
+   `/api/2fa/verificar` consulta `guaca::freno` y anota en `intento_acceso` igual
+   que el login. Sin eso, quien ya tiene la contraseña prueba el millón de
+   códigos y el segundo factor no añade nada. Y la otra mitad, que costó una
+   auditoría: **el login con segundo factor NO anota nada en `intento_acceso`**,
+   ni éxito ni fallo. Anotaba el éxito —«la contraseña era buena, no frenemos a
+   quien va a teclear su código»— y como `guaca::freno` cuenta *los fallos
+   posteriores al último éxito*, ese éxito ponía a cero el contador que es el
+   único freno del segundo paso. Quien tenía la contraseña lo reponía a voluntad:
+   cuatro códigos malos, volver a entrar, otros cuatro, sin esperar nunca. El
+   éxito lo escribe quien abre de verdad: el camino sin 2FA, y
+   `segundofactor::verificar` al final del segundo paso. Lo sujeta
+   `volver_a_entrar_no_le_borra_los_fallos_al_segundo_paso`, que es la única que
+   cae si alguien lo revierte —la de los cinco fallos seguidos no lo ve.
 3. **El contador usado se guarda** (`totp_ultimo_contador`). Es todo el
    antirreplay: un código visto por encima del hombro sirve 90 s si no se
    quema.

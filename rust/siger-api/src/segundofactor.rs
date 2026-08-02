@@ -611,6 +611,17 @@ mod pruebas {
         chrono::Utc::now().timestamp() as u64
     }
 
+    /// Borra los códigos de recuperación de la cuenta 1.
+    ///
+    /// No es un atajo cosmético: `gastar_codigo_recuperacion` compara **todos**
+    /// los vigentes sin salir en el primer acierto, así que cada código erróneo
+    /// paga once Argon2id de 64 MiB —uno del secreto y diez de los códigos— y una
+    /// prueba de seis intentos se va a un minuto. Las pruebas del FRENO no
+    /// afirman nada sobre la recuperación; las que sí lo hacen no llaman a esto.
+    async fn sin_codigos_de_recuperacion(e: &Estado) {
+        sqlx::query("DELETE FROM codigo_recuperacion").execute(&e.bd).await.unwrap();
+    }
+
     /// Deja la cuenta 1 con segundo factor activo. Devuelve el secreto.
     async fn enrolar(app: &axum::Router, sesion: &str) -> String {
         let (s, cuerpo) = llamar(app, peticion("POST", "/api/2fa/iniciar", Some(sesion), None)).await;
@@ -903,10 +914,11 @@ mod pruebas {
         // Seis dígitos son un millón, y con tres ventanas hay tres válidas a la
         // vez. Si el freno solo cubriera la contraseña, quien la tenga prueba
         // códigos sin límite y el segundo factor no añade nada.
-        let (app, _) = servidor(true).await;
+        let (app, e) = servidor(true).await;
         let (_, _, cookies) = login(&app).await;
         let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
         enrolar(&app, &sesion).await;
+        sin_codigos_de_recuperacion(&e).await;
 
         let (_, _, cookies) = login(&app).await;
         let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
@@ -925,6 +937,55 @@ mod pruebas {
         )
         .await;
         assert_eq!(s, StatusCode::TOO_MANY_REQUESTS, "el segundo factor no tiene freno");
+    }
+
+    /// **Volver a entrar con la contraseña NO le borra los fallos al segundo
+    /// paso.**
+    ///
+    /// La prueba de arriba mide cinco fallos seguidos, y por eso no veía esto: el
+    /// login anotaba un ÉXITO en `intento_acceso` antes de emitir el token
+    /// pendiente, y `guaca::freno` solo cuenta los fallos posteriores al último
+    /// éxito. Quien ya tiene la contraseña —el atacante contra el que existe todo
+    /// esto— reponía el contador a voluntad y el freno no llegaba a engancharse
+    /// nunca: cuatro códigos malos, volver a entrar, otros cuatro.
+    ///
+    /// Cuatro fallos y luego volver a entrar, a propósito: con cuatro la espera
+    /// todavía es cero, así que el ciclo del atacante no gastaba ni un segundo. Lo
+    /// que se afirma es que los fallos se SUMAN a través del acceso de en medio:
+    /// el quinto todavía pasa como fallo y el sexto ya está frenado. Si alguien
+    /// vuelve a escribir el éxito en el primer paso, el contador arranca de cero
+    /// tras el acceso, el sexto sale 401 y esta prueba se pone roja.
+    #[tokio::test]
+    async fn volver_a_entrar_no_le_borra_los_fallos_al_segundo_paso() {
+        let (app, e) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+        enrolar(&app, &sesion).await;
+        sin_codigos_de_recuperacion(&e).await;
+
+        let malo = r#"{"codigo":"000000"}"#;
+        let fallar = async |pendiente: &str| {
+            llamar(&app, peticion("POST", "/api/2fa/verificar", Some(pendiente), Some(malo))).await.0
+        };
+
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        for i in 1..=4 {
+            assert_eq!(fallar(&pendiente).await, StatusCode::UNAUTHORIZED, "el intento {i}");
+        }
+
+        // El acceso de en medio: la contraseña es correcta, así que pasa. Lo que
+        // NO puede hacer es tocar el contador del segundo paso.
+        let (s, _, cookies) = login(&app).await;
+        assert_eq!(s, StatusCode::OK, "con cuatro fallos el acceso todavía no se frena");
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+
+        assert_eq!(fallar(&pendiente).await, StatusCode::UNAUTHORIZED, "el quinto intento");
+        assert_eq!(
+            fallar(&pendiente).await,
+            StatusCode::TOO_MANY_REQUESTS,
+            "volver a entrar con la contraseña le borró los fallos al segundo factor"
+        );
     }
 
     #[tokio::test]

@@ -411,8 +411,8 @@ async fn abrir_sesion(
     // del optimizador.
     let entra = clave_correcta && id.is_some();
 
-    crate::acceso::anotar(&e.bd, &email, &origen, entra, ahora).await?;
     if !entra {
+        crate::acceso::anotar(&e.bd, &email, &origen, false, ahora).await?;
         auditar(&e.bd, "acceso_fallido", Some(&email), None).await;
         return Err(rechazo);
     }
@@ -420,9 +420,27 @@ async fn abrir_sesion(
 
     // Con segundo factor, la contraseña correcta **no abre nada**: emite el token
     // pendiente, que solo sirve para `/api/2fa/verificar` y dura cinco minutos.
-    // El intento NO se anota como acceso todavía —el acceso lo anota el segundo
-    // paso— pero sí se le quita el fallo al freno: la contraseña era buena, y
-    // dejar el fallo puesto frenaría a quien está a punto de teclear su código.
+    //
+    // Y **no se anota nada en `intento_acceso`**, ni éxito ni fallo. Aquí antes se
+    // anotaba el éxito, con el argumento de que la contraseña era buena y dejar el
+    // fallo puesto frenaría a quien está a punto de teclear su código. El
+    // argumento no se sostiene y la consecuencia era grave:
+    //
+    // - `guaca::freno` no cuenta fallos en una ventana fija: cuenta **los
+    //   posteriores al último éxito**. Un éxito escrito aquí pone el contador a
+    //   cero.
+    // - Ese contador es la pareja `(correo, origen)`, y es EL MISMO que consulta
+    //   `/api/2fa/verificar`: es decir, el único freno que protege al segundo
+    //   factor.
+    // - Quien ya tiene la contraseña —que es exactamente el atacante contra el
+    //   que existe el segundo factor— podía reponerlo cuando quisiera: cuatro
+    //   códigos malos, volver a entrar, otros cuatro. El freno no llegaba a
+    //   engancharse NUNCA, y el millón de combinaciones bajaba de años a horas.
+    // - Lo que motivaba el éxito no hacía falta: con cuatro fallos o menos la
+    //   espera ya es cero, y con cinco el freno saltó antes de llegar hasta aquí.
+    //
+    // El éxito lo escribe quien abre la puerta de verdad: el camino sin segundo
+    // factor, abajo, y `segundofactor::verificar` al final del segundo paso.
     if con_segundo_factor {
         auditar(&e.bd, "acceso_falta_segundo_factor", Some(&email), None).await;
         let valor = sesion::emitir_pendiente(&e.cfg.secreto_sesion, id, version);
@@ -438,6 +456,9 @@ async fn abrir_sesion(
             .into_response());
     }
 
+    // Sin segundo factor, ESTA es la puerta: aquí sí se anota el éxito, que es lo
+    // que le borra los fallos al freno.
+    crate::acceso::anotar(&e.bd, &email, &origen, true, ahora).await?;
     auditar(&e.bd, "acceso", Some(&email), None).await;
     let valor = sesion::emitir(&e.cfg.secreto_sesion, id, version, e.cfg.minutos_sesion);
     let mut cabeceras = HeaderMap::new();
