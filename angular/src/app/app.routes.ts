@@ -61,6 +61,12 @@ export const routes: Routes = [
     canActivate: [guardaSesion],
     loadComponent: () => import('./paginas/mi-clave').then((m) => m.MiClave),
   },
+  {
+    // La cuenta propia, cualquier rol: aquí no hay nada de administración.
+    path: 'segundo-factor',
+    canActivate: [guardaSesion],
+    loadComponent: () => import('./paginas/segundo-factor').then((m) => m.SegundoFactor),
+  },
   // Cualquier otra cosa va a entregas. La guarda decidirá si hay sesión: no se
   // adivina aquí, para que la respuesta salga de un solo sitio.
   { path: '**', redirectTo: 'entregas' },

@@ -48,11 +48,14 @@ rust/
     build.rs     # rompe el release si la interfaz NO quedó dentro (ver abajo)
     main.rs rutas.rs db.rs config.rs sesion.rs autz.rs
     acceso.rs origen.rs  # freno del login: las dos consultas y de dónde viene quien pide
-    participacion.rs informes.rs flujo.rs estadisticas.rs
+    dosfactores.rs segundofactor.rs  # 2FA: la REGLA y las columnas (#212)
+    qr.rs        # el QR del enrolamiento, en SVG y sin dependencias
+    cuentas.rs participacion.rs informes.rs flujo.rs estadisticas.rs
     alertas.rs planificador.rs firma.rs importar.rs estaticos.rs respaldo.rs
     pruebas_cronograma.rs   # solo #[cfg(test)]: el cronograma de punta a punta
     tests/cli.rs            # los subcomandos ejercidos como proceso, no como función
-    migrations/  # 0001_inicial … 0006_freno_y_revocacion (sqlx::migrate!)
+    tests/oraculo_qr.json   # las 40 versiones de QR según libqrencode, congeladas
+    migrations/  # 0001_inicial … 0007_segundo_factor (sqlx::migrate!)
     estaticos/   # DONDE SE EMPOTRA la interfaz. En git solo va el .gitkeep
 angular/        # la interfaz; se construye e incrusta en el binario
 despliegue/     # unidades systemd, nginx y los guiones de la demo (ver DESPLIEGUE.md)
@@ -340,9 +343,35 @@ el contador** — pasarle el contador compila, valida el código actual y multip
 la ventana por 30, de 30 s a 15 minutos. Lo caza
 `un_codigo_no_sirve_mas_de_noventa_segundos`.
 
-**Falta la interfaz**: las tres pantallas (QR de enrolamiento, casilla del código
-en el login, gestión en el perfil) no están. El backend está completo y probado
-por el router.
+La interfaz son **dos archivos**: `paginas/segundo-factor.ts` (estado,
+enrolamiento con QR, códigos de recuperación y baja con contraseña) y el segundo
+paso dentro de `paginas/acceso.ts`. La entrada está en el menú de la cuenta,
+junto a «Cambiar mi contraseña». El primer formulario del acceso **desaparece**
+al pasar al código y la contraseña se borra de memoria: lo que el servidor espera
+en ese momento es la cookie pendiente, no las credenciales otra vez.
+
+### El QR se dibuja en el servidor (`qr.rs`)
+
+Un codificador propio —modo byte, nivel M, versiones 1..40, máscara por
+penalización— que devuelve **SVG**, y el enrolamiento lo manda ya dibujado en
+`qr_svg`. No hay librería de QR ni en npm ni en Rust: la *feature* `qr` de
+`totp-rs` arrastra `image` a un binario offline, y una de npm son ~20 KB en el
+paquete inicial para una pantalla que cada cuenta abre una vez.
+
+**Cómo se sabe que está bien, que es lo único difícil de esto**: un QR mal
+generado no falla, sale un dibujo plausible que ningún teléfono lee. Se mide
+contra `qrencode` (libqrencode) con un oráculo dorado —`tests/oraculo_qr.json`,
+que regenera `tests/generar_oraculo_qr.py`— comparando **módulo a módulo las
+cuarenta versiones**, una por fila de la tabla de bloques. Dos consecuencias que
+no se pueden «arreglar» sin romper el oráculo: la N3 se lee como una *razón*
+1:1:3:1:1 a cualquier escala (no como once módulos fijos), y sus dos condiciones
+de borde son las de libqrencode al pie de la letra. La máscara es una heurística
+de calidad: las ocho producen símbolos legibles, así que igualar al oráculo no
+cuesta corrección y compra una prueba total.
+
+En la pantalla el SVG va dentro de un `<img>` con `data:` —la CSP lo admite
+(`img-src 'self' data:`)— y no con `innerHTML`: así el navegador lo trata como un
+documento aparte y sin guiones.
 
 ## Firma de entregas (`firma.rs`, Quipu, opcional)
 

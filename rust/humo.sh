@@ -45,6 +45,7 @@ SIGER_SECRETO_SESION="$SECRETO" \
 PORT="$PUERTO" \
 PAIS_ISO="${PAIS_ISO:-CO}" \
 SIGER_DIR_ENTREGAS="$SALA/entregas" \
+SIGER_CLAVE_REPOSO="frase-de-reposo-solo-para-esta-prueba-de-humo" \
   "$BIN" > "$SALA/servidor.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null; rm -rf "$SALA"' EXIT
@@ -103,6 +104,34 @@ comprobar "sin token pendiente, /api/2fa/verificar rechaza (401, no 404)" \
                                                           -H 'Content-Type: application/json' -d '{"codigo":"000000"}')"
 comprobar "una ruta del SPA devuelve el index"    200 "$(codigo cronograma)"
 comprobar "un /api/ inexistente es 404, no index" 404 "$(codigo api/no-existe)"
+
+# El QR del enrolamiento, dibujado por el binario de release (#212). Es la única
+# comprobación que cruza la frontera entera de esta característica: `cargo test`
+# mide la matriz contra el oráculo dentro del proceso, y lo que la pantalla recibe
+# es un SVG por HTTP. Hace falta una cuenta de verdad, así que se crea aquí con el
+# MISMO `hashear` del producto —un hash de otra herramienta deja a alguien fuera— y
+# se entra con ella.
+CLAVE_HUMO='clave-de-la-prueba-de-humo'
+HASH="$("$BIN" hashear "$CLAVE_HUMO")"
+python3 - "$SALA/humo.db" "$HASH" <<'PY' 2>/dev/null
+import sqlite3, sys
+bd = sqlite3.connect(sys.argv[1])
+bd.execute(
+    "INSERT INTO usuarios (nombre, email, clave_hash, rol, activo) VALUES (?,?,?,?,1)",
+    ("Humo", "humo@example.com", sys.argv[2], "ADMIN"),
+)
+bd.commit()
+PY
+GALLETAS="$SALA/galletas.txt"
+comprobar "la cuenta de prueba entra" 200 \
+  "$(codigo api/sesion /dev/null -X POST -c "$GALLETAS" -H 'Content-Type: application/json' \
+      -d "{\"email\":\"humo@example.com\",\"clave\":\"$CLAVE_HUMO\"}")"
+curl -sS -b "$GALLETAS" -X POST "$U/api/2fa/iniciar" -o "$SALA/enrolamiento.json"
+QR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["qr_svg"])' "$SALA/enrolamiento.json" 2>/dev/null)"
+comprobar "el enrolamiento devuelve un SVG"  0 "$(grep -q '^<svg ' <<<"$QR" && echo 0 || echo 1)"
+# Un SVG «bien formado» que no dibuje nada también empieza por `<svg`. Lo que dice
+# que hay un código ahí es el trazo: sin él la pantalla enseña un cuadro blanco.
+comprobar "y el SVG lleva su trazo de módulos" 0 "$(grep -q '<path fill="#000000" d="M' <<<"$QR" && echo 0 || echo 1)"
 
 # El freno: cinco fallos sin castigo y el sexto frenado. Aquí, y no solo en
 # `cargo test`, porque en release el Argon2 cuesta lo que cuesta y el señuelo

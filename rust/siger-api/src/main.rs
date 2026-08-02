@@ -25,6 +25,7 @@ mod participacion;
 mod planificador;
 #[cfg(test)]
 mod pruebas_cronograma;
+mod qr;
 mod respaldo;
 mod rutas;
 mod segundofactor;

@@ -40,6 +40,28 @@ export interface Cuenta {
   stakeholder_id: number | null;
 }
 
+/** Qué tiene esta cuenta en materia de segundo factor (#212). */
+export interface EstadoFactor {
+  activo: boolean;
+  /** Códigos de recuperación sin gastar. Es lo que decide si la pantalla avisa. */
+  codigos_disponibles: number;
+  /** `false` = este despliegue no tiene `SIGER_CLAVE_REPOSO` y el secreto no se
+   *  podría guardar cifrado. La pantalla lo DICE en vez de ofrecer un botón que
+   *  va a fallar. */
+  puede_activarse: boolean;
+}
+
+/** El enrolamiento en curso: lo que hay que enseñar una vez y no se repite. */
+export interface Enrolamiento {
+  /** Para teclear a mano cuando la cámara no lee el QR. */
+  secreto: string;
+  /** El `otpauth://`, para abrirlo desde el propio teléfono. */
+  uri: string;
+  /** El QR ya dibujado por el servidor. Aquí no hay librería de QR: ver
+   *  `qr.rs`. */
+  qr_svg: string;
+}
+
 export interface Entrega {
   id: number;
   informe: string;
@@ -201,9 +223,63 @@ export class Api {
       .pipe(catchError((e) => this.falla(e)));
   }
 
+  /**
+   * Primer paso del acceso.
+   *
+   * `segundo_factor: true` significa que la contraseña era correcta y que **no
+   * hay sesión**: el servidor dejó una cookie pendiente de cinco minutos que solo
+   * sirve para `/api/2fa/verificar`. Quien llame a esto tiene que mirar el campo;
+   * tratarlo como un `ok` deja al usuario en una pantalla que cree que ha entrado
+   * y recibe 401 en la primera petición.
+   */
   entrar(email: string, clave: string) {
     return this.http
-      .post<{ ok: boolean }>('/api/sesion', { email, clave }, { withCredentials: true })
+      .post<{ ok: boolean; segundo_factor: boolean }>(
+        '/api/sesion',
+        { email, clave },
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Segundo paso del acceso: el código del autenticador o uno de recuperación.
+   *
+   * No lleva ni correo ni contraseña —la cookie pendiente ya dice quién es— y no
+   * se le pregunta al cliente de qué tipo es el código: los distingue el formato.
+   */
+  verificarSegundoFactor(codigo: string) {
+    return this.http
+      .post<{ ok: boolean }>('/api/2fa/verificar', { codigo }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  // --- Segundo factor de la cuenta propia (#212) ------------------------------
+
+  estadoSegundoFactor() {
+    return this.get<EstadoFactor>('/api/2fa');
+  }
+
+  /** Genera el secreto y devuelve el QR. **No activa nada**: hace falta el paso
+   *  siguiente con un código correcto. */
+  iniciarSegundoFactor() {
+    return this.http
+      .post<Enrolamiento>('/api/2fa/iniciar', null, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /** Activa y devuelve los códigos de recuperación. Se entregan **una sola vez**:
+   *  en la base solo queda su hash, así que si esta pantalla los pierde, se
+   *  pierden. */
+  activarSegundoFactor(codigo: string) {
+    return this.http
+      .post<string[]>('/api/2fa/activar', { codigo }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  desactivarSegundoFactor(clave: string) {
+    return this.http
+      .post<void>('/api/2fa/desactivar', { clave }, { withCredentials: true })
       .pipe(catchError((e) => this.falla(e)));
   }
 

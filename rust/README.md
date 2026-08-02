@@ -85,4 +85,7 @@ entregas (`siger-api/src/firma.rs`), el planificador en segundo plano
 con tope de cuerpo y comprobación de pertenencia) y la carga de la base anterior
 (`siger-api importar <origen> <destino>`). Además, posteriores al texto original:
 el **cifrado en reposo** de las entregas, el **freno** al ensayo de contraseñas
-con revocación de sesiones, y `respaldar`/`restaurar` con copia verificada.
+con revocación de sesiones, `respaldar`/`restaurar` con copia verificada, la
+**administración de cuentas** y la **verificación en dos pasos** (TOTP, con sus
+tres pantallas y el QR dibujado por el propio binario en `qr.rs`, sin ninguna
+dependencia nueva).

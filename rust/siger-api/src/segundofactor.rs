@@ -67,8 +67,15 @@ pub struct SoloClave {
 pub struct Enrolamiento {
     /// Para teclear a mano cuando la cámara no lee el QR.
     secreto: String,
-    /// Lo que se pinta como QR.
+    /// El URI `otpauth://`, para el enlace «abrir en la aplicación» del teléfono.
     uri: String,
+    /// El QR ya dibujado, en SVG.
+    ///
+    /// Se dibuja **aquí** y no en el navegador: una librería de QR en npm son
+    /// veinte kilobytes de JavaScript dentro del paquete inicial para una
+    /// pantalla que cada cuenta abre una vez, y una dependencia más que auditar en
+    /// un producto que se instala sin internet. Ver [`crate::qr`].
+    qr_svg: String,
 }
 
 #[derive(Serialize)]
@@ -180,10 +187,14 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
     .await?;
 
     auditar(&e.bd, "2fa_enrolamiento_iniciado", Some(&actor.email), None).await;
-    Ok(Json(Enrolamiento {
-        uri: dosfactores::uri_otpauth("SIGER", &actor.email, &secreto),
-        secreto,
-    }))
+    let uri = dosfactores::uri_otpauth("SIGER", &actor.email, &secreto);
+    // Un URI de enrolamiento cabe de sobra —la versión 40 admite 2.331 bytes—,
+    // así que llegar aquí significa un correo absurdo. Se dice, no se calla: sin
+    // QR la pantalla no tiene nada que enseñar.
+    let codigo = crate::qr::codificar(uri.as_bytes()).map_err(|e| {
+        Error(StatusCode::INTERNAL_SERVER_ERROR, format!("no se pudo dibujar el código QR: {e}"))
+    })?;
+    Ok(Json(Enrolamiento { qr_svg: codigo.a_svg(), uri, secreto }))
 }
 
 /// `POST /api/2fa/activar` — exige un código correcto y entrega los códigos de
@@ -613,6 +624,54 @@ mod pruebas {
         .await;
         assert_eq!(s, StatusCode::OK, "{cuerpo}");
         secreto
+    }
+
+    /// Lo que llega a la pantalla de enrolamiento es un QR, y el QR es el del URI
+    /// que va en la misma respuesta.
+    ///
+    /// Suena obvio y es justo el empalme donde se pierde: dibujar el secreto en
+    /// vez del URI, o el URI de un enrolamiento anterior, produce un código que se
+    /// escanea sin protestar y genera números que nunca casan. Y no se comprueba
+    /// leyendo el campo `secreto` —eso sería creerle a la respuesta— sino sacando
+    /// el secreto DEL URI, que es lo único que el teléfono llega a ver, y
+    /// activando con un código generado a partir de él.
+    #[tokio::test]
+    async fn el_qr_lleva_el_uri_y_el_uri_lleva_el_secreto_que_luego_vale() {
+        let (app, _) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+
+        let (s, cuerpo) =
+            llamar(&app, peticion("POST", "/api/2fa/iniciar", Some(&sesion), None)).await;
+        assert_eq!(s, StatusCode::OK, "{cuerpo}");
+        let uri = cuerpo["uri"].as_str().expect("el URI viaja en la respuesta");
+        let svg = cuerpo["qr_svg"].as_str().expect("el QR viaja dibujado");
+
+        assert!(svg.starts_with("<svg "), "eso no es un SVG: {}", &svg[..svg.len().min(40)]);
+        assert_eq!(
+            svg,
+            crate::qr::codificar(uri.as_bytes()).unwrap().a_svg(),
+            "el QR dibujado no es el de este URI"
+        );
+
+        // Del URI al código, que es el camino del teléfono.
+        let del_uri = uri
+            .split("secret=")
+            .nth(1)
+            .and_then(|r| r.split('&').next())
+            .expect("el URI lleva su secreto");
+        let c = codigo(del_uri, ahora());
+        let (s, cuerpo) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/activar",
+                Some(&sesion),
+                Some(&format!(r#"{{"codigo":"{c}"}}"#)),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "el código que sale del QR no activó: {cuerpo}");
     }
 
     #[tokio::test]

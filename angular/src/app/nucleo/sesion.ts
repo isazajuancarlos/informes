@@ -52,8 +52,25 @@ export class Sesion {
     return this.dentro();
   }
 
-  async entrar(email: string, clave: string) {
-    await firstValueFrom(this.api.entrar(email, clave));
+  /**
+   * Primer paso. Devuelve `true` si la contraseña era correcta pero **falta el
+   * segundo factor**: en ese caso NO hay sesión, y el actor sigue en `null`.
+   *
+   * Se devuelve el dato en vez de navegar aquí porque el que sabe qué pantalla
+   * toca es el componente. Lo que sí es responsabilidad de este servicio es no
+   * mentir sobre el estado: `comprobar()` solo se llama cuando de verdad hay
+   * cookie de sesión.
+   */
+  async entrar(email: string, clave: string): Promise<boolean> {
+    const r = await firstValueFrom(this.api.entrar(email, clave));
+    if (r.segundo_factor) return true;
+    await this.comprobar();
+    return false;
+  }
+
+  /** Segundo paso. Al volver ya hay sesión, o la llamada ha fallado. */
+  async completarSegundoFactor(codigo: string) {
+    await firstValueFrom(this.api.verificarSegundoFactor(codigo));
     await this.comprobar();
   }
 
