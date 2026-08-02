@@ -82,6 +82,15 @@ comprobar "sin sesión, /api/yo rechaza"           401 "$(codigo api/yo)"
 # esta comprobación, no lo delata nada: el resto de pruebas llaman al manejador.
 comprobar "sin sesión, /api/salir-todo rechaza (401, no 404)" \
                                                   401 "$(codigo api/salir-todo /dev/null -X POST)"
+
+# La administración de cuentas, por la misma razón y con el mismo criterio: 401
+# dice «existe y te rechaza», 404 diría que la ruta no viajó en el binario. Son
+# los extremos que dan de alta gente y cambian contraseñas; que estén servidos de
+# verdad no se puede dar por hecho desde una prueba que llama al manejador.
+comprobar "sin sesión, /api/cuentas rechaza (401, no 404)" \
+                                                  401 "$(codigo api/cuentas)"
+comprobar "sin sesión, /api/mi-clave rechaza (401, no 404)" \
+                                                  401 "$(codigo api/mi-clave /dev/null -X POST)"
 comprobar "una ruta del SPA devuelve el index"    200 "$(codigo cronograma)"
 comprobar "un /api/ inexistente es 404, no index" 404 "$(codigo api/no-existe)"
 

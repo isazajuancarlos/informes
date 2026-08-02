@@ -22,6 +22,24 @@ export interface Actor {
   stakeholder_id: number | null;
 }
 
+/**
+ * Una cuenta como la ve la administración.
+ *
+ * `rol` viaja aquí como el texto de la base (`ADMIN`, `OPERADOR`…) y no como el
+ * `Rol` del actor (`Admin`, `Operador`…). Son dos representaciones del mismo
+ * valor y NO se mezclan: la de arriba la produce `serde` sobre el enum, esta sale
+ * de la columna. Unificarlas es trabajo del servidor, no de un `toUpperCase()`
+ * aquí que se rompería en silencio el día que cambie cualquiera de las dos.
+ */
+export interface Cuenta {
+  id: number;
+  nombre: string;
+  email: string;
+  rol: 'ADMIN' | 'OPERADOR' | 'SUPERVISOR' | 'TERCERO';
+  activo: boolean;
+  stakeholder_id: number | null;
+}
+
 export interface Entrega {
   id: number;
   informe: string;
@@ -210,6 +228,60 @@ export class Api {
 
   yo() {
     return this.get<Actor>('/api/yo');
+  }
+
+  // --- Administración de cuentas ---------------------------------------------
+  //
+  // Recurso aparte de `/api/usuarios`, que significa «quién puede ser parte de un
+  // flujo» y solo devuelve los activos. Aquí hacen falta también los desactivados
+  // —si no, reactivar a alguien exigiría abrir la base a mano— y el rol.
+
+  cuentas() {
+    return this.get<Cuenta[]>('/api/cuentas');
+  }
+
+  crearCuenta(c: {
+    nombre: string;
+    email: string;
+    clave: string;
+    rol: string;
+    stakeholder_id: number | null;
+  }) {
+    return this.http
+      .post<Cuenta>('/api/cuentas', c, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  actualizarCuenta(
+    id: number,
+    c: { nombre: string; rol: string; activo: boolean; stakeholder_id: number | null },
+  ) {
+    return this.http
+      .put<Cuenta>(`/api/cuentas/${id}`, c, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /** Restablece la contraseña de OTRA persona. Le cierra todas sus sesiones. */
+  restablecerClave(id: number, clave_nueva: string) {
+    return this.http
+      .post<{ ok: boolean }>(`/api/cuentas/${id}/clave`, { clave_nueva }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Cambia la contraseña propia. Cualquier rol.
+   *
+   * El servidor reemite la cookie, así que esta sesión sigue viva y caen todas
+   * las demás de esta persona. No hay que volver a entrar.
+   */
+  cambiarMiClave(clave_actual: string, clave_nueva: string) {
+    return this.http
+      .post<{ ok: boolean }>(
+        '/api/mi-clave',
+        { clave_actual, clave_nueva },
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
   }
 
   entregas() {

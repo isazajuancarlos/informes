@@ -13,7 +13,7 @@
         <span class="largo">Sistema Integral de Gestión de Informes</span>
       </div>
       <mat-nav-list>
-        @for (entrada of menu; track entrada.ruta) {
+        @for (entrada of menuVisible(); track entrada.ruta) {
           <a mat-list-item [routerLink]="entrada.ruta" routerLinkActive
              #activo="routerLinkActive" [activated]="activo.isActive">
             <mat-icon matListItemIcon>{{ entrada.icono }}</mat-icon>
@@ -40,6 +40,9 @@
             <strong>{{ sesion.actor()?.email }}</strong>
             <span>{{ sesion.actor()?.rol }}</span>
           </div>
+          <button mat-menu-item routerLink="/mi-clave">
+            <mat-icon>password</mat-icon> Cambiar mi contraseña
+          </button>
           <button mat-menu-item (click)="sesion.salir()">
             <mat-icon>logout</mat-icon> Salir
           </button>

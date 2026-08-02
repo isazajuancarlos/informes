@@ -46,6 +46,21 @@ export const routes: Routes = [
     canActivate: [guardaSesion],
     loadComponent: () => import('./paginas/cronograma').then((m) => m.Cronograma),
   },
+  {
+    // Sin guarda de rol a propósito: la única guarda es `guardaSesion`, igual que
+    // el resto. Quien no sea administrador no ve la entrada del menú, y si llega
+    // aquí a mano se encuentra una pantalla que recibe 403 en cada llamada. Poner
+    // aquí una comprobación de rol daría la impresión de que la autorización vive
+    // en el cliente, y la autorización vive en `autz`.
+    path: 'cuentas',
+    canActivate: [guardaSesion],
+    loadComponent: () => import('./paginas/cuentas').then((m) => m.Cuentas),
+  },
+  {
+    path: 'mi-clave',
+    canActivate: [guardaSesion],
+    loadComponent: () => import('./paginas/mi-clave').then((m) => m.MiClave),
+  },
   // Cualquier otra cosa va a entregas. La guarda decidirá si hay sesión: no se
   // adivina aquí, para que la respuesta salga de un solo sitio.
   { path: '**', redirectTo: 'entregas' },

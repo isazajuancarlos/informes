@@ -15,7 +15,7 @@ use axum::{
     extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path as RutaParam, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use chrono::{Datelike, Utc};
@@ -141,6 +141,16 @@ pub fn router(estado: Estado) -> Router {
             "/api/informes/{id}/participacion",
             get(crate::participacion::listar).put(crate::participacion::reemplazar),
         )
+        .route("/api/mi-clave", post(crate::cuentas::cambiar_mi_clave))
+        // Administración de cuentas. Recurso propio y no `/api/usuarios`, que
+        // significa «quién puede ser parte de un flujo» y lo consume el selector
+        // de partes: ver la cabecera de `cuentas.rs`.
+        .route(
+            "/api/cuentas",
+            get(crate::cuentas::listar).post(crate::cuentas::crear),
+        )
+        .route("/api/cuentas/{id}", put(crate::cuentas::actualizar))
+        .route("/api/cuentas/{id}/clave", post(crate::cuentas::restablecer_clave))
         .route("/api/usuarios", get(crate::participacion::usuarios))
         .route("/api/stakeholders", get(crate::participacion::stakeholders))
         .route("/api/estadisticas", get(crate::estadisticas::resumen))
@@ -801,7 +811,7 @@ enum Documento {
 /// peticiones encima, y siguen por debajo del `proxy_read_timeout` de nginx (60 s),
 /// de modo que quien contesta el 503 es el servidor, que sabe por qué, y no el
 /// proxy con un 504 mudo.
-const ESPERA_CRIPTO: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const ESPERA_CRIPTO: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Lee el archivo de una entrega y lo devuelve EN CLARO. Si la fila dice que está
 /// cifrado, lo descifra con la frase de reposo. **Nunca** se sirve un blob

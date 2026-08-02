@@ -11,6 +11,7 @@ mod acceso;
 mod alertas;
 mod autz;
 mod config;
+mod cuentas;
 mod db;
 mod estadisticas;
 mod estaticos;

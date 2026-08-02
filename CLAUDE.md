@@ -102,6 +102,13 @@ Convención: **el nombre de cada prueba es la frase que afirma**
 (`el_servidor_lleno_dice_ocupado_y_no_no_descifra`), y los módulos se llaman
 `tests` o `pruebas` indistintamente — filtra por el nombre, no por el módulo.
 
+**Una prueba en verde no dice nada; lo que dice algo es que se ponga ROJA al
+romper lo que afirma vigilar.** Antes de dar por buena una salvaguarda, múta­la y
+mira quién la caza — y si NO cae nadie, sospecha primero de la mutación: añadir
+`clave_hash` al `SELECT` de `cuentas.rs` no filtra el hash, porque la puerta es el
+struct y `FromRow` ignora las columnas que no declara. La mutación inofensiva
+acusa al banco, no a la prueba.
+
 MSRV 1.85 (evitar API que exija más; p. ej. `% 2 != 0`, no `is_multiple_of`).
 El CI (`.github/workflows/ci.yml`) tiene cuatro trabajos: `rust` (test +
 clippy), `frontend` (ng build), `cargo-audit (RustSec)` y `cargo-deny (supply
@@ -153,6 +160,39 @@ ese formato — y un valor presente pero ilegible **no cae al defecto**, falla.
    (tests `degradado`): un SMTP caído no marca, no pierde y no propaga.
 3. **Ante la ausencia de un dato, se falla ruidosamente; nunca se sustituye por un
    defecto.** `config.rs` no trae valores por defecto para secretos.
+
+## Administración de cuentas (`cuentas.rs`)
+
+`GET/POST /api/cuentas`, `PUT /api/cuentas/{id}`, `POST /api/cuentas/{id}/clave`
+(restablecer la de otro) y `POST /api/mi-clave` (la propia, cualquier rol).
+Pantallas en `angular/src/app/paginas/{cuentas,mi-clave}.ts`.
+
+**Recurso aparte de `/api/usuarios` a propósito**, siendo la misma tabla:
+`/api/usuarios` significa «quién puede ser parte de un flujo» y solo trae los
+activos, porque lo consume el selector de partes. La administración necesita
+también los desactivados —si no, reactivar a alguien exigiría `sqlite3`— y el
+rol. Dos vocabularios sobre una fila; el valor lo fija quien ya lee.
+
+Cuatro reglas que no se pueden relajar sin romper algo (las siete están cubiertas
+por un banco de mutación, ver abajo):
+
+1. **Solo `Admin`.** `Supervisor` NO, aunque su alcance también sea `Todas`: eso
+   es para LEER entregas. Si administrar colgara de `puede_leer`, un rol de
+   consulta podría fabricarse un administrador.
+2. **Todo cambio de contraseña sube `token_version` en la MISMA sentencia.** Es
+   lo que hace que cambiar la clave eche a quien entró con la vieja — la razón de
+   ser de la columna (#194). En dos sentencias habría un instante con la clave
+   nueva puesta y las sesiones viejas vivas.
+3. **`/api/mi-clave` exige la contraseña actual** y, tras cambiarla, **reemite la
+   cookie** con la versión nueva: sigues dentro aquí y caes en el resto. Sin la
+   comprobación, una sesión robada se queda con la cuenta para siempre; sin la
+   reemisión, cambiar la clave te expulsa a ti y nadie usa el botón.
+4. **El último administrador activo no se puede degradar ni desactivar.** Es un
+   imposible, no un inusual: sin administrador no se puede ascender a nadie y la
+   única salida sería abrir la base a mano.
+
+El hash sale del **mismo** Argon2 que verifica el acceso, con turno del semáforo
+de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo.
 
 ## Acceso y alcance (`autz.rs`)
 
