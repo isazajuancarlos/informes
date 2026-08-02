@@ -39,17 +39,33 @@ la app: `rust/sembrar_demo.py` (siembra la base de demostración) y
 
 ```
 rust/
+  Cargo.toml    # workspace; MSRV 1.85, publish = false, license LicenseRef-Xiliux-Comercial
+  deny.toml  .cargo/audit.toml   # cadena de suministro: fuentes permitidas y el único ignore
   siger-core/   # dominio puro: el motor, sin I/O
     calendario.rs recurrencia.rs fechas.rs inferencia.rs patrones.rs compat.rs
     tests/oraculo.rs, oraculo_inferencia.rs  # oráculos diferenciales (ver abajo)
   siger-api/    # binario axum + Angular embebido (rust-embed) + SQLite (SQLx)
+    build.rs     # rompe el release si la interfaz NO quedó dentro (ver abajo)
     main.rs rutas.rs db.rs config.rs sesion.rs autz.rs
     acceso.rs origen.rs  # freno del login: las dos consultas y de dónde viene quien pide
     participacion.rs informes.rs flujo.rs estadisticas.rs
     alertas.rs planificador.rs firma.rs importar.rs estaticos.rs respaldo.rs
+    pruebas_cronograma.rs   # solo #[cfg(test)]: el cronograma de punta a punta
+    tests/cli.rs            # los subcomandos ejercidos como proceso, no como función
     migrations/  # 0001_inicial … 0006_freno_y_revocacion (sqlx::migrate!)
+    estaticos/   # DONDE SE EMPOTRA la interfaz. En git solo va el .gitkeep
 angular/        # la interfaz; se construye e incrusta en el binario
+despliegue/     # unidades systemd, nginx y los guiones de la demo (ver DESPLIEGUE.md)
 ```
+
+**El grueso del cableado está en `rutas.rs` (~2.000 líneas): router, extractores,
+lectura de documentos y 25 de las pruebas.** Es el primer sitio donde mirar
+cuando algo va de HTTP; `autz.rs` es el único donde se decide quién ve qué.
+
+En la RAÍZ quedan `app/`, `tests/`, `.venv/`, `.nicegui/`, `herramientas/` y
+varios `*.db`: son **restos sin versionar** del Python —`git ls-files` no
+devuelve ni uno— y no son la fuente de nada. No los edites ni los cites. (Las
+`tests/` que sí cuentan son las de dentro de `rust/`.)
 
 ## Comandos
 
@@ -63,7 +79,28 @@ cd ../angular && npm ci && npx ng build                  # reconstruir la interf
 
 ./rust/construir.sh              # el ARTEFACTO: interfaz dentro del binario
 ./rust/humo.sh                   # y probarlo por HTTP, como lo prueba el mundo
+python rust/sembrar_demo.py      # base de demostración en rust/demo/siger.db
 ```
+
+**Correr UNA prueba** (el nombre es un filtro por subcadena, no una ruta):
+
+```bash
+cd rust
+cargo test -p siger-api --bin siger-api -- --list        # los 98 nombres, para elegir
+cargo test -p siger-api rutas::pruebas_acceso           # el freno del login entero
+cargo test -p siger-api --bin siger-api estaticos::     # un módulo
+cargo test -p siger-core --test oraculo -- --nocapture  # solo el oráculo del motor
+cargo test -p siger-api --test cli                      # los subcomandos, como proceso
+cargo test --workspace --all-targets --no-fail-fast     # ver TODOS los rojos
+```
+
+`--no-fail-fast` importa: sin él `cargo test` para en el primer binario que
+falla y las pruebas de los demás crates **no llegan a ejecutarse** — un rojo
+puede estar tapando otros. El CI corre sin él a propósito (falla rápido).
+
+Convención: **el nombre de cada prueba es la frase que afirma**
+(`el_servidor_lleno_dice_ocupado_y_no_no_descifra`), y los módulos se llaman
+`tests` o `pruebas` indistintamente — filtra por el nombre, no por el módulo.
 
 MSRV 1.85 (evitar API que exija más; p. ej. `% 2 != 0`, no `is_multiple_of`).
 El CI (`.github/workflows/ci.yml`) tiene cuatro trabajos: `rust` (test +
@@ -82,11 +119,26 @@ binario de release contra una base temporal y le habla por socket: interfaz
 servida de verdad, el `.js` que el index pide viviendo DENTRO, las cabeceras en
 la respuesta real y el freno del login frenando al sexto intento.
 
+**`cargo build --release` a secas falla si `estaticos/` está vacío**, y lo hace
+`build.rs` a propósito: `rust-embed` lee del disco en *debug* y empotra en
+*release*, así que un clon limpio producía —sin avisar— un binario que arranca,
+sirve la API y devuelve 404 en la raíz. El camino permisivo existe pero **hay
+que pedirlo**: `SIGER_SIN_INTERFAZ=1 cargo build --release`. En *debug* no
+aplica, por eso `cargo test` funciona sin haber construido la interfaz.
+
 Subcomandos del binario: `importar <origen> <destino>` (vuelca una base del
-Python anterior), `alertas` (una pasada, para un timer), `generar-secreto`,
-`generar-claves-firma`, `hashear` (Argon2, mismos parámetros que el acceso).
+Python anterior), `alertas` (una pasada, para un timer),
+`respaldar <carpeta>` / `restaurar <carpeta> [--forzar]` (base en caliente vía
+`VACUUM INTO` + los archivos de entrega, y la copia **se verifica** antes de
+darse por buena), `generar-secreto`, `generar-claves-firma`, `hashear` (Argon2,
+mismos parámetros que el acceso). Todos leen del entorno **dónde** está la base:
+respaldan lo que el servicio usa de verdad, no lo que alguien creía.
+
 Configuración por entorno en `config.rs`; **el binario no arranca si falta un
-secreto** (no hay defectos peligrosos). Plantilla en `.env.example`.
+secreto** (no hay defectos peligrosos). Plantilla en `.env.example`. Las
+opciones se documentan como **cascadas con tabla** en el doc-comment de su
+función (`permisos_de_cripto`, `direccion_de_escucha`): al añadir una, sigue
+ese formato — y un valor presente pero ilegible **no cae al defecto**, falla.
 
 ## Invariantes que explican casi todo
 
@@ -137,6 +189,36 @@ misma transacción** que fija estado, fecha y archivo, vía el contenedor de Qui
 (`encode_signed`/`decode_verified`). Sin `QUIPU_SIGNING_KEY`, la entrega se
 registra igual, sin firma — la ausencia de firma nunca impide cumplir.
 
+## Cifrado en reposo y el documento de cuatro estados (`rutas.rs`)
+
+Con `SIGER_CLAVE_REPOSO`, el archivo de cada entrega se guarda envuelto por
+`guaca::reposo` (Argon2id → AEAD → padding Padmé) y la fila lleva su bandera
+`cifrado`; sin frase, se guarda en claro. **Nunca se sirve un blob cifrado**.
+
+Lo que hay que entender antes de tocar aquí es el enum `Documento`, que tiene
+**cuatro** estados y no dos:
+
+| estado | qué significa | qué NO significa |
+|---|---|---|
+| `Claro(bytes)` | el documento | |
+| `NoEsta` | no hay archivo en esa ruta | |
+| `NoDescifra` | falta la frase, está rotada, o el blob fue alterado | |
+| `Ocupado` | no se llegó a MIRAR el archivo: el semáforo estaba lleno | **no dice nada del archivo** |
+
+`Ocupado` es un caso aparte a propósito. Si cayera en el mismo cajón que
+`NoDescifra`, una tarde de mucho tráfico se leería como una entrega sospechosa —
+y una verificación que confunde «no pude mirar» con «vi algo malo» no es un
+defecto silencioso: es una **acusación falsa de manipulación**. Al añadir un
+camino nuevo por el que un documento no se pueda leer, pregúntate en cuál de
+los cuatro cae, y si no cae en ninguno, añade el quinto. Lo sujetan
+`sin_la_frase_de_reposo_no_se_acusa_de_alteracion` y
+`el_servidor_lleno_dice_ocupado_y_no_no_descifra`.
+
+El semáforo existe porque cada descifrado reserva **64 MiB** de Argon2id en
+`spawn_blocking`, y el vivero de tokio admite 512 hilos: sin tope serían 32 GiB
+simultáneos. `SIGER_CRIPTO_PARALELA` lo fija (defecto: núcleos). El plazo de
+espera lo comparten el descifrado y el Argon2 del login.
+
 ## El motor y sus oráculos (`siger-core`)
 
 `recurrencia.rs` genera los vencimientos; `inferencia.rs` va del calendario a la
@@ -147,11 +229,28 @@ produjo el motor de Python antes del cutover, congelados y vendorizados:
 `tests/oraculo_inferencia.json` + `tests/oraculo_interpretaciones.json`. Una sola
 fecha distinta pone el test rojo.
 
+## La interfaz (`angular/`)
+
+Angular 22 + `@angular/material` + `material-icons` **empaquetado**, sin una
+sola petición a un CDN — el producto se instala sin internet, y la CSP del
+binario es `script-src 'self'`. PrimeNG está prohibido (ver el general).
+Siete páginas en `src/app/paginas/`, el cliente HTTP y la sesión en
+`src/app/nucleo/`.
+
+**No hay pruebas unitarias de la interfaz**: `vitest` y `tsconfig.spec.json`
+están declarados, pero no existe ni un `.spec.ts`. `npm test` no comprueba nada
+— lo que sujeta la interfaz es `ng build` en el CI, `estaticos::pruebas` sobre
+el index empotrado, y `humo.sh` por socket. No cites `npm test` como verde.
+
 ## Pendiente conocido
 
 - **Licencia offline — NO portada a Rust.** El Python tenía una licencia firmada
   por el licenciante, verificada en local (`INFORMES_LICENCIA`). El port no la
   trae aún; tarea registrada. Mantendrá el modo degradado: **nunca bloquea nada**.
+
+Es lo **único** pendiente, y `rust/README.md` dice lo mismo. Si encuentras otro
+documento que dé por pendiente la inferencia, la firma, el planificador, la
+subida o la importación, está desactualizado: las cinco están hechas.
 
 ## Documentos de negocio (no se editan sin pedirlo)
 
