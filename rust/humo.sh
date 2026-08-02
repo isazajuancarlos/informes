@@ -162,7 +162,8 @@ comprobar "renovar códigos sin la contraseña buena rechaza (401, no 404)" 401 
 # Con el factor puesto, la contraseña sola ya no abre: 200 con `segundo_factor`
 # en true y SIN cookie de sesión. Es la afirmación central de #212, y aquí se
 # mide en la respuesta real y no en el manejador.
-SEGUNDO="$(curl -sS -D "$SALA/cab-2fa.txt" -o "$SALA/login-2fa.json" -X POST "$U/api/sesion" \
+SEGUNDO="$(curl -sS -D "$SALA/cab-2fa.txt" -o "$SALA/login-2fa.json" \
+    -c "$SALA/pendiente.txt" -X POST "$U/api/sesion" \
     -H 'Content-Type: application/json' \
     -d "{\"email\":\"humo@example.com\",\"clave\":\"$CLAVE_HUMO\"}" \
     -w '%{http_code}')"
@@ -171,6 +172,41 @@ comprobar "…diciendo que falta el segundo factor"      0 \
   "$(grep -q '"segundo_factor":true' "$SALA/login-2fa.json" && echo 0 || echo 1)"
 comprobar "…y SIN entregar cookie de sesión"           1 \
   "$(grep -qi '^set-cookie: siger_sesion=' "$SALA/cab-2fa.txt" && echo 0 || echo 1)"
+comprobar "…sino un token pendiente en su propia cookie" 0 \
+  "$(grep -q 'siger_pendiente' "$SALA/pendiente.txt" && echo 0 || echo 1)"
+
+# Y el segundo paso SE COMPLETA. Lo de arriba mide que la puerta se cerró; sin
+# esto, un `verificar` que rechazara siempre pasaría la prueba de humo entera y
+# nadie con 2FA podría entrar al producto instalado. `cargo test` lo ve dentro
+# del proceso; aquí se teclea el código contra el binario de release.
+#
+# El código es el de la ventana SIGUIENTE a propósito: el de la actual se acaba
+# de gastar activando, y el contador guardado (el antirreplay) lo rechazaría. La
+# tolerancia de una ventana lo admite, que es justo lo que le pasa a un teléfono
+# adelantado unos segundos.
+CODIGO_SIGUIENTE="$(python3 - "$SALA/enrolamiento.json" <<'PY' 2>/dev/null
+import base64, hashlib, hmac, json, struct, sys, time
+s = json.load(open(sys.argv[1]))["secreto"]
+clave = base64.b32decode(s + "=" * (-len(s) % 8))
+h = hmac.new(clave, struct.pack(">Q", int(time.time()) // 30 + 1), hashlib.sha1).digest()
+o = h[-1] & 15
+print(f"{(struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000:06d}")
+PY
+)"
+ENTRA="$(curl -sS -D "$SALA/cab-verificar.txt" -o /dev/null \
+    -b "$SALA/pendiente.txt" -c "$SALA/galletas-2fa.txt" -X POST "$U/api/2fa/verificar" \
+    -H 'Content-Type: application/json' -d "{\"codigo\":\"$CODIGO_SIGUIENTE\"}" \
+    -w '%{http_code}')"
+comprobar "con el código, el segundo paso abre…"       200 "$ENTRA"
+comprobar "…entregando ahora sí la cookie de sesión"   0 \
+  "$(grep -qi '^set-cookie: siger_sesion=' "$SALA/cab-verificar.txt" && echo 0 || echo 1)"
+comprobar "…y con ella se entra a la aplicación"       200 \
+  "$(codigo api/yo /dev/null -b "$SALA/galletas-2fa.txt")"
+# La otra mitad de la separación por dominio de firma: el token pendiente no es
+# una sesión. Si lo fuera, la contraseña sola habría bastado y el segundo factor
+# sería decorativo.
+comprobar "el token pendiente NO vale como sesión"     401 \
+  "$(codigo api/yo /dev/null -b "$SALA/pendiente.txt")"
 # El freno: cinco fallos sin castigo y el sexto frenado. Aquí, y no solo en
 # `cargo test`, porque en release el Argon2 cuesta lo que cuesta y el señuelo
 # tiene que costar lo mismo que un usuario real.
