@@ -41,7 +41,7 @@ jobs:
     name: rust (test + clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Cabeceras de SQLite
         # `libsqlite3-sys` enlaza el SQLite del sistema (no bundled): sin las
         # cabeceras de desarrollo, la compilación no encuentra sqlite3.h.
@@ -63,8 +63,8 @@ jobs:
     name: frontend (ng build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           # Angular CLI exige >= 22.22.3; el node del sistema de desarrollo se
           # quedó un parche por debajo (ver tarea #80).
@@ -82,7 +82,7 @@ jobs:
     name: cargo-audit (RustSec)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -100,7 +100,7 @@ jobs:
     name: cargo-deny (supply chain)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

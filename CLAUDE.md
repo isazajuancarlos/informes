@@ -129,7 +129,8 @@ binario de release contra una base temporal y le habla por socket: interfaz
 servida de verdad, el `.js` que el index pide viviendo DENTRO, las cabeceras en
 la respuesta real, el freno del login frenando al sexto intento y el **login de
 dos pasos completo** —enrolar, activar con el código que daría el teléfono, y
-entrar tecleándolo—. 36 comprobaciones.
+entrar tecleándolo—, más el cartel de la demostración: que el binario anuncie las
+cuentas y que con lo anunciado se ENTRE. 39 comprobaciones.
 
 Ese último añadido tiene su lección: hasta el 2026-08-02 las siete comprobaciones
 del 2FA afirmaban solo que la puerta se CIERRA (sin sesión rechaza, la contraseña
@@ -517,15 +518,21 @@ el index empotrado, y `humo.sh` por socket. No cites `npm test` como verde.
 
 - **Licencia offline — escrita, sin mergear.** No está en `main`, pero **no la
   escribas de nuevo**: vive en la rama `feat/licencia-offline-rust` (PR #17), son
-  712 líneas de `licencia.rs` más interfaz, `hex.rs` y `DESPLIEGUE.md`, y su CI
-  estaba en verde antes del corte de facturación. Mantiene el modo degradado:
-  **nunca bloquea nada**. Solo espera turno de merge.
+  712 líneas de `licencia.rs` más interfaz, `hex.rs` y `DESPLIEGUE.md`. Mantiene
+  el modo degradado: **nunca bloquea nada**. Su verde es de antes del merge de
+  #19, así que **hay que rebasarla y volver a medirla**: el 2026-08-03,
+  `git merge-tree` daba conflicto de contenido en cuatro archivos —`rutas.rs`,
+  `nucleo/api.ts`, `app.scss` y este `CLAUDE.md`—, todos por haber crecido las
+  dos ramas en el mismo sitio. No es un choque de diseño, es un rebase a mano.
 - **Volcado: el hash de contraseña (#231)** — igual, escrito y sin mergear, en
-  `fix/volcado-comprueba-el-hash` (PR #16).
+  `fix/volcado-comprueba-el-hash` (PR #16). Éste sí entra limpio: medido el
+  2026-08-03 contra el `main` de después de #19, sin un solo conflicto.
 
 **Antes de dar por pendiente cualquier cosa de esta sección, mira las ramas y los
-PR abiertos.** Dos de los tres «pendientes» de `main` son en realidad trabajo
-terminado esperando el lunes, y el CI parado hace que se acumulen.
+PR abiertos.** Los dos «pendientes» que quedan son trabajo terminado esperando
+turno de merge, no trabajo por hacer — y el tercero de esta lista (la
+administración de cuentas y el segundo factor) ya está en `main` desde el
+2026-08-03: si un documento lo da por pendiente, está viejo.
 
 Es lo **único** pendiente, y `rust/README.md` dice lo mismo. Si encuentras otro
 documento que dé por pendiente la inferencia, la firma, el planificador, la
