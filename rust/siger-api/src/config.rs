@@ -43,6 +43,12 @@ pub enum ErrorConfig {
          apaga. Ponga {0} o quite ALERTAS_ACTIVAS."
     )]
     CorreoIncompleto(&'static str),
+    #[error(
+        "SIGER_DEMO_CUENTAS no se entiende en «{0}». Cada cuenta va como \
+         `correo:clave:nombre` y se separan con `;`. Y ojo con lo que pone ahí: \
+         eso SE PUBLICA en la pantalla de acceso, sin sesión y a quien pase."
+    )]
+    DemoIlegible(String),
 }
 
 /// Cómo cifra el canal SMTP.
@@ -153,6 +159,70 @@ pub struct Config {
     /// [`permisos_de_cripto`]. Compartido por todos los clones de `Config`,
     /// que es justo lo que hace de él un tope del PROCESO y no de la petición.
     pub cripto: std::sync::Arc<tokio::sync::Semaphore>,
+
+    /// Las cuentas que la pantalla de acceso ANUNCIA, con su contraseña. Ver
+    /// [`cuentas_de_demostracion`]. Vacío en toda instalación de cliente, que es
+    /// el defecto y no se puede activar por descuido.
+    pub demo: Vec<CuentaDemo>,
+}
+
+/// Una cuenta que la demostración pública enseña para que se pueda entrar.
+///
+/// No es un usuario: es un CARTEL. Quien visita `informes.xiliux.com` cae en la
+/// pantalla de acceso sin saber ninguna contraseña, y una demostración en la que
+/// nadie puede entrar no demuestra nada.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct CuentaDemo {
+    pub correo: String,
+    /// En claro y a propósito: el objetivo es que se lea en pantalla.
+    pub clave: String,
+    /// Qué es esa cuenta («Administradora»), para que el visitante elija.
+    pub nombre: String,
+}
+
+/// Las cuentas que se anuncian en la pantalla de acceso, de `SIGER_DEMO_CUENTAS`.
+///
+/// | valor | qué pasa |
+/// |---|---|
+/// | ausente o vacío | **nada se anuncia** — el defecto, y el de todo cliente |
+/// | `correo:clave:nombre` | se anuncia esa |
+/// | varias, separadas por `;` | se anuncian todas, en ese orden |
+/// | cualquier otra cosa | **el binario no arranca** ([`ErrorConfig::DemoIlegible`]) |
+///
+/// # Por qué el defecto es no anunciar nada, y por qué eso importa aquí más que en otras opciones
+///
+/// Esta es la única opción del sistema cuyo encendido accidental **publica
+/// credenciales**. El resto de los defectos protegen de una configuración pobre;
+/// éste protege de una catástrofe. Por eso no hay `SIGER_DEMO=1` que active un
+/// juego de cuentas «conocidas»: no existe ninguna lista dentro del binario que
+/// alguien pueda encender. Lo que se publica hay que escribirlo entero, a mano,
+/// en el entorno del despliegue — y lo que no se escribió, no se publica.
+///
+/// Y por eso también un valor presente pero ilegible **falla en vez de caer al
+/// silencio**: si un `;` de más apagara el cartel, la demostración se quedaría
+/// muda y nadie lo notaría hasta que un cliente escribiera para preguntar cómo
+/// se entra (directiva 20).
+fn cuentas_de_demostracion(valor: Option<String>) -> Result<Vec<CuentaDemo>, ErrorConfig> {
+    let Some(valor) = valor else { return Ok(Vec::new()) };
+    let mut cuentas = Vec::new();
+    for trozo in valor.split(';').map(str::trim).filter(|t| !t.is_empty()) {
+        // Se parte en TRES desde la izquierda y no se admite un cuarto campo: un
+        // `:` de más suele ser una contraseña con dos puntos, y adivinar cuál de
+        // las lecturas quiso el operador sería inventarse el dato.
+        let partes: Vec<&str> = trozo.split(':').collect();
+        let [correo, clave, nombre] = partes[..] else {
+            return Err(ErrorConfig::DemoIlegible(trozo.to_string()));
+        };
+        if correo.trim().is_empty() || clave.trim().is_empty() || nombre.trim().is_empty() {
+            return Err(ErrorConfig::DemoIlegible(trozo.to_string()));
+        }
+        cuentas.push(CuentaDemo {
+            correo: correo.trim().to_string(),
+            clave: clave.trim().to_string(),
+            nombre: nombre.trim().to_string(),
+        });
+    }
+    Ok(cuentas)
 }
 
 /// Cuántos descifrados simultáneos admite el proceso.
@@ -333,6 +403,7 @@ impl Config {
             cripto: std::sync::Arc::new(tokio::sync::Semaphore::new(
                 permisos_de_cripto(None).expect("el defecto siempre es válido"),
             )),
+            demo: Vec::new(),
         }
     }
 
@@ -389,6 +460,7 @@ impl Config {
             cripto: std::sync::Arc::new(tokio::sync::Semaphore::new(
                 permisos_de_cripto(opcional("SIGER_CRIPTO_PARALELA").as_deref())?,
             )),
+            demo: cuentas_de_demostracion(opcional("SIGER_DEMO_CUENTAS"))?,
         })
     }
 
@@ -413,6 +485,7 @@ impl Config {
             cripto: std::sync::Arc::new(tokio::sync::Semaphore::new(
                 permisos_de_cripto(None).expect("el defecto siempre es válido"),
             )),
+            demo: Vec::new(),
         }
     }
 }
@@ -488,6 +561,54 @@ mod pruebas {
                     Err(ErrorConfig::NoEsPositivo(_, _))
                 ),
                 "«{malo}» pasó por tope válido"
+            );
+        }
+    }
+
+    #[test]
+    fn sin_la_variable_no_se_anuncia_ninguna_cuenta() {
+        // El defecto es el de TODA instalación de cliente, y es el único que no
+        // se puede equivocar: lo que no se escribió, no se publica.
+        assert_eq!(cuentas_de_demostracion(None).unwrap(), Vec::new());
+        assert_eq!(cuentas_de_demostracion(Some("   ".into())).unwrap(), Vec::new());
+        assert_eq!(cuentas_de_demostracion(Some(";;".into())).unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn las_cuentas_anunciadas_se_leen_en_orden_y_con_su_nombre() {
+        let v = cuentas_de_demostracion(Some(
+            "admin@co.co:admin:Administradora ; operador@co.co:operador:Operadora".into(),
+        ))
+        .unwrap();
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].correo, "admin@co.co");
+        assert_eq!(v[0].clave, "admin");
+        assert_eq!(v[0].nombre, "Administradora");
+        // El orden es el que escribió el operador: la primera es la que la
+        // pantalla ofrece arriba, y para una demostración eso es la que se usa.
+        assert_eq!(v[1].correo, "operador@co.co");
+    }
+
+    #[test]
+    fn una_lista_de_demostracion_ilegible_no_apaga_el_cartel_en_silencio() {
+        // Directiva 20 en el caso donde más duele: si un `:` de más dejara la
+        // lista vacía, la demostración pública se quedaría muda —nadie podría
+        // entrar— y no habría forma de enterarse hasta que alguien escribiera a
+        // preguntar. Falla al arrancar, que se nota en un minuto.
+        for malo in [
+            "admin@co.co:admin",                       // falta el nombre
+            "admin@co.co",                             // solo el correo
+            "admin@co.co:admin:Admin:sobra",           // un campo de más
+            "admin@co.co::Administradora",             // sin contraseña
+            ":admin:Administradora",                   // sin correo
+            "admin@co.co:admin: ",                     // nombre en blanco
+        ] {
+            assert!(
+                matches!(
+                    cuentas_de_demostracion(Some(malo.into())),
+                    Err(ErrorConfig::DemoIlegible(_))
+                ),
+                "«{malo}» pasó por lista de demostración válida"
             );
         }
     }

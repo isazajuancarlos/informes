@@ -6,9 +6,28 @@
 # de la interfaz.
 name: CI
 
+# CADA CAMBIO SE PRUEBA UNA VEZ, NO DOS.
+#
+# Esto decía `push: branches: ["**"]` junto a `pull_request`, y con un PR abierto
+# GitHub dispara los DOS: cada empujón a una rama lanzaba el CI entero por
+# duplicado —5 trabajos × 2— sin que la segunda vuelta comprobara nada que la
+# primera no hubiera comprobado ya. Se veía en `gh pr checks`, que listaba ocho
+# comprobaciones donde hay cuatro; costó darse cuenta porque el ruido parecía
+# normal.
+#
+# No es una optimización cosmética: `informes` y `medico` son PRIVADOS y sus
+# minutos salen del cupo de la cuenta (los públicos como quipu los tienen
+# gratis). El 2026-07-31 ese cupo se agotó a media tarde y **el CI de los dos
+# productos comerciales se paró**: los trabajos ni arrancaban. La mitad de lo
+# gastado ese día fue esta duplicación.
+#
+# EL PRECIO, para que nadie lo descubra por sorpresa: una rama SIN PR abierto ya
+# no lanza CI. Es deliberado — aquí toda rama que importa acaba en un PR, y el
+# PR la prueba. `main` sí conserva su `push`, porque es lo publicado y tiene que
+# verificarse aunque algo entre por otra vía.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
     branches: [main]
 

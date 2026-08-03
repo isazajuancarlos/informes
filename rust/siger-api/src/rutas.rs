@@ -15,7 +15,7 @@ use axum::{
     extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path as RutaParam, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use chrono::{Datelike, Utc};
@@ -108,7 +108,9 @@ pub fn router(estado: Estado) -> Router {
     let tope_mb = estado.cfg.max_mb;
     Router::new()
         .route("/api/salud", get(salud))
+        .route("/api/demostracion", get(demostracion))
         .route("/api/sesion", post(abrir_sesion).delete(cerrar_sesion))
+        .route("/api/salir-todo", post(salir_todo))
         .route("/api/yo", get(yo))
         .route("/api/entregas", get(listar_entregas))
         .route("/api/entregas/{id}/verificar", get(verificar_entrega))
@@ -140,6 +142,30 @@ pub fn router(estado: Estado) -> Router {
             "/api/informes/{id}/participacion",
             get(crate::participacion::listar).put(crate::participacion::reemplazar),
         )
+        .route("/api/mi-clave", post(crate::cuentas::cambiar_mi_clave))
+        // El segundo factor (#212). `verificar` es el ÚNICO que no exige sesión:
+        // se llama con el token pendiente, que es lo que emite el login cuando la
+        // cuenta tiene 2FA. Los otros cuatro son de la cuenta propia y cualquier
+        // rol los usa — el segundo factor no es un privilegio de administración.
+        .route("/api/2fa", get(crate::segundofactor::estado))
+        .route("/api/2fa/iniciar", post(crate::segundofactor::iniciar))
+        .route("/api/2fa/activar", post(crate::segundofactor::activar))
+        .route("/api/2fa/desactivar", post(crate::segundofactor::desactivar))
+        .route("/api/2fa/codigos", post(crate::segundofactor::renovar_codigos))
+        .route("/api/2fa/verificar", post(crate::segundofactor::verificar))
+        // Administración de cuentas. Recurso propio y no `/api/usuarios`, que
+        // significa «quién puede ser parte de un flujo» y lo consume el selector
+        // de partes: ver la cabecera de `cuentas.rs`.
+        .route(
+            "/api/cuentas",
+            get(crate::cuentas::listar).post(crate::cuentas::crear),
+        )
+        .route("/api/cuentas/{id}", put(crate::cuentas::actualizar))
+        .route("/api/cuentas/{id}/clave", post(crate::cuentas::restablecer_clave))
+        // El rescate de quien perdió el teléfono Y los códigos. Es un DELETE, y
+        // los DELETE son los que se caen del router sin que nadie lo note: lo
+        // sujeta `humo.sh` pidiendo 401 —no 404— sin sesión.
+        .route("/api/cuentas/{id}/2fa", delete(crate::cuentas::retirar_segundo_factor))
         .route("/api/usuarios", get(crate::participacion::usuarios))
         .route("/api/stakeholders", get(crate::participacion::stakeholders))
         .route("/api/estadisticas", get(crate::estadisticas::resumen))
@@ -319,19 +345,25 @@ async fn abrir_sesion(
             .into_response());
     }
 
-    let fila = sqlx::query_as::<_, (i64, String, i64, i64)>(
-        "SELECT id, clave_hash, activo, token_version FROM usuarios WHERE email = ?",
+    // `totp_confirmado_en` viaja en la MISMA consulta que ya se hacía. Traerlo
+    // después, con el usuario ya identificado, sería una segunda consulta que
+    // solo ocurre cuando el correo existe — y el cronómetro volvería a decir
+    // cuáles existen, que es justo lo que el señuelo evita.
+    let fila = sqlx::query_as::<_, (i64, String, i64, i64, Option<String>)>(
+        "SELECT id, clave_hash, activo, token_version, totp_confirmado_en \
+         FROM usuarios WHERE email = ?",
     )
     .bind(&email)
     .fetch_optional(&e.bd)
     .await?;
+    let con_segundo_factor = matches!(&fila, Some((_, _, _, _, Some(_))));
 
     // Mismo mensaje y mismo trabajo para «no existe» y «clave incorrecta»: la
     // diferencia —cualquiera de las dos— le dice a quien prueba qué correos son
     // de verdad. Ver `hash_senuelo` para la mitad que faltaba.
     let rechazo = Error(StatusCode::UNAUTHORIZED, "credenciales incorrectas".into());
     let (id, version, analizado) = match &fila {
-        Some((id, hash, activo, version)) if *activo != 0 => match PasswordHash::new(hash) {
+        Some((id, hash, activo, version, _)) if *activo != 0 => match PasswordHash::new(hash) {
             Ok(h) => (Some(*id), *version, h),
             Err(_) => {
                 // Un hash que ningún esquema reconoce no deja entrar, pero se
@@ -385,13 +417,54 @@ async fn abrir_sesion(
     // del optimizador.
     let entra = clave_correcta && id.is_some();
 
-    crate::acceso::anotar(&e.bd, &email, &origen, entra, ahora).await?;
     if !entra {
+        crate::acceso::anotar(&e.bd, &email, &origen, false, ahora).await?;
         auditar(&e.bd, "acceso_fallido", Some(&email), None).await;
         return Err(rechazo);
     }
     let id = id.expect("`entra` exige que haya usuario");
 
+    // Con segundo factor, la contraseña correcta **no abre nada**: emite el token
+    // pendiente, que solo sirve para `/api/2fa/verificar` y dura cinco minutos.
+    //
+    // Y **no se anota nada en `intento_acceso`**, ni éxito ni fallo. Aquí antes se
+    // anotaba el éxito, con el argumento de que la contraseña era buena y dejar el
+    // fallo puesto frenaría a quien está a punto de teclear su código. El
+    // argumento no se sostiene y la consecuencia era grave:
+    //
+    // - `guaca::freno` no cuenta fallos en una ventana fija: cuenta **los
+    //   posteriores al último éxito**. Un éxito escrito aquí pone el contador a
+    //   cero.
+    // - Ese contador es la pareja `(correo, origen)`, y es EL MISMO que consulta
+    //   `/api/2fa/verificar`: es decir, el único freno que protege al segundo
+    //   factor.
+    // - Quien ya tiene la contraseña —que es exactamente el atacante contra el
+    //   que existe el segundo factor— podía reponerlo cuando quisiera: cuatro
+    //   códigos malos, volver a entrar, otros cuatro. El freno no llegaba a
+    //   engancharse NUNCA, y el millón de combinaciones bajaba de años a horas.
+    // - Lo que motivaba el éxito no hacía falta: con cuatro fallos o menos la
+    //   espera ya es cero, y con cinco el freno saltó antes de llegar hasta aquí.
+    //
+    // El éxito lo escribe quien abre la puerta de verdad: el camino sin segundo
+    // factor, abajo, y `segundofactor::verificar` al final del segundo paso.
+    if con_segundo_factor {
+        auditar(&e.bd, "acceso_falta_segundo_factor", Some(&email), None).await;
+        let valor = sesion::emitir_pendiente(&e.cfg.secreto_sesion, id, version);
+        let mut cabeceras = HeaderMap::new();
+        cabeceras.insert(
+            header::SET_COOKIE,
+            sesion::cabecera_pendiente(&valor).parse().expect("la cabecera es ASCII"),
+        );
+        return Ok((
+            cabeceras,
+            Json(serde_json::json!({ "ok": false, "segundo_factor": true })),
+        )
+            .into_response());
+    }
+
+    // Sin segundo factor, ESTA es la puerta: aquí sí se anota el éxito, que es lo
+    // que le borra los fallos al freno.
+    crate::acceso::anotar(&e.bd, &email, &origen, true, ahora).await?;
     auditar(&e.bd, "acceso", Some(&email), None).await;
     let valor = sesion::emitir(&e.cfg.secreto_sesion, id, version, e.cfg.minutos_sesion);
     let mut cabeceras = HeaderMap::new();
@@ -401,7 +474,7 @@ async fn abrir_sesion(
             .parse()
             .expect("la cabecera es ASCII"),
     );
-    Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
+    Ok((cabeceras, Json(serde_json::json!({ "ok": true, "segundo_factor": false }))).into_response())
 }
 
 async fn cerrar_sesion(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
@@ -414,8 +487,59 @@ async fn cerrar_sesion(State(e): State<Estado>, actor: Actor) -> Result<Response
     Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
 }
 
+/// `POST /api/salir-todo` — «cerrar sesión en todos los dispositivos» (#194).
+///
+/// Sube el `token_version` del usuario, con lo que toda cookie ya emitida —la de
+/// este navegador incluida— deja de valer en la siguiente petición, y de paso
+/// borra la de aquí para que la pantalla no se quede enseñando una sesión muerta.
+///
+/// # Actúa sobre el usuario AUTENTICADO, nunca sobre un id del cliente
+///
+/// No recibe cuerpo ni parámetro. Si el id viniera de fuera, este extremo sería
+/// un botón para echar a cualquiera de su sesión con solo saber su número: una
+/// denegación de servicio contra una persona concreta, servida por la propia
+/// aplicación. El `Actor` sale del extractor, que lo saca de la cookie firmada.
+///
+/// Es de uso propio a propósito. Un administrador que quiera dejar fuera a
+/// alguien tiene ya el camino correcto —desactivar la cuenta, que `activo` se
+/// relee en cada petición—; revocar sesiones ajenas sin desactivar la cuenta no
+/// resuelve ningún caso que ese camino no cubra ya (directiva 1).
+async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+    let revocadas = crate::acceso::revocar_sesiones(&e.bd, actor.id).await?;
+    if !revocadas {
+        // La sentencia no tocó ninguna fila: el usuario que acabamos de
+        // autenticar ya no está en la base. No hubo revocación, así que tampoco
+        // hay 200 — descartar este booleano sería fingir el cierre que el
+        // doc-comment promete no fingir, y en el peor sitio para hacerlo.
+        tracing::error!("revocación sin efecto: el usuario {} ya no existe", actor.id);
+        return Err(Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into()));
+    }
+
+    auditar(&e.bd, "salida_total", Some(&actor.email), None).await;
+    let mut cabeceras = HeaderMap::new();
+    cabeceras.insert(
+        header::SET_COOKIE,
+        sesion::cabecera_cerrar().parse().expect("la cabecera es ASCII"),
+    );
+    Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
+}
+
 async fn yo(actor: Actor) -> Json<Actor> {
     Json(actor)
+}
+
+/// `GET /api/demostracion` — las cuentas que esta instalación anuncia.
+///
+/// Sin sesión, porque quien lo pide todavía no puede tener ninguna: es la
+/// pantalla de acceso preguntando si aquí hay algo que enseñar.
+///
+/// **En una instalación de cliente devuelve una lista vacía**, y no un 404: el
+/// 404 obligaría a la interfaz a distinguir «no hay demostración» de «esta
+/// versión no tiene ese extremo», y son dos cosas que se dibujan igual. Lo que
+/// hay dentro sale entero de `SIGER_DEMO_CUENTAS`, así que aquí no se publica
+/// nada que el despliegue no haya escrito a mano.
+async fn demostracion(State(e): State<Estado>) -> Json<Vec<crate::config::CuentaDemo>> {
+    Json(e.cfg.demo.clone())
 }
 
 async fn salud(State(e): State<Estado>) -> Response {
@@ -525,14 +649,22 @@ async fn descargar_archivo(
             ),
             Some(s),
         ),
-        Alcance::Ninguna => return Err(no_existe()),
+        Alcance::Ninguna => {
+            auditar_entrega_ajena(&e, &actor, id).await;
+            return Err(no_existe());
+        }
     };
 
     let mut q = sqlx::query_as::<_, (Option<String>, i64)>(&sql).bind(id);
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (nombre, cifrado) = q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let Some((nombre, cifrado)) = q.fetch_optional(&e.bd).await? else {
+        auditar_entrega_ajena(&e, &actor, id).await;
+        return Err(no_existe());
+    };
+    // Que la entrega no tenga archivo NO es un acceso ajeno: es suya y está
+    // vacía. Va por el 404 sin anotar nada.
     let nombre = nombre.ok_or_else(no_existe)?;
 
     let ruta = ruta_de_entrega(&e.cfg.dir_entregas, id, &nombre).ok_or_else(|| {
@@ -563,6 +695,19 @@ async fn descargar_archivo(
             ));
         }
     };
+
+    // Se anota AQUÍ y no al entrar: el evento afirma que el documento salió, y
+    // los otros tres estados de `Documento` no lo entregaron. Un «descargada»
+    // sobre un archivo que el servidor no llegó a mirar sería la misma clase de
+    // mentira que acusar de alteración al que estaba ocupado.
+    auditar(
+        &e.bd,
+        "entrega_descargada",
+        Some(&actor.email),
+        Some(&format!("{id}: {nombre}")),
+    )
+    .await;
+
     Ok((
         [
             (header::CONTENT_TYPE, "application/octet-stream".to_string()),
@@ -603,7 +748,10 @@ async fn verificar_entrega(
             ),
             Some(s),
         ),
-        Alcance::Ninguna => return Err(no_existe()),
+        Alcance::Ninguna => {
+            auditar_entrega_ajena(&e, &actor, id).await;
+            return Err(no_existe());
+        }
     };
 
     type Fila = (
@@ -622,8 +770,12 @@ async fn verificar_entrega(
     if let Some(p) = param {
         q = q.bind(p);
     }
-    let (limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma, cifrado) =
-        q.fetch_optional(&e.bd).await?.ok_or_else(no_existe)?;
+    let Some((limite, informe_id, usuario_id, fecha_nominal, tipo_ajuste, estado, fecha_entrega, archivo_nombre, firma, cifrado)) =
+        q.fetch_optional(&e.bd).await?
+    else {
+        auditar_entrega_ajena(&e, &actor, id).await;
+        return Err(no_existe());
+    };
 
     let Some(firma) = firma else {
         return Ok(Json(serde_json::json!({ "verificada": false, "motivo": "sin firma" })));
@@ -763,7 +915,7 @@ enum Documento {
 /// peticiones encima, y siguen por debajo del `proxy_read_timeout` de nginx (60 s),
 /// de modo que quien contesta el 503 es el servidor, que sabe por qué, y no el
 /// proxy con un 504 mudo.
-const ESPERA_CRIPTO: std::time::Duration = std::time::Duration::from_secs(30);
+pub(crate) const ESPERA_CRIPTO: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Lee el archivo de una entrega y lo devuelve EN CLARO. Si la fila dice que está
 /// cifrado, lo descifra con la frase de reposo. **Nunca** se sirve un blob
@@ -1167,6 +1319,45 @@ async fn previsualizar(
     ))
 }
 
+/// Anota el intento de leer una entrega que EXISTE y cae fuera del alcance de
+/// quien la pide.
+///
+/// La segunda consulta corre solo en el camino de error, y existe para
+/// **discriminar**: un id inexistente es un enlace viejo o una entrega borrada, y
+/// anotarlo llenaría la bitácora de falsos positivos hasta que nadie la mirara
+/// (directiva 23). Un id que existe y no le corresponde es la única señal que
+/// dice algo — alguien probando números ajenos.
+///
+/// Quien lo ve todo no necesita un caso aparte, y **no se le pone uno**: para
+/// `Alcance::Todas` el `WHERE` es solo `id = ?`, así que si el manejador llegó
+/// aquí es que la entrega no existe, y esta consulta tampoco la encuentra. Un
+/// `if` que saliera antes ahorraría una consulta y no decidiría nada — y un atajo
+/// que parece salvaguarda sin serlo es peor que la consulta que evita
+/// (directiva 23). Lo sujeta el caso del administrador en
+/// `se_anota_la_entrega_ajena_y_no_la_inexistente`.
+///
+/// La respuesta al cliente no cambia: sigue siendo el mismo 404 en los dos casos.
+/// Lo que se discrimina es lo que se ESCRIBE, no lo que se contesta.
+async fn auditar_entrega_ajena(e: &Estado, actor: &Actor, id: i64) {
+    match sqlx::query_scalar::<_, i64>("SELECT 1 FROM entregas WHERE id = ?")
+        .bind(id)
+        .fetch_optional(&e.bd)
+        .await
+    {
+        Ok(Some(_)) => {
+            auditar(
+                &e.bd,
+                "entrega_ajena_solicitada",
+                Some(&actor.email),
+                Some(&id.to_string()),
+            )
+            .await;
+        }
+        Ok(None) => {}
+        Err(err) => tracing::error!("no se pudo comprobar si la entrega {id} existe: {err}"),
+    }
+}
+
 pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle: Option<&str>) {
     // Que falle el registro no puede tumbar la operación, pero tampoco puede
     // pasar en silencio: se anota en el log del proceso.
@@ -1179,6 +1370,110 @@ pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle
         .await
     {
         tracing::error!("no se pudo registrar el evento {evento}: {e}");
+    }
+}
+
+/// El cartel de la demostración pública: qué se anuncia y qué no.
+///
+/// Las dos pruebas son las dos mitades de la misma característica: que un
+/// cliente NO publique nada, y que lo que la demostración publica sirva de
+/// verdad para entrar.
+#[cfg(test)]
+mod pruebas_demostracion {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn router_con(demo: Vec<crate::config::CuentaDemo>, clave_real: &str) -> axum::Router {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let bd = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&bd).await.unwrap();
+        let sal = SaltString::from_b64("c2FsZGVsYXBydWViYWRlZGVtbw").unwrap();
+        let hash = Argon2::default().hash_password(clave_real.as_bytes(), &sal).unwrap().to_string();
+        sqlx::query(
+            "INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) \
+             VALUES (1,'Administradora','admin@co.co',?,'ADMIN',1)",
+        )
+        .bind(&hash)
+        .execute(&bd)
+        .await
+        .unwrap();
+
+        let mut cfg = Config::de_prueba();
+        cfg.demo = demo;
+        router(Estado {
+            bd,
+            cfg,
+            motor: std::sync::Arc::new(siger_core::Motor::nuevo(
+                siger_core::Calendario::de_pais("CO", 2024, 2030).unwrap(),
+            )),
+        })
+    }
+
+    fn pedir(metodo: &str, uri: &str, cuerpo: Option<&str>) -> Request<Body> {
+        let b = Request::builder().method(metodo).uri(uri).extension(
+            axum::extract::ConnectInfo("127.0.0.1:5555".parse::<std::net::SocketAddr>().unwrap()),
+        );
+        match cuerpo {
+            Some(j) => b
+                .header("content-type", "application/json")
+                .body(Body::from(j.to_string()))
+                .unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        }
+    }
+
+    async fn json(app: &axum::Router, r: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let res = app.clone().oneshot(r).await.unwrap();
+        let s = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (s, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn una_instalacion_de_cliente_no_anuncia_ninguna_cuenta() {
+        // La mitad que de verdad importa de esta característica. El extremo
+        // existe en TODOS los binarios —es el mismo producto—, así que lo único
+        // que separa a un cliente de tener sus credenciales publicadas es que
+        // esta lista salga vacía cuando nadie escribió la variable.
+        let app = router_con(Vec::new(), "la-de-verdad").await;
+        let (s, cuerpo) = json(&app, pedir("GET", "/api/demostracion", None)).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(cuerpo, serde_json::json!([]), "una instalación normal anunció algo");
+    }
+
+    #[tokio::test]
+    async fn con_lo_que_la_demostracion_anuncia_se_entra() {
+        // Un cartel que dice una contraseña que no funciona es peor que no tener
+        // cartel: el visitante concluye que el producto está roto, y se va. Así
+        // que no basta con que el extremo devuelva la lista; hay que entrar con
+        // lo que devuelve. La contraseña de la base y la anunciada se escriben
+        // aquí por separado a propósito — si el día de mañana alguien las
+        // desacopla, esta prueba lo dice.
+        let anunciada = "admin";
+        let app = router_con(
+            vec![crate::config::CuentaDemo {
+                correo: "admin@co.co".into(),
+                clave: anunciada.into(),
+                nombre: "Administradora".into(),
+            }],
+            anunciada,
+        )
+        .await;
+
+        let (s, cuerpo) = json(&app, pedir("GET", "/api/demostracion", None)).await;
+        assert_eq!(s, StatusCode::OK);
+        let correo = cuerpo[0]["correo"].as_str().unwrap().to_string();
+        let clave = cuerpo[0]["clave"].as_str().unwrap().to_string();
+        assert_eq!(cuerpo[0]["nombre"], "Administradora");
+
+        let (s, _) = json(
+            &app,
+            pedir("POST", "/api/sesion", Some(&format!(r#"{{"email":"{correo}","clave":"{clave}"}}"#))),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "la cuenta que se anuncia no pudo entrar");
     }
 }
 
@@ -1591,6 +1886,220 @@ mod pruebas_acceso {
             "120 fallos seguidos no dejaron el freno puesto"
         );
     }
+
+    // --- «Cerrar sesión en todos los dispositivos» (#194) ---------------------
+    //
+    // Hasta esta tanda, `token_version` solo lo subía una prueba con un `UPDATE`
+    // a mano: el mecanismo estaba entero y sin gatillo. Lo que se prueba aquí es
+    // el gatillo, y sobre todo que apunte SOLO a quien lo aprieta.
+
+    /// El valor de la cookie que trae una respuesta de login.
+    fn cookie_de(r: &Response) -> String {
+        r.headers()
+            .get(header::SET_COOKIE)
+            .expect("la respuesta no trae Set-Cookie")
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap()
+            .split_once('=')
+            .unwrap()
+            .1
+            .to_string()
+    }
+
+    /// Un segundo usuario, para poder comprobar que la revocación NO le llega.
+    async fn anadir_segundo_usuario(e: &Estado) {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let sal = SaltString::from_b64("c2Fsc2VndW5kb3VzdWFyaW9wcnU").unwrap();
+        let hash = Argon2::default().hash_password(CLAVE.as_bytes(), &sal).unwrap().to_string();
+        sqlx::query(
+            "INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) \
+             VALUES (2,'Bruno','bruno@x.co',?,'OPERADOR',1)",
+        )
+        .bind(&hash)
+        .execute(&e.bd)
+        .await
+        .unwrap();
+    }
+
+    async fn salir_todo_con(e: &Estado, actor: Actor) -> Response {
+        match salir_todo(State(e.clone()), actor).await {
+            Ok(r) => r,
+            Err(err) => err.into_response(),
+        }
+    }
+
+    #[tokio::test]
+    async fn cerrar_en_todos_los_dispositivos_echa_tambien_a_las_otras_sesiones() {
+        // El caso que da nombre al botón: se entra desde tres sitios, se pulsa en
+        // uno, y los tres quedan fuera. Si solo cayera el que pulsa, el botón
+        // sería un «salir» con otro nombre — y quien lo pulsa porque cree que le
+        // robaron el portátil se quedaría tranquilo sin motivo.
+        let e = estado_con_usuario().await;
+        let mut cookies = Vec::new();
+        for origen in ["203.0.113.9", "198.51.100.4", "10.0.0.5"] {
+            let r = intentar(&e, "ada@x.co", CLAVE, origen).await;
+            assert_eq!(r.status(), StatusCode::OK);
+            cookies.push(cookie_de(&r));
+        }
+        for (i, c) in cookies.iter().enumerate() {
+            assert!(actor_con(&e, c).await.is_ok(), "la sesión {i} no valía ya antes de revocar");
+        }
+
+        let actor = actor_con(&e, &cookies[0]).await.unwrap();
+        assert_eq!(salir_todo_con(&e, actor).await.status(), StatusCode::OK);
+
+        for (i, c) in cookies.iter().enumerate() {
+            assert!(
+                actor_con(&e, c).await.is_err(),
+                "la sesión {i} siguió valiendo tras «cerrar en todos los dispositivos»"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn cerrar_en_todos_los_dispositivos_no_toca_a_los_demas() {
+        // La prueba que DISCRIMINA. Sin ella, un manejador que subiera la versión
+        // de TODAS las filas —un `UPDATE` sin `WHERE`, que es un carácter de
+        // distancia— pasaría la anterior tan campante, y el fallo se vería en
+        // producción como «a todo el mundo se le cerró la sesión de golpe».
+        let e = estado_con_usuario().await;
+        anadir_segundo_usuario(&e).await;
+
+        let de_ada = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let de_bruno = cookie_de(&intentar(&e, "bruno@x.co", CLAVE, "198.51.100.4").await);
+        assert!(actor_con(&e, &de_bruno).await.is_ok(), "Bruno no llegó a entrar");
+
+        let ada = actor_con(&e, &de_ada).await.unwrap();
+        assert_eq!(salir_todo_con(&e, ada).await.status(), StatusCode::OK);
+
+        assert!(actor_con(&e, &de_ada).await.is_err(), "Ada siguió dentro");
+        assert!(
+            actor_con(&e, &de_bruno).await.is_ok(),
+            "revocar las sesiones de Ada echó también a Bruno: el UPDATE no lleva WHERE"
+        );
+    }
+
+    #[tokio::test]
+    async fn cerrar_en_todos_los_dispositivos_borra_la_cookie_de_este_navegador() {
+        // La sesión ya no vale, pero el navegador la seguiría mandando: la
+        // pantalla enseñaría a alguien dentro hasta que una petición fallara.
+        let e = estado_con_usuario().await;
+        let cookie = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let actor = actor_con(&e, &cookie).await.unwrap();
+
+        let r = salir_todo_con(&e, actor).await;
+        let set = r.headers().get(header::SET_COOKIE).expect("no borra la cookie de aquí");
+        assert!(set.to_str().unwrap().contains("Max-Age=0"), "la cookie no se borra: {set:?}");
+    }
+
+    #[tokio::test]
+    async fn sin_sesion_no_se_puede_cerrar_en_todos_los_dispositivos() {
+        // El extractor es la única puerta. Que este extremo no reciba un id del
+        // cliente es lo que impide usarlo para echar a otro, así que sin cookie
+        // no hay a quién revocar.
+        let e = estado_con_usuario().await;
+        let req = axum::http::Request::builder().body(axum::body::Body::empty()).unwrap();
+        let (mut parts, _) = req.into_parts();
+        assert!(Actor::from_request_parts(&mut parts, &e).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn si_la_revocacion_no_toca_ninguna_fila_no_se_finge_el_cierre() {
+        // Camino de error inyectado: un actor autenticado cuyo usuario ya no está
+        // en la base (borrado entre la lectura de la cookie y esta escritura).
+        // El `UPDATE` no falla —cero filas no es un error de SQL—, así que sin la
+        // comprobación del booleano esto respondería «listo, cerré todas tus
+        // sesiones» sin haber cerrado ninguna.
+        let e = estado_con_usuario().await;
+        let fantasma = Actor {
+            id: 9999,
+            nombre: "Nadie".into(),
+            email: "nadie@x.co".into(),
+            rol: crate::autz::Rol::Admin,
+            stakeholder_id: None,
+        };
+        assert_eq!(
+            salir_todo_con(&e, fantasma).await.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "se fingió un cierre de sesiones que no ocurrió"
+        );
+    }
+
+    /// El extremo existe **en el router**, no solo como función.
+    ///
+    /// Las pruebas de arriba llaman a `salir_todo` directamente, y por eso no
+    /// verían el fallo más fácil de cometer: que la línea del `.route(...)` no
+    /// esté. Borrarla las dejaría a todas en verde y el botón daría 404 — el
+    /// mismo patrón por el que un DELETE sin ruta pasó una revisión entera.
+    /// Aquí entra una petición HTTP por la puerta y sale una respuesta.
+    #[tokio::test]
+    async fn el_extremo_de_salir_de_todo_esta_cableado_en_el_router() {
+        use tower::ServiceExt;
+
+        let e = estado_con_usuario().await;
+        let cookie = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let app = router(e.clone());
+
+        let peticion = |c: Option<&str>| {
+            let mut b = axum::http::Request::builder().method("POST").uri("/api/salir-todo");
+            if let Some(c) = c {
+                b = b.header(header::COOKIE, format!("{}={c}", sesion::NOMBRE_COOKIE));
+            }
+            b.body(axum::body::Body::empty()).unwrap()
+        };
+
+        // Sin cookie: 401, y NO 404. La diferencia es la que importa — un 404
+        // diría que la ruta no existe, y es justo lo que esta prueba vigila.
+        let r = app.clone().oneshot(peticion(None)).await.unwrap();
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "¿está la ruta en el router?");
+
+        let r = app.clone().oneshot(peticion(Some(&cookie))).await.unwrap();
+        assert_eq!(r.status(), StatusCode::OK);
+        assert!(actor_con(&e, &cookie).await.is_err(), "la sesión sobrevivió a su propia revocación");
+    }
+
+    /// Directiva #8: 100 revocaciones concurrentes del mismo usuario.
+    ///
+    /// Sujeta la afirmación del doc-comment de `revocar_sesiones`: el `+1` lo hace
+    /// SQLite dentro de la sentencia, no un número leído antes en Rust. Si se
+    /// calculara aquí, dos revocaciones simultáneas leerían la misma versión y
+    /// escribirían la misma, y el contador subiría menos de 100 — que es la forma
+    /// que tiene esta carrera de aparecer: no un error, un incremento que se pierde.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cien_revocaciones_a_la_vez_no_pierden_ni_un_incremento() {
+        let e = estado_con_usuario().await;
+        let cookie = cookie_de(&intentar(&e, "ada@x.co", CLAVE, "203.0.113.9").await);
+        let antes: i64 = sqlx::query_scalar("SELECT token_version FROM usuarios WHERE id = 1")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+
+        let plazo = std::time::Duration::from_secs(120);
+        let mut tareas = Vec::new();
+        for _ in 0..100 {
+            let bd = e.bd.clone();
+            tareas.push(tokio::spawn(
+                async move { crate::acceso::revocar_sesiones(&bd, 1).await },
+            ));
+        }
+        for t in tareas {
+            assert!(tokio::time::timeout(plazo, t)
+                .await
+                .expect("una revocación no respondió a tiempo: ¿interbloqueo?")
+                .expect("la tarea no debía entrar en panic")
+                .expect("una revocación falló"));
+        }
+
+        let despues: i64 = sqlx::query_scalar("SELECT token_version FROM usuarios WHERE id = 1")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(despues - antes, 100, "se perdieron incrementos bajo concurrencia");
+        assert!(actor_con(&e, &cookie).await.is_err(), "la sesión sobrevivió a 100 revocaciones");
+    }
 }
 
 #[cfg(test)]
@@ -1968,6 +2477,138 @@ mod tests {
         let ruta = ruta_de_entrega(&e.cfg.dir_entregas, 9, "e9.pdf").unwrap();
         std::fs::write(&ruta, guaca::reposo::cifrar(b"otro documento", FRASE_REPOSO)).unwrap();
         assert_eq!(motivo_de(&e).await, "la entrega fue alterada tras la firma");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- Bitácora de acceso al documento (#186) ------------------------------
+
+    /// Los detalles anotados bajo un evento, en orden. Se lee la TABLA, no el
+    /// valor de retorno de `auditar`: lo que un ente de control abre es la base.
+    async fn anotados(e: &Estado, evento: &str) -> Vec<String> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT COALESCE(detalle, '') FROM auditoria WHERE evento = ? ORDER BY id",
+        )
+        .bind(evento)
+        .fetch_all(&e.bd)
+        .await
+        .unwrap()
+    }
+
+    fn operador(id: i64) -> Actor {
+        Actor {
+            id,
+            nombre: "Op".into(),
+            email: format!("op{id}@x.co"),
+            rol: Rol::Operador,
+            stakeholder_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn descargar_el_documento_deja_quien_lo_leyo_en_la_bitacora() {
+        // La asimetría que esto cierra: subir se anotaba («entrega_registrada») y
+        // bajar no. El producto vende rastro auditable, y quién SACÓ el documento
+        // es justo lo que un ente de control pregunta.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        let r = descargar_archivo(State(e.clone()), auditor(), RutaParam(9)).await;
+        assert!(r.is_ok(), "el documento tiene que salir para que esto mida algo");
+
+        assert_eq!(anotados(&e, "entrega_descargada").await, vec!["9: e9.pdf".to_string()]);
+        let quien: Vec<String> = sqlx::query_scalar(
+            "SELECT email FROM auditoria WHERE evento = 'entrega_descargada'",
+        )
+        .fetch_all(&e.bd)
+        .await
+        .unwrap();
+        assert_eq!(quien, vec!["adm@x.co".to_string()], "la bitácora sin quién no sirve");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn el_documento_que_no_sale_no_se_anota_como_descargado() {
+        // El evento afirma que el documento SALIÓ. Sin la frase de reposo no sale
+        // —`Documento::NoDescifra`—, y anotarlo igual pondría en el rastro una
+        // lectura que nadie hizo: la bitácora dejaría de ser prueba de nada.
+        let (e, dir) = entrega_firmada_y_cifrada(None).await;
+        let r = descargar_archivo(State(e.clone()), auditor(), RutaParam(9)).await;
+        assert!(r.is_err(), "sin la frase el documento no puede salir");
+        assert!(anotados(&e, "entrega_descargada").await.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn se_anota_la_entrega_ajena_y_no_la_inexistente() {
+        // La prueba de que DISCRIMINA, que es lo único que hace útil este evento.
+        // La entrega 9 es del usuario 1; el operador 7 pide esa y una que no
+        // existe. Las dos le contestan 404 idéntico, pero solo una dice algo.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+
+        assert!(descargar_archivo(State(e.clone()), operador(7), RutaParam(9)).await.is_err());
+        assert_eq!(
+            anotados(&e, "entrega_ajena_solicitada").await,
+            vec!["9".to_string()],
+            "probar el número de otro es la señal que esta bitácora existe para dar"
+        );
+
+        // Un id que no existe es un enlace viejo o una entrega borrada. Si se
+        // anotara, la bitácora se llenaría de falsos positivos hasta que nadie la
+        // mirase (directiva 23).
+        assert!(descargar_archivo(State(e.clone()), operador(7), RutaParam(404)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        // Y el administrador, que lo ve todo, tampoco genera ruido: si su
+        // consulta no encontró la entrega es que no existe, así que su 404 es un
+        // 404 de verdad y anotarlo sería acusarle de sondear.
+        assert!(descargar_archivo(State(e.clone()), auditor(), RutaParam(404)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn verificar_una_entrega_ajena_tambien_se_anota() {
+        // Verificar lee la misma entrega por la misma puerta. Si solo se vigilara
+        // la descarga, el que prueba números se pasaría a este extremo.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        assert!(verificar_entrega(State(e.clone()), operador(7), RutaParam(9)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        assert!(verificar_entrega(State(e.clone()), operador(7), RutaParam(404)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+
+        // Y por la otra rama: `Alcance::Ninguna` sale antes de tocar la base, y
+        // ese retorno temprano es un segundo sitio donde se olvida el registro.
+        // Sin este caso, quitarlo de aquí no lo caza nadie — medido.
+        let huerfano = Actor {
+            id: 3,
+            nombre: "Ter".into(),
+            email: "ter@x.co".into(),
+            rol: Rol::Tercero,
+            stakeholder_id: None,
+        };
+        assert!(verificar_entrega(State(e.clone()), huerfano, RutaParam(9)).await.is_err());
+        assert_eq!(
+            anotados(&e, "entrega_ajena_solicitada").await,
+            vec!["9".to_string(), "9".to_string()]
+        );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[tokio::test]
+    async fn un_tercero_sin_entidad_no_se_lleva_el_documento_ni_en_silencio() {
+        // `Alcance::Ninguna` sale antes de tocar la base, y ese retorno temprano es
+        // exactamente donde se olvida el registro.
+        let (e, dir) = entrega_firmada_y_cifrada(Some(FRASE_REPOSO)).await;
+        let huerfano = Actor {
+            id: 3,
+            nombre: "Ter".into(),
+            email: "ter@x.co".into(),
+            rol: Rol::Tercero,
+            stakeholder_id: None,
+        };
+        assert!(descargar_archivo(State(e.clone()), huerfano, RutaParam(9)).await.is_err());
+        assert_eq!(anotados(&e, "entrega_ajena_solicitada").await, vec!["9".to_string()]);
+        assert!(anotados(&e, "entrega_descargada").await.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 
