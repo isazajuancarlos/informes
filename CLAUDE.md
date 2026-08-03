@@ -130,7 +130,7 @@ servida de verdad, el `.js` que el index pide viviendo DENTRO, las cabeceras en
 la respuesta real, el freno del login frenando al sexto intento y el **login de
 dos pasos completo** —enrolar, activar con el código que daría el teléfono, y
 entrar tecleándolo—, más el cartel de la demostración: que el binario anuncie las
-cuentas y que con lo anunciado se ENTRE. 39 comprobaciones.
+cuentas y que con lo anunciado se ENTRE. 40 comprobaciones.
 
 Ese último añadido tiene su lección: hasta el 2026-08-02 las siete comprobaciones
 del 2FA afirmaban solo que la puerta se CIERRA (sin sesión rechaza, la contraseña
@@ -253,7 +253,7 @@ Lo que se anota, y por qué esa lista y no otra:
 | `cuentas_listadas` | se leyó el padrón completo de personas, con cuántas filas y sin ids |
 | `acceso`, `acceso_fallido`, `acceso_frenado`, `salida`, `salida_total` | la puerta |
 | `cuenta_creada`, `cuenta_actualizada`, `clave_restablecida`, `clave_cambiada`, `clave_propia_rechazada`, `2fa_retirado_por_admin` | administración de cuentas |
-| `2fa_enrolamiento_iniciado`, `2fa_activado`, `2fa_desactivado`, `2fa_desactivacion_rechazada`, `2fa_codigos_renovados`, `2fa_codigos_rechazados` | el segundo factor, desde la cuenta propia |
+| `2fa_enrolamiento_iniciado`, `2fa_activado`, `2fa_activacion_rechazada`, `2fa_desactivado`, `2fa_desactivacion_rechazada`, `2fa_codigos_renovados`, `2fa_codigos_rechazados` | el segundo factor, desde la cuenta propia |
 | `acceso_falta_segundo_factor`, `2fa_fallido`, `2fa_codigo_reutilizado`, `2fa_recuperacion_usada`, `2fa_frenado`, `2fa_secreto_ilegible` | el segundo paso de la puerta |
 | `informe_creado`, `informe_actualizado`, `participacion_actualizada`, `justificacion_*`, `entrega_registrada`, `entrega_contenido_no_concuerda` | el flujo |
 
@@ -349,7 +349,7 @@ rato con la cuenta protegida por la contraseña sola, que es el estado del que e
 segundo factor viene a sacarla—. Quedarse sin códigos es lo normal: se gastan de
 uno en uno, y cada uno se usa el día que el teléfono no está.
 
-Seis cosas que se rompen solas si alguien las "simplifica":
+Siete cosas que se rompen solas si alguien las "simplifica":
 
 1. **El login con 2FA no emite cookie de sesión**, sino un token *pendiente* en
    **otra cookie** (`siger_pendiente`, 5 min) y firmado en **otro dominio**
@@ -381,9 +381,22 @@ Seis cosas que se rompen solas si alguien las "simplifica":
    peticiones simultáneas con el mismo código abrían las dos. Lo sujeta
    `el_mismo_codigo_a_la_vez_abre_una_sola_sesion`, y solo esa: sin la condición
    en el SQL, las otras trece pruebas del módulo siguen verdes.
-4. **Activar exige teclear un código correcto.** Activar al generar el QR dejaría
-   fuera de su cuenta a quien tenga el reloj mal, y sin poder entrar a
-   arreglarlo.
+4. **Activar exige teclear un código correcto Y la contraseña actual.** El código,
+   porque activar al generar el QR dejaría fuera de su cuenta a quien tenga el
+   reloj mal, y sin poder entrar a arreglarlo. La contraseña, porque encender el
+   factor no quita protección pero **decide de quién es el teléfono que a partir
+   de ahora manda**: sin ella, una sesión robada ataba el autenticador del ladrón
+   a la cuenta ajena. No le daba acceso —el primer paso del login le sigue
+   pidiendo la contraseña— pero dejaba al dueño fuera de la suya, con la única
+   salida del rescate de la regla 5 de la administración de cuentas. Era la
+   asimetría del revés: `desactivar` la pedía y `activar` no (hallazgo de la
+   auditoría del 2026-08-03; se cerró el mismo día). Las dos cosas prueban cosas
+   distintas y hacen falta las dos — el código, que el autenticador que se ata
+   está delante de quien lo ata; la contraseña, que quien lo ata es el dueño—, y
+   la primera se cumple igual de bien con el teléfono del ladrón. El orden es
+   conflictos → contraseña → código: los conflictos son gratis y no dicen nada
+   que la propia sesión no vea ya en `GET /api/2fa`, y así no se paga un Argon2id
+   de 64 MiB por una petición que iba a ser rechazada igual.
 5. **Sin `SIGER_CLAVE_REPOSO` no se puede enrolar, y se dice.** El secreto se
    guarda cifrado con `guaca::reposo`; en claro, quien copie el archivo genera
    los códigos igual que su dueño. No se guarda en claro «mientras tanto». Esto

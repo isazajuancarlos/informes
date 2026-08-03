@@ -172,9 +172,18 @@ o = h[-1] & 15
 print(f"{(struct.unpack('>I', h[o:o+4])[0] & 0x7FFFFFFF) % 1000000:06d}")
 PY
 )"
-comprobar "el código del autenticador activa el segundo factor" 200 \
+# Las dos mitades de la misma regla, y en este orden porque la primera no gasta
+# el código: con la contraseña mala no se llega a tocar la fila, así que el mismo
+# código sigue sirviendo para la segunda.
+comprobar "sin la contraseña, el código bueno NO activa el segundo factor" 401 \
   "$(codigo api/2fa/activar /dev/null -X POST -b "$GALLETAS" \
-      -H 'Content-Type: application/json' -d "{\"codigo\":\"$CODIGO_TOTP\"}")"
+      -H 'Content-Type: application/json' \
+      -d "{\"codigo\":\"$CODIGO_TOTP\",\"clave\":\"la-que-no-es\"}")"
+
+comprobar "el código del autenticador y la contraseña activan el segundo factor" 200 \
+  "$(codigo api/2fa/activar /dev/null -X POST -b "$GALLETAS" \
+      -H 'Content-Type: application/json' \
+      -d "{\"codigo\":\"$CODIGO_TOTP\",\"clave\":\"$CLAVE_HUMO\"}")"
 
 # Renovar los códigos exige la contraseña. Se comprueba el RECHAZO y no el
 # acierto: el acierto ya lo miden las pruebas del módulo, y lo que aquí no se
