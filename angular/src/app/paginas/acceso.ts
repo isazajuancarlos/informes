@@ -189,12 +189,18 @@ import { Sesion } from '../nucleo/sesion';
       margin: 0 0 0.5rem; font-size: 1rem;
     }
     .demo p { margin: 0 0 0.75rem; font-size: 0.875rem; opacity: 0.85; }
-    .demo ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
-    .demo li { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    .demo ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 1rem; }
+    /*
+      Cada cuenta es un bloque, y el hueco DENTRO del bloque tiene que ser menor
+      que el hueco ENTRE bloques. Con los dos iguales, «admin@co.co · admin»
+      quedaba más cerca del botón de abajo que del suyo, y el visitante puede
+      leer la credencial de otra cuenta. Se vio en pantalla, no en el código.
+    */
+    .demo li { display: flex; flex-direction: column; align-items: flex-start; gap: 0.25rem; }
     /* El correo y la contraseña se enseñan además del botón: quien quiera
        teclearlos —para ver que no hay truco, o para probar desde el teléfono—
        tiene que poder leerlos. */
-    .demo code { font-size: 0.8125rem; opacity: 0.75; }
+    .demo code { font-size: 0.8125rem; opacity: 0.75; padding-left: 0.25rem; }
   `,
 })
 export class Acceso {
