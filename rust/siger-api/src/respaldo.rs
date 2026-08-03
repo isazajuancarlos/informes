@@ -48,6 +48,10 @@ const TABLAS: &[&str] = &[
     // la migración 0004, y yo había escrito la lista de memoria.
     "notificaciones",
     "comentarios",
+    // Y esta la cazó igual, al nacer con el segundo factor (0007). Va en el
+    // respaldo y no exenta: un restore que no la traiga deja a quien perdió el
+    // teléfono sin ninguna salida, con el factor activo y sin códigos.
+    "codigo_recuperacion",
 ];
 
 #[derive(Debug, thiserror::Error)]

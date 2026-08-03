@@ -285,6 +285,25 @@ producción) y las fechas se calculan desde HOY, para que la columna de urgencia
 enseñe su trabajo sin envejecer. Las contraseñas las cifra el propio binario
 (`siger-api hashear`), con el mismo Argon2 que verifica el acceso.
 
+### Y el visitante tiene que SABER con qué entrar
+
+Quien llega por un enlace cae en la pantalla de acceso sin conocer ninguna
+contraseña. Una demostración en la que nadie puede entrar no demuestra nada, así
+que esa pantalla las **anuncia**, con un botón «Entrar como…» por cuenta.
+
+Lo que anuncia sale de `SIGER_DEMO_CUENTAS`, y **en una instalación de cliente esa
+variable no existe**: `GET /api/demostracion` devuelve una lista vacía y la
+pantalla es la de siempre. No hay ningún `SIGER_DEMO=1` que encienda un juego de
+cuentas conocidas — dentro del binario no hay ninguna lista que activar por
+descuido, y lo que no se escribe en el entorno no se publica.
+
+El valor lo escribe `desplegar-demo.sh` en cada despliegue, a partir de
+`sembrar_demo.py --anunciar`: la **misma** fuente que siembra las cuentas. Si
+fueran dos listas, el día que cambie una contraseña el cartel diría la vieja — y
+un cartel que miente es peor que ninguno, porque el visitante concluye que el
+producto está roto y se va sin escribir. `humo.sh` lo comprueba por socket como
+lo comprobaría él: lee lo anunciado y **entra con eso**.
+
 ---
 
 ## Notas

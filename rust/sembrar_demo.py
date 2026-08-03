@@ -64,6 +64,16 @@ CLAVES = {
     "tercero@co.co": "tercero",
 }
 
+# Quiénes son. Vive aquí arriba, y no dentro de `sembrar`, porque `--anunciar`
+# lo necesita para construir el cartel de la pantalla de acceso: si el cartel
+# tuviera su propia copia de los correos, el día que cambie uno la demostración
+# anunciaría una cuenta que no existe y nadie podría entrar.
+USUARIOS = [
+    (1, "Administradora", "admin@co.co", "ADMIN", None),
+    (2, "Operadora", "operador@co.co", "OPERADOR", None),
+    (3, "Tercero externo", "tercero@co.co", "TERCERO", 1),
+]
+
 # Cuánto se espera a que el planificador termine su primera pasada. Es generoso
 # a propósito: en una máquina cargada la migración más el barrido tardan, y un
 # tiempo corto convertiría «lento» en «roto».
@@ -290,12 +300,7 @@ def sembrar_catalogo(bd: Path) -> None:
     c.execute("INSERT INTO stakeholders (id, nombre) VALUES (1, 'Superintendencia de Salud')")
     c.execute("INSERT INTO stakeholders (id, nombre) VALUES (2, 'EPS Contratante')")
 
-    usuarios = [
-        (1, "Administradora", "admin@co.co", "ADMIN", None),
-        (2, "Operadora", "operador@co.co", "OPERADOR", None),
-        (3, "Tercero externo", "tercero@co.co", "TERCERO", 1),
-    ]
-    for uid, nombre, email, rol, stake in usuarios:
+    for uid, nombre, email, rol, stake in USUARIOS:
         c.execute(
             "INSERT INTO usuarios (id, nombre, email, clave_hash, rol, activo, stakeholder_id)"
             " VALUES (?,?,?,?,?,1,?)",
@@ -501,7 +506,23 @@ def main() -> int:
     p.add_argument("--forzar", action="store_true",
                    help="siembra aunque la base tenga usuarios ajenos a la demo "
                         "(la vacía: úsese sabiendo lo que hace)")
+    p.add_argument("--anunciar", action="store_true",
+                   help="imprime el valor de SIGER_DEMO_CUENTAS y NO siembra "
+                        "nada: es lo que la pantalla de acceso enseña para que "
+                        "un visitante sepa con qué entrar")
     args = p.parse_args()
+
+    # Va antes de todo lo demás porque no toca ni base ni binario: es leer dos
+    # constantes de este mismo archivo y escribirlas en una línea. Que salga de
+    # AQUÍ es el punto entero — el cartel y la siembra no pueden ser dos listas
+    # que alguien tenga que acordarse de mover a la vez.
+    if args.anunciar:
+        print(";".join(
+            f"{email}:{CLAVES[email]}:{nombre}"
+            for _, nombre, email, _, _ in USUARIOS
+            if email in CLAVES
+        ))
+        return 0
 
     BINARIO = Path(args.binario).resolve()
     if not BINARIO.exists():

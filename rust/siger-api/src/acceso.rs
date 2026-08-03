@@ -1,9 +1,14 @@
-//! Lo que la base pone para el freno del login: dos consultas y nada de criterio.
+//! Lo que la base pone para la puerta: el freno del login y la revocación.
 //!
-//! La REGLA —el umbral, el techo, qué borra la cuenta de fallos, qué se hace con
-//! una marca de tiempo ilegible— vive en `guaca::freno`, compartida con medico.
-//! Aquí solo se anota y se lee. Es la separación a propósito: lo que diverge
-//! cuando se copia entre dos aplicaciones no es el `INSERT`.
+//! La REGLA del freno —el umbral, el techo, qué borra la cuenta de fallos, qué se
+//! hace con una marca de tiempo ilegible— vive en `guaca::freno`, compartida con
+//! medico. Aquí solo se anota y se lee. Es la separación a propósito: lo que
+//! diverge cuando se copia entre dos aplicaciones no es el `INSERT`.
+//!
+//! Las dos piezas están juntas por la misma razón que comparten la migración
+//! `0006_freno_y_revocacion`: son la misma puerta. El freno impide que alguien
+//! adivine la contraseña; la revocación cierra lo que se abrió con una que ya no
+//! vale.
 
 use chrono::{DateTime, Utc};
 use guaca::freno;
@@ -60,4 +65,32 @@ pub async fn estado(
         .map(|(momento, exito)| freno::Intento { momento: momento.as_str(), exito: *exito != 0 })
         .collect();
     Ok(freno::evaluar(&intentos, ahora))
+}
+
+/// Sube el `token_version` del usuario: **todas** sus sesiones abiertas dejan de
+/// valer en la siguiente petición (#194).
+///
+/// Es la única escritura del entero que existe fuera de una prueba, y hasta que
+/// la hubo la revocación era una pieza sin gatillo: el mecanismo estaba
+/// documentado y probado, y ningún operador podía dispararlo sin abrir la base
+/// con `sqlite3` a mano.
+///
+/// # Por qué devuelve `bool` y no `()`
+///
+/// `false` significa que la sentencia no tocó ninguna fila —el usuario ya no
+/// está—, y quien llama TIENE que distinguirlo: responder «listo, cerré todas
+/// tus sesiones» cuando no se cerró ninguna es exactamente el defecto silencioso
+/// que la directiva 20 prohíbe, y encima en el camino donde el usuario acaba de
+/// pedir seguridad. Un `Result<(), _>` no dejaría verlo, porque el `UPDATE` sin
+/// filas afectadas **no es un error de SQL**.
+pub async fn revocar_sesiones(bd: &sqlx::SqlitePool, usuario_id: i64) -> Result<bool, sqlx::Error> {
+    // `token_version + 1` en la base y no un número calculado aquí: dos procesos
+    // revocando a la vez leerían el mismo valor y escribirían el mismo, con lo
+    // que una de las dos revocaciones no revocaría nada. El incremento lo hace
+    // SQLite dentro de la sentencia.
+    let r = sqlx::query("UPDATE usuarios SET token_version = token_version + 1 WHERE id = ?")
+        .bind(usuario_id)
+        .execute(bd)
+        .await?;
+    Ok(r.rows_affected() > 0)
 }

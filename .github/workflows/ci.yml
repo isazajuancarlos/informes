@@ -6,9 +6,28 @@
 # de la interfaz.
 name: CI
 
+# CADA CAMBIO SE PRUEBA UNA VEZ, NO DOS.
+#
+# Esto decía `push: branches: ["**"]` junto a `pull_request`, y con un PR abierto
+# GitHub dispara los DOS: cada empujón a una rama lanzaba el CI entero por
+# duplicado —5 trabajos × 2— sin que la segunda vuelta comprobara nada que la
+# primera no hubiera comprobado ya. Se veía en `gh pr checks`, que listaba ocho
+# comprobaciones donde hay cuatro; costó darse cuenta porque el ruido parecía
+# normal.
+#
+# No es una optimización cosmética: `informes` y `medico` son PRIVADOS y sus
+# minutos salen del cupo de la cuenta (los públicos como quipu los tienen
+# gratis). El 2026-07-31 ese cupo se agotó a media tarde y **el CI de los dos
+# productos comerciales se paró**: los trabajos ni arrancaban. La mitad de lo
+# gastado ese día fue esta duplicación.
+#
+# EL PRECIO, para que nadie lo descubra por sorpresa: una rama SIN PR abierto ya
+# no lanza CI. Es deliberado — aquí toda rama que importa acaba en un PR, y el
+# PR la prueba. `main` sí conserva su `push`, porque es lo publicado y tiene que
+# verificarse aunque algo entre por otra vía.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
     branches: [main]
 
@@ -22,7 +41,7 @@ jobs:
     name: rust (test + clippy)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Cabeceras de SQLite
         # `libsqlite3-sys` enlaza el SQLite del sistema (no bundled): sin las
         # cabeceras de desarrollo, la compilación no encuentra sqlite3.h.
@@ -44,8 +63,8 @@ jobs:
     name: frontend (ng build)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           # Angular CLI exige >= 22.22.3; el node del sistema de desarrollo se
           # quedó un parche por debajo (ver tarea #80).
@@ -63,7 +82,7 @@ jobs:
     name: cargo-audit (RustSec)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -81,7 +100,7 @@ jobs:
     name: cargo-deny (supply chain)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

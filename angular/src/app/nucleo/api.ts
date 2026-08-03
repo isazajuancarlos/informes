@@ -22,6 +22,61 @@ export interface Actor {
   stakeholder_id: number | null;
 }
 
+/**
+ * Una cuenta como la ve la administración.
+ *
+ * `rol` viaja aquí como el texto de la base (`ADMIN`, `OPERADOR`…) y no como el
+ * `Rol` del actor (`Admin`, `Operador`…). Son dos representaciones del mismo
+ * valor y NO se mezclan: la de arriba la produce `serde` sobre el enum, esta sale
+ * de la columna. Unificarlas es trabajo del servidor, no de un `toUpperCase()`
+ * aquí que se rompería en silencio el día que cambie cualquiera de las dos.
+ */
+export interface Cuenta {
+  id: number;
+  nombre: string;
+  email: string;
+  rol: 'ADMIN' | 'OPERADOR' | 'SUPERVISOR' | 'TERCERO';
+  activo: boolean;
+  stakeholder_id: number | null;
+  /** Si tiene puesta la verificación en dos pasos (#212). */
+  segundo_factor: boolean;
+}
+
+/**
+ * Una cuenta que la demostración pública anuncia, con su contraseña en claro.
+ *
+ * Solo existe donde el despliegue escribió `SIGER_DEMO_CUENTAS`. En una
+ * instalación de cliente el servidor devuelve una lista vacía y esto no llega a
+ * dibujarse nunca.
+ */
+export interface CuentaDemo {
+  correo: string;
+  clave: string;
+  nombre: string;
+}
+
+/** Qué tiene esta cuenta en materia de segundo factor (#212). */
+export interface EstadoFactor {
+  activo: boolean;
+  /** Códigos de recuperación sin gastar. Es lo que decide si la pantalla avisa. */
+  codigos_disponibles: number;
+  /** `false` = este despliegue no tiene `SIGER_CLAVE_REPOSO` y el secreto no se
+   *  podría guardar cifrado. La pantalla lo DICE en vez de ofrecer un botón que
+   *  va a fallar. */
+  puede_activarse: boolean;
+}
+
+/** El enrolamiento en curso: lo que hay que enseñar una vez y no se repite. */
+export interface Enrolamiento {
+  /** Para teclear a mano cuando la cámara no lee el QR. */
+  secreto: string;
+  /** El `otpauth://`, para abrirlo desde el propio teléfono. */
+  uri: string;
+  /** El QR ya dibujado por el servidor. Aquí no hay librería de QR: ver
+   *  `qr.rs`. */
+  qr_svg: string;
+}
+
 export interface Entrega {
   id: number;
   informe: string;
@@ -183,9 +238,75 @@ export class Api {
       .pipe(catchError((e) => this.falla(e)));
   }
 
+  /**
+   * Primer paso del acceso.
+   *
+   * `segundo_factor: true` significa que la contraseña era correcta y que **no
+   * hay sesión**: el servidor dejó una cookie pendiente de cinco minutos que solo
+   * sirve para `/api/2fa/verificar`. Quien llame a esto tiene que mirar el campo;
+   * tratarlo como un `ok` deja al usuario en una pantalla que cree que ha entrado
+   * y recibe 401 en la primera petición.
+   */
   entrar(email: string, clave: string) {
     return this.http
-      .post<{ ok: boolean }>('/api/sesion', { email, clave }, { withCredentials: true })
+      .post<{ ok: boolean; segundo_factor: boolean }>(
+        '/api/sesion',
+        { email, clave },
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Segundo paso del acceso: el código del autenticador o uno de recuperación.
+   *
+   * No lleva ni correo ni contraseña —la cookie pendiente ya dice quién es— y no
+   * se le pregunta al cliente de qué tipo es el código: los distingue el formato.
+   */
+  verificarSegundoFactor(codigo: string) {
+    return this.http
+      .post<{ ok: boolean }>('/api/2fa/verificar', { codigo }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  // --- Segundo factor de la cuenta propia (#212) ------------------------------
+
+  estadoSegundoFactor() {
+    return this.get<EstadoFactor>('/api/2fa');
+  }
+
+  /** Genera el secreto y devuelve el QR. **No activa nada**: hace falta el paso
+   *  siguiente con un código correcto. */
+  iniciarSegundoFactor() {
+    return this.http
+      .post<Enrolamiento>('/api/2fa/iniciar', null, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /** Activa y devuelve los códigos de recuperación. Se entregan **una sola vez**:
+   *  en la base solo queda su hash, así que si esta pantalla los pierde, se
+   *  pierden. */
+  activarSegundoFactor(codigo: string) {
+    return this.http
+      .post<string[]>('/api/2fa/activar', { codigo }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Diez códigos de recuperación nuevos, sin tocar el secreto.
+   *
+   * Los viejos dejan de valer. Se entregan una sola vez, igual que en el
+   * enrolamiento, y por eso la pantalla los trata igual.
+   */
+  renovarCodigosRecuperacion(clave: string) {
+    return this.http
+      .post<string[]>('/api/2fa/codigos', { clave }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  desactivarSegundoFactor(clave: string) {
+    return this.http
+      .post<void>('/api/2fa/desactivar', { clave }, { withCredentials: true })
       .pipe(catchError((e) => this.falla(e)));
   }
 
@@ -195,8 +316,99 @@ export class Api {
       .pipe(catchError((e) => this.falla(e)));
   }
 
+  /**
+   * Cierra la sesión en TODOS los dispositivos (#194).
+   *
+   * No lleva cuerpo, y eso es la garantía: el servidor revoca al usuario que la
+   * cookie identifica, nunca a un id que venga de aquí. Si esta llamada aceptara
+   * un usuario, sería un botón para echar a cualquiera sabiendo su número.
+   */
+  salirDeTodo() {
+    return this.http
+      .post<{ ok: boolean }>('/api/salir-todo', null, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
   yo() {
     return this.get<Actor>('/api/yo');
+  }
+
+  /**
+   * Qué cuentas anuncia este servidor. **Sin sesión**: lo pide la pantalla de
+   * acceso, donde por definición todavía no hay ninguna.
+   *
+   * Devuelve `[]` en cualquier instalación que no sea la demostración pública.
+   */
+  cuentasDeDemostracion() {
+    return this.get<CuentaDemo[]>('/api/demostracion');
+  }
+
+  // --- Administración de cuentas ---------------------------------------------
+  //
+  // Recurso aparte de `/api/usuarios`, que significa «quién puede ser parte de un
+  // flujo» y solo devuelve los activos. Aquí hacen falta también los desactivados
+  // —si no, reactivar a alguien exigiría abrir la base a mano— y el rol.
+
+  cuentas() {
+    return this.get<Cuenta[]>('/api/cuentas');
+  }
+
+  crearCuenta(c: {
+    nombre: string;
+    email: string;
+    clave: string;
+    rol: string;
+    stakeholder_id: number | null;
+  }) {
+    return this.http
+      .post<Cuenta>('/api/cuentas', c, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  actualizarCuenta(
+    id: number,
+    c: { nombre: string; rol: string; activo: boolean; stakeholder_id: number | null },
+  ) {
+    return this.http
+      .put<Cuenta>(`/api/cuentas/${id}`, c, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /** Restablece la contraseña de OTRA persona. Le cierra todas sus sesiones. */
+  restablecerClave(id: number, clave_nueva: string) {
+    return this.http
+      .post<{ ok: boolean }>(`/api/cuentas/${id}/clave`, { clave_nueva }, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Le quita el segundo factor a OTRA persona. Solo administradores.
+   *
+   * Es el rescate de quien perdió el teléfono **y** los códigos: su cuenta no
+   * tiene ninguna otra salida, porque desactivarlo desde dentro exige estar
+   * dentro. No sirve sobre uno mismo — para eso está la pantalla propia, que
+   * pide la contraseña.
+   */
+  retirarSegundoFactorDe(id: number) {
+    return this.http
+      .delete<{ ok: boolean }>(`/api/cuentas/${id}/2fa`, { withCredentials: true })
+      .pipe(catchError((e) => this.falla(e)));
+  }
+
+  /**
+   * Cambia la contraseña propia. Cualquier rol.
+   *
+   * El servidor reemite la cookie, así que esta sesión sigue viva y caen todas
+   * las demás de esta persona. No hay que volver a entrar.
+   */
+  cambiarMiClave(clave_actual: string, clave_nueva: string) {
+    return this.http
+      .post<{ ok: boolean }>(
+        '/api/mi-clave',
+        { clave_actual, clave_nueva },
+        { withCredentials: true },
+      )
+      .pipe(catchError((e) => this.falla(e)));
   }
 
   entregas() {

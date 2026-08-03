@@ -43,4 +43,24 @@
   color: var(--mat-sys-on-surface-variant);
 }
 
+// El fallo de «cerrar en todos los dispositivos» se queda DENTRO del menú, junto
+// al botón que lo produjo: es donde está mirando quien acaba de pulsarlo.
+.error-cuenta {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  padding: 0.5rem 1rem 0.75rem;
+  max-width: 18rem;
+  font-size: 0.8rem;
+  color: var(--mat-sys-error);
+
+  mat-icon {
+    flex: none;
+    font-size: 1.1rem;
+    width: 1.1rem;
+    height: 1.1rem;
+  }
+}
+
 .contenido { padding: 1.25rem; }

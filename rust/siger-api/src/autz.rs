@@ -51,6 +51,19 @@ impl Rol {
             _ => None,
         }
     }
+
+    /// El texto con el que se guarda. Vive junto a `desde_bd` para que las dos
+    /// direcciones no puedan discrepar: el `CHECK` del esquema solo admite estos
+    /// cuatro, y un quinto valor escrito aquí dejaría al usuario sin rol
+    /// reconocible —o sea, fuera— en la siguiente petición.
+    pub fn a_bd(self) -> &'static str {
+        match self {
+            Rol::Admin => "ADMIN",
+            Rol::Operador => "OPERADOR",
+            Rol::Supervisor => "SUPERVISOR",
+            Rol::Tercero => "TERCERO",
+        }
+    }
 }
 
 /// Quién pide. Se construye en el extractor, a partir de la cookie verificada y
