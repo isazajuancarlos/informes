@@ -285,10 +285,14 @@ export class Api {
 
   /** Activa y devuelve los códigos de recuperación. Se entregan **una sola vez**:
    *  en la base solo queda su hash, así que si esta pantalla los pierde, se
-   *  pierden. */
-  activarSegundoFactor(codigo: string) {
+   *  pierden.
+   *
+   *  Pide la contraseña por lo mismo que `desactivarSegundoFactor`: encender el
+   *  factor decide de quién es el teléfono que a partir de ahora manda, y sin la
+   *  contraseña una sesión robada ataría el del ladrón a la cuenta ajena. */
+  activarSegundoFactor(codigo: string, clave: string) {
     return this.http
-      .post<string[]>('/api/2fa/activar', { codigo }, { withCredentials: true })
+      .post<string[]>('/api/2fa/activar', { codigo, clave }, { withCredentials: true })
       .pipe(catchError((e) => this.falla(e)));
   }
 

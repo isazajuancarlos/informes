@@ -63,6 +63,19 @@ pub struct SoloClave {
     clave: String,
 }
 
+/// Lo que pide `activar`: el código del teléfono **y** la contraseña.
+///
+/// Son las dos mitades de una misma afirmación: el código prueba que el
+/// autenticador que se está atando es el que tiene delante quien lo ata, y la
+/// contraseña prueba que quien lo ata es el dueño de la cuenta y no una sesión
+/// robada. Sin la segunda, la primera se cumple igual de bien con el teléfono del
+/// ladrón. Ver el porqué en [`activar`].
+#[derive(Deserialize)]
+pub struct CodigoYClave {
+    codigo: String,
+    clave: String,
+}
+
 #[derive(Serialize)]
 pub struct Enrolamiento {
     /// Para teclear a mano cuando la cámara no lee el QR.
@@ -197,22 +210,44 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
     Ok(Json(Enrolamiento { qr_svg: codigo.a_svg(), uri, secreto }))
 }
 
-/// `POST /api/2fa/activar` — exige un código correcto y entrega los códigos de
-/// recuperación.
+/// `POST /api/2fa/activar` — exige un código correcto **y la contraseña actual**,
+/// y entrega los códigos de recuperación.
 ///
 /// Los códigos se devuelven **una sola vez**: en la base solo queda su hash. Si
 /// se pudieran volver a consultar, serían una segunda contraseña legible por
 /// cualquiera que llegue a la sesión.
+///
+/// # Por qué la contraseña, si aquí no se apaga nada
+///
+/// `desactivar` la pedía y esto no, y esa asimetría era del revés. Encender el
+/// factor no le quita protección a la cuenta, pero **decide de quién es el
+/// teléfono que a partir de ahora manda**: con una sesión robada y sin saber
+/// ninguna contraseña, se podía atar el autenticador propio a la cuenta ajena.
+/// El ladrón no gana acceso —el primer paso del login le sigue pidiendo la
+/// contraseña que no tiene— pero deja al dueño fuera de la suya, y la única salida
+/// es que un administrador corra el rescate de `DELETE /api/cuentas/{id}/2fa`.
+///
+/// El código y la contraseña prueban cosas distintas y hacen falta las dos: el
+/// código, que el autenticador que se ata está delante de quien lo ata; la
+/// contraseña, que quien lo ata es el dueño. La primera se cumple igual de bien
+/// con el teléfono del ladrón.
+///
+/// La contraseña se comprueba **después** de los dos conflictos y **antes** del
+/// código: los conflictos son gratis y no dicen nada que la propia sesión no pueda
+/// ver ya en `GET /api/2fa`, mientras que verificar la contraseña cuesta un
+/// Argon2id de 64 MiB con turno de semáforo. No se paga por una petición que iba a
+/// ser rechazada de todos modos.
 pub async fn activar(
     State(e): State<Estado>,
     actor: Actor,
-    Json(p): Json<SoloCodigo>,
+    Json(p): Json<CodigoYClave>,
 ) -> Result<Json<Vec<String>>, Error> {
-    let fila: (Option<Vec<u8>>, Option<String>) =
-        sqlx::query_as("SELECT totp_secreto_cifrado, totp_confirmado_en FROM usuarios WHERE id = ?")
-            .bind(actor.id)
-            .fetch_one(&e.bd)
-            .await?;
+    let fila: (Option<Vec<u8>>, Option<String>, String) = sqlx::query_as(
+        "SELECT totp_secreto_cifrado, totp_confirmado_en, clave_hash FROM usuarios WHERE id = ?",
+    )
+    .bind(actor.id)
+    .fetch_one(&e.bd)
+    .await?;
     if fila.1.is_some() {
         return Err(Error(StatusCode::CONFLICT, "ya estaba activo".into()));
     }
@@ -222,6 +257,10 @@ pub async fn activar(
             "no hay enrolamiento en curso: pida primero el código QR".into(),
         ));
     };
+    if !clave_correcta(&e, fila.2, p.clave).await? {
+        auditar(&e.bd, "2fa_activacion_rechazada", Some(&actor.email), None).await;
+        return Err(Error(StatusCode::UNAUTHORIZED, "la contraseña actual no es correcta".into()));
+    }
     let Some(secreto) = descifrar_secreto(&e, blob).await? else {
         return Err(sin_frase());
     };
@@ -736,7 +775,12 @@ mod pruebas {
         let c = codigo(&secreto, ahora());
         let (s, cuerpo) = llamar(
             app,
-            peticion("POST", "/api/2fa/activar", Some(sesion), Some(&format!(r#"{{"codigo":"{c}"}}"#))),
+            peticion(
+                "POST",
+                "/api/2fa/activar",
+                Some(sesion),
+                Some(&format!(r#"{{"codigo":"{c}","clave":"{CLAVE}"}}"#)),
+            ),
         )
         .await;
         assert_eq!(s, StatusCode::OK, "{cuerpo}");
@@ -790,7 +834,7 @@ mod pruebas {
                 "POST",
                 "/api/2fa/activar",
                 Some(&sesion),
-                Some(&format!(r#"{{"codigo":"{c}"}}"#)),
+                Some(&format!(r#"{{"codigo":"{c}","clave":"{CLAVE}"}}"#)),
             ),
         )
         .await;
@@ -936,7 +980,14 @@ mod pruebas {
 
         let (s, _) = llamar(
             &app,
-            peticion("POST", "/api/2fa/activar", Some(&sesion), Some(r#"{"codigo":"000000"}"#)),
+            peticion(
+                "POST",
+                "/api/2fa/activar",
+                Some(&sesion),
+                // La contraseña VA, y es la buena: si faltara, el 400 podría venir
+                // de la contraseña y esta prueba dejaría de decir nada del código.
+                Some(&format!(r#"{{"codigo":"000000","clave":"{CLAVE}"}}"#)),
+            ),
         )
         .await;
         assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -991,7 +1042,12 @@ mod pruebas {
         let c = codigo(&secreto, ahora());
         let (s, cuerpo) = llamar(
             &app,
-            peticion("POST", "/api/2fa/activar", Some(&sesion), Some(&format!(r#"{{"codigo":"{c}"}}"#))),
+            peticion(
+                "POST",
+                "/api/2fa/activar",
+                Some(&sesion),
+                Some(&format!(r#"{{"codigo":"{c}","clave":"{CLAVE}"}}"#)),
+            ),
         )
         .await;
         assert_eq!(s, StatusCode::OK);
@@ -1058,6 +1114,78 @@ mod pruebas {
             .await
             .unwrap();
         assert_eq!(quedan, 0);
+    }
+
+    #[tokio::test]
+    async fn activar_exige_la_contraseña_para_que_nadie_ate_su_telefono_a_una_cuenta_ajena() {
+        // La pareja de `desactivar_exige_la_contraseña_actual`, que faltaba y era
+        // la asimetría del revés: apagar el factor pedía la contraseña y
+        // ENCENDERLO no. Con una sesión robada y sin saber ninguna contraseña se
+        // podía atar el autenticador propio a la cuenta ajena. No da acceso —el
+        // primer paso del login sigue pidiendo la contraseña— pero deja al dueño
+        // fuera de la suya, y la única salida es el rescate del administrador.
+        let (app, e) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+
+        let (s, cuerpo) = llamar(&app, peticion("POST", "/api/2fa/iniciar", Some(&sesion), None)).await;
+        assert_eq!(s, StatusCode::OK, "{cuerpo}");
+        let secreto = cuerpo["secreto"].as_str().unwrap().to_string();
+
+        // 1. Con el código BUENO y la contraseña mala: no activa. El código bueno
+        //    es lo que hace que esto discrimine — si fuera malo, el rechazo podría
+        //    venir del código y la prueba pasaría con el hueco abierto.
+        let c = codigo(&secreto, ahora());
+        let (s, _) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/activar",
+                Some(&sesion),
+                Some(&format!(r#"{{"codigo":"{c}","clave":"no-es-la-mia"}}"#)),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED);
+
+        let confirmado: Option<String> =
+            sqlx::query_scalar("SELECT totp_confirmado_en FROM usuarios WHERE id = 1")
+                .fetch_one(&e.bd)
+                .await
+                .unwrap();
+        assert!(confirmado.is_none(), "se activó el factor sin saber la contraseña");
+        // Y sin códigos de recuperación por el camino: si se hubieran generado, el
+        // rechazo habría dejado diez credenciales colgando de un intento fallido.
+        let colgando: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM codigo_recuperacion WHERE usuario_id = 1")
+                .fetch_one(&e.bd)
+                .await
+                .unwrap();
+        assert_eq!(colgando, 0, "un rechazo dejó códigos de recuperación escritos");
+
+        // 2. Y con la contraseña BUENA, ABRE — la mitad sin la cual todo lo de
+        //    arriba lo cumpliría igual un extremo que no activa nunca.
+        let c = codigo(&secreto, ahora());
+        let (s, cuerpo) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/activar",
+                Some(&sesion),
+                Some(&format!(r#"{{"codigo":"{c}","clave":"{CLAVE}"}}"#)),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{cuerpo}");
+        assert_eq!(cuerpo.as_array().unwrap().len(), CODIGOS_RECUPERACION);
+
+        // Y lo activado sirve: el login deja de abrir sesión con la contraseña sola.
+        let (_, cuerpo, cookies) = login(&app).await;
+        assert_eq!(cuerpo["segundo_factor"], serde_json::json!(true));
+        assert!(
+            valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).is_none(),
+            "la contraseña sola siguió entregando cookie de sesión"
+        );
     }
 
     #[tokio::test]

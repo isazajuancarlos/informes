@@ -103,6 +103,15 @@ import { Api, Enrolamiento, EstadoFactor } from '../nucleo/api';
             <mat-hint>Si no coincide, revise la hora del teléfono.</mat-hint>
           </mat-form-field>
 
+          <mat-form-field>
+            <mat-label>Su contraseña actual</mat-label>
+            <input matInput type="password" name="claveActivar" autocomplete="current-password"
+                   [(ngModel)]="claveActivar" />
+            <mat-hint>
+              Para que nadie más pueda atar su teléfono a esta cuenta.
+            </mat-hint>
+          </mat-form-field>
+
           <div class="acciones">
             <button mat-button type="button" (click)="cancelarEnrolamiento()">Cancelar</button>
             <button mat-flat-button type="button" [disabled]="cargando()" (click)="activar()">
@@ -228,6 +237,13 @@ export class SegundoFactor {
 
   codigo = '';
   clave = '';
+  /** La contraseña del enrolamiento, aparte de la de la baja.
+   *
+   *  Dos campos y no uno compartido: los dos formularios nunca se ven a la vez,
+   *  pero uno solo dejaría la contraseña escrita en memoria al pasar de una
+   *  pantalla a la otra. Cada uno se borra en cuanto se usa o se cancela, igual
+   *  que hace la pantalla de acceso al pasar al segundo paso. */
+  claveActivar = '';
 
   readonly cargando = signal(false);
   readonly error = signal('');
@@ -285,12 +301,20 @@ export class SegundoFactor {
     this.error.set('');
     this.cargando.set(true);
     try {
-      this.codigos.set(await firstValueFrom(this.api.activarSegundoFactor(this.codigo.trim())));
+      this.codigos.set(
+        await firstValueFrom(this.api.activarSegundoFactor(this.codigo.trim(), this.claveActivar)),
+      );
       this.trasGuardar.set('Verificación en dos pasos activada.');
       this.codigo = '';
+      this.claveActivar = '';
       this.enrolamiento.set(null);
     } catch (e) {
       this.error.set((e as Error).message);
+      // El código se borra y la contraseña también: el código ya no vale —cada
+      // uno dura 30 s— y dejar la contraseña escrita tras un rechazo no ayuda a
+      // reintentar, porque si el rechazo fue por ella, es la equivocada.
+      this.codigo = '';
+      this.claveActivar = '';
     } finally {
       this.cargando.set(false);
     }
@@ -306,6 +330,7 @@ export class SegundoFactor {
   cancelarEnrolamiento() {
     this.enrolamiento.set(null);
     this.codigo = '';
+    this.claveActivar = '';
     this.error.set('');
   }
 
