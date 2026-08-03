@@ -135,6 +135,27 @@ else
     echo "  /etc/siger-demo/siger.env ya existe: se conserva"
 fi
 
+# EL CARTEL DE LA DEMOSTRACIÓN, y va FUERA del `if` de arriba a propósito.
+#
+# Un visitante cae en la pantalla de acceso sin saber ninguna contraseña, y una
+# demostración en la que nadie puede entrar no demuestra nada. `SIGER_DEMO_CUENTAS`
+# es lo que esa pantalla anuncia — y en cualquier instalación que no sea ésta la
+# variable no existe, así que no se anuncia nada.
+#
+# El valor lo imprime `sembrar_demo.py --anunciar`, o sea la MISMA fuente que
+# siembra las cuentas. Si saliera de aquí, el día que cambie una contraseña en el
+# guion de siembra el cartel seguiría diciendo la vieja: un cartel que miente es
+# peor que no tener cartel, porque el visitante concluye que el producto no
+# funciona y se va sin escribir.
+#
+# Se reescribe en CADA despliegue —de ahí que no esté dentro del `if` que conserva
+# el archivo—: el secreto de sesión no se rota para no echar a quien esté mirando,
+# pero el cartel tiene que seguir a la siembra.
+ANUNCIO="$(python3 "$REMOTO/sembrar_demo.py" --anunciar)"
+sudo sed -i '/^SIGER_DEMO_CUENTAS=/d' /etc/siger-demo/siger.env
+echo "SIGER_DEMO_CUENTAS=$ANUNCIO" | sudo tee -a /etc/siger-demo/siger.env >/dev/null
+echo "  cartel de la demostración: $(echo "$ANUNCIO" | tr ';' '\n' | wc -l) cuentas anunciadas"
+
 sudo install -m 644 /tmp/siger-demo.service /tmp/siger-demo-sembrar.service \
      /tmp/siger-demo-sembrar.timer /etc/systemd/system/
 sudo install -m 644 /tmp/informes.xiliux.com.nginx \

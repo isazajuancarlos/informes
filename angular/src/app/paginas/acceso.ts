@@ -16,6 +16,9 @@ import { MatIconModule } from '@angular/material/icon';
 import { MatInputModule } from '@angular/material/input';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 
+import { firstValueFrom } from 'rxjs';
+
+import { Api, CuentaDemo } from '../nucleo/api';
 import { Sesion } from '../nucleo/sesion';
 
 @Component({
@@ -79,6 +82,33 @@ import { Sesion } from '../nucleo/sesion';
               {{ ocupado() ? 'Comprobando…' : 'Entrar' }}
             </button>
             @if (ocupado()) { <mat-progress-bar mode="indeterminate" /> }
+
+            <!--
+              El cartel de la demostración. Solo aparece si el servidor anuncia
+              cuentas, y solo las anuncia si el despliegue las escribió a mano en
+              SIGER_DEMO_CUENTAS: en una instalación de cliente esta lista llega
+              vacía y aquí no se dibuja nada.
+            -->
+            @if (demo().length) {
+              <aside class="demo">
+                <h3><mat-icon>waving_hand</mat-icon> Esto es una demostración</h3>
+                <p>
+                  Los datos son ficticios y se regeneran cada noche. Entre con
+                  cualquiera de estas cuentas —o pulse una y entramos nosotros:
+                </p>
+                <ul>
+                  @for (c of demo(); track c.correo) {
+                    <li>
+                      <button mat-stroked-button type="button" [disabled]="ocupado()"
+                              (click)="entrarComo(c)">
+                        Entrar como {{ c.nombre }}
+                      </button>
+                      <code>{{ c.correo }} · {{ c.clave }}</code>
+                    </li>
+                  }
+                </ul>
+              </aside>
+            }
           </form>
         } @else {
           <form (ngSubmit)="verificar()">
@@ -149,11 +179,28 @@ import { Sesion } from '../nucleo/sesion';
       color: var(--mat-sys-error);
     }
     button[type='submit'] { height: 3rem; }
+    .demo {
+      margin-top: 1.5rem; padding: 1rem 1.25rem; border-radius: 12px;
+      background: var(--mat-sys-surface-container-high);
+      border: 1px solid var(--mat-sys-outline-variant);
+    }
+    .demo h3 {
+      display: flex; align-items: center; gap: 0.5rem;
+      margin: 0 0 0.5rem; font-size: 1rem;
+    }
+    .demo p { margin: 0 0 0.75rem; font-size: 0.875rem; opacity: 0.85; }
+    .demo ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.5rem; }
+    .demo li { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+    /* El correo y la contraseña se enseñan además del botón: quien quiera
+       teclearlos —para ver que no hay truco, o para probar desde el teléfono—
+       tiene que poder leerlos. */
+    .demo code { font-size: 0.8125rem; opacity: 0.75; }
   `,
 })
 export class Acceso {
   private sesion = inject(Sesion);
   private router = inject(Router);
+  private api = inject(Api);
 
   email = '';
   clave = '';
@@ -164,6 +211,38 @@ export class Acceso {
 
   /** El segundo paso está pedido: hay cookie pendiente y no hay sesión. */
   readonly pideCodigo = signal(false);
+
+  /**
+   * Las cuentas que este servidor anuncia. Vacío en toda instalación de cliente.
+   *
+   * Se pregunta SIEMPRE y sin sesión, porque la respuesta de una instalación
+   * normal es una lista vacía y no un error: distinguir «no hay demostración» de
+   * «esta versión no tiene ese extremo» obligaría a dibujar dos casos que se ven
+   * igual.
+   */
+  readonly demo = signal<CuentaDemo[]>([]);
+
+  constructor() {
+    // Si falla, se queda vacío y la pantalla es la de siempre: el cartel es un
+    // extra de la demostración, no puede impedir entrar a nadie (#71).
+    firstValueFrom(this.api.cuentasDeDemostracion())
+      .then((c) => this.demo.set(c))
+      .catch(() => this.demo.set([]));
+  }
+
+  /**
+   * Entrar con una de las cuentas anunciadas, de un clic.
+   *
+   * Rellena el formulario ADEMÁS de enviarlo: si el acceso falla —la base
+   * resembrada a medias, por ejemplo—, el visitante se queda con los campos
+   * puestos y el mensaje de error, en vez de con una pantalla vacía que no dice
+   * qué se intentó.
+   */
+  async entrarComo(c: CuentaDemo) {
+    this.email = c.correo;
+    this.clave = c.clave;
+    await this.entrar();
+  }
 
   async entrar() {
     if (this.ocupado()) return;

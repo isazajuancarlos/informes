@@ -108,6 +108,7 @@ pub fn router(estado: Estado) -> Router {
     let tope_mb = estado.cfg.max_mb;
     Router::new()
         .route("/api/salud", get(salud))
+        .route("/api/demostracion", get(demostracion))
         .route("/api/sesion", post(abrir_sesion).delete(cerrar_sesion))
         .route("/api/salir-todo", post(salir_todo))
         .route("/api/yo", get(yo))
@@ -525,6 +526,20 @@ async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, E
 
 async fn yo(actor: Actor) -> Json<Actor> {
     Json(actor)
+}
+
+/// `GET /api/demostracion` — las cuentas que esta instalación anuncia.
+///
+/// Sin sesión, porque quien lo pide todavía no puede tener ninguna: es la
+/// pantalla de acceso preguntando si aquí hay algo que enseñar.
+///
+/// **En una instalación de cliente devuelve una lista vacía**, y no un 404: el
+/// 404 obligaría a la interfaz a distinguir «no hay demostración» de «esta
+/// versión no tiene ese extremo», y son dos cosas que se dibujan igual. Lo que
+/// hay dentro sale entero de `SIGER_DEMO_CUENTAS`, así que aquí no se publica
+/// nada que el despliegue no haya escrito a mano.
+async fn demostracion(State(e): State<Estado>) -> Json<Vec<crate::config::CuentaDemo>> {
+    Json(e.cfg.demo.clone())
 }
 
 async fn salud(State(e): State<Estado>) -> Response {
@@ -1355,6 +1370,110 @@ pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle
         .await
     {
         tracing::error!("no se pudo registrar el evento {evento}: {e}");
+    }
+}
+
+/// El cartel de la demostración pública: qué se anuncia y qué no.
+///
+/// Las dos pruebas son las dos mitades de la misma característica: que un
+/// cliente NO publique nada, y que lo que la demostración publica sirva de
+/// verdad para entrar.
+#[cfg(test)]
+mod pruebas_demostracion {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    async fn router_con(demo: Vec<crate::config::CuentaDemo>, clave_real: &str) -> axum::Router {
+        use argon2::password_hash::{PasswordHasher, SaltString};
+        let bd = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&bd).await.unwrap();
+        let sal = SaltString::from_b64("c2FsZGVsYXBydWViYWRlZGVtbw").unwrap();
+        let hash = Argon2::default().hash_password(clave_real.as_bytes(), &sal).unwrap().to_string();
+        sqlx::query(
+            "INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) \
+             VALUES (1,'Administradora','admin@co.co',?,'ADMIN',1)",
+        )
+        .bind(&hash)
+        .execute(&bd)
+        .await
+        .unwrap();
+
+        let mut cfg = Config::de_prueba();
+        cfg.demo = demo;
+        router(Estado {
+            bd,
+            cfg,
+            motor: std::sync::Arc::new(siger_core::Motor::nuevo(
+                siger_core::Calendario::de_pais("CO", 2024, 2030).unwrap(),
+            )),
+        })
+    }
+
+    fn pedir(metodo: &str, uri: &str, cuerpo: Option<&str>) -> Request<Body> {
+        let b = Request::builder().method(metodo).uri(uri).extension(
+            axum::extract::ConnectInfo("127.0.0.1:5555".parse::<std::net::SocketAddr>().unwrap()),
+        );
+        match cuerpo {
+            Some(j) => b
+                .header("content-type", "application/json")
+                .body(Body::from(j.to_string()))
+                .unwrap(),
+            None => b.body(Body::empty()).unwrap(),
+        }
+    }
+
+    async fn json(app: &axum::Router, r: Request<Body>) -> (StatusCode, serde_json::Value) {
+        let res = app.clone().oneshot(r).await.unwrap();
+        let s = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (s, serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null))
+    }
+
+    #[tokio::test]
+    async fn una_instalacion_de_cliente_no_anuncia_ninguna_cuenta() {
+        // La mitad que de verdad importa de esta característica. El extremo
+        // existe en TODOS los binarios —es el mismo producto—, así que lo único
+        // que separa a un cliente de tener sus credenciales publicadas es que
+        // esta lista salga vacía cuando nadie escribió la variable.
+        let app = router_con(Vec::new(), "la-de-verdad").await;
+        let (s, cuerpo) = json(&app, pedir("GET", "/api/demostracion", None)).await;
+        assert_eq!(s, StatusCode::OK);
+        assert_eq!(cuerpo, serde_json::json!([]), "una instalación normal anunció algo");
+    }
+
+    #[tokio::test]
+    async fn con_lo_que_la_demostracion_anuncia_se_entra() {
+        // Un cartel que dice una contraseña que no funciona es peor que no tener
+        // cartel: el visitante concluye que el producto está roto, y se va. Así
+        // que no basta con que el extremo devuelva la lista; hay que entrar con
+        // lo que devuelve. La contraseña de la base y la anunciada se escriben
+        // aquí por separado a propósito — si el día de mañana alguien las
+        // desacopla, esta prueba lo dice.
+        let anunciada = "admin";
+        let app = router_con(
+            vec![crate::config::CuentaDemo {
+                correo: "admin@co.co".into(),
+                clave: anunciada.into(),
+                nombre: "Administradora".into(),
+            }],
+            anunciada,
+        )
+        .await;
+
+        let (s, cuerpo) = json(&app, pedir("GET", "/api/demostracion", None)).await;
+        assert_eq!(s, StatusCode::OK);
+        let correo = cuerpo[0]["correo"].as_str().unwrap().to_string();
+        let clave = cuerpo[0]["clave"].as_str().unwrap().to_string();
+        assert_eq!(cuerpo[0]["nombre"], "Administradora");
+
+        let (s, _) = json(
+            &app,
+            pedir("POST", "/api/sesion", Some(&format!(r#"{{"email":"{correo}","clave":"{clave}"}}"#))),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "la cuenta que se anuncia no pudo entrar");
     }
 }
 

@@ -42,6 +42,19 @@ export interface Cuenta {
   segundo_factor: boolean;
 }
 
+/**
+ * Una cuenta que la demostración pública anuncia, con su contraseña en claro.
+ *
+ * Solo existe donde el despliegue escribió `SIGER_DEMO_CUENTAS`. En una
+ * instalación de cliente el servidor devuelve una lista vacía y esto no llega a
+ * dibujarse nunca.
+ */
+export interface CuentaDemo {
+  correo: string;
+  clave: string;
+  nombre: string;
+}
+
 /** Qué tiene esta cuenta en materia de segundo factor (#212). */
 export interface EstadoFactor {
   activo: boolean;
@@ -318,6 +331,16 @@ export class Api {
 
   yo() {
     return this.get<Actor>('/api/yo');
+  }
+
+  /**
+   * Qué cuentas anuncia este servidor. **Sin sesión**: lo pide la pantalla de
+   * acceso, donde por definición todavía no hay ninguna.
+   *
+   * Devuelve `[]` en cualquier instalación que no sea la demostración pública.
+   */
+  cuentasDeDemostracion() {
+    return this.get<CuentaDemo[]>('/api/demostracion');
   }
 
   // --- Administración de cuentas ---------------------------------------------

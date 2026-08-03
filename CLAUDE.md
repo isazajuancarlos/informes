@@ -154,6 +154,19 @@ darse por buena), `generar-secreto`, `generar-claves-firma`, `hashear` (Argon2,
 mismos parámetros que el acceso). Todos leen del entorno **dónde** está la base:
 respaldan lo que el servicio usa de verdad, no lo que alguien creía.
 
+**La demostración pública anuncia sus credenciales, y ninguna otra instalación
+puede hacerlo.** `GET /api/demostracion` (sin sesión, porque lo pide la pantalla
+de acceso) devuelve lo que haya en `SIGER_DEMO_CUENTAS` —`correo:clave:nombre`,
+separadas por `;`— y **una lista vacía en todo lo demás**. No existe un
+`SIGER_DEMO=1`: dentro del binario no hay ninguna lista de cuentas «conocidas»
+que alguien pueda encender, lo que se publica hay que escribirlo entero en el
+entorno. Un valor a medias **no apaga el cartel en silencio**, impide arrancar
+(directiva 20: un cartel mudo dejaría la demostración sin forma de entrar y
+nadie se enteraría). En el VPS lo escribe `desplegar-demo.sh` desde
+`sembrar_demo.py --anunciar`, que es la misma fuente que siembra las cuentas —
+dos listas separadas acabarían anunciando una contraseña que ya no vale—, y
+`humo.sh` lee lo anunciado y **entra con eso**.
+
 Configuración por entorno en `config.rs`; **el binario no arranca si falta un
 secreto** (no hay defectos peligrosos). Plantilla en `.env.example`. Las
 opciones se documentan como **cascadas con tabla** en el doc-comment de su

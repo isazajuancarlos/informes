@@ -40,12 +40,18 @@ comprobar() {  # comprobar «qué se esperaba» «esperado» «obtenido»
 echo "==> arrancando $BIN en el puerto $PUERTO"
 SECRETO="$("$BIN" generar-secreto)" || { echo "generar-secreto falló" >&2; exit 1; }
 
+# La cuenta con la que se prueba todo. Se declara aquí arriba porque su
+# contraseña viaja también en `SIGER_DEMO_CUENTAS`: lo que se comprueba abajo es
+# que lo ANUNCIADO en la pantalla de acceso sirve de verdad para entrar.
+CLAVE_HUMO='clave-de-la-prueba-de-humo'
+
 DATABASE_URL="sqlite://$SALA/humo.db?mode=rwc" \
 SIGER_SECRETO_SESION="$SECRETO" \
 PORT="$PUERTO" \
 PAIS_ISO="${PAIS_ISO:-CO}" \
 SIGER_DIR_ENTREGAS="$SALA/entregas" \
 SIGER_CLAVE_REPOSO="frase-de-reposo-solo-para-esta-prueba-de-humo" \
+SIGER_DEMO_CUENTAS="humo@example.com:$CLAVE_HUMO:Humo de prueba" \
   "$BIN" > "$SALA/servidor.log" 2>&1 &
 PID=$!
 trap 'kill $PID 2>/dev/null; rm -rf "$SALA"' EXIT
@@ -117,7 +123,6 @@ comprobar "un /api/ inexistente es 404, no index" 404 "$(codigo api/no-existe)"
 # es un SVG por HTTP. Hace falta una cuenta de verdad, así que se crea aquí con el
 # MISMO `hashear` del producto —un hash de otra herramienta deja a alguien fuera— y
 # se entra con ella.
-CLAVE_HUMO='clave-de-la-prueba-de-humo'
 HASH="$("$BIN" hashear "$CLAVE_HUMO")"
 python3 - "$SALA/humo.db" "$HASH" <<'PY' 2>/dev/null
 import sqlite3, sys
@@ -132,6 +137,21 @@ GALLETAS="$SALA/galletas.txt"
 comprobar "la cuenta de prueba entra" 200 \
   "$(codigo api/sesion /dev/null -X POST -c "$GALLETAS" -H 'Content-Type: application/json' \
       -d "{\"email\":\"humo@example.com\",\"clave\":\"$CLAVE_HUMO\"}")"
+
+# El cartel de la demostración pública. Lo que importa no es que el extremo
+# conteste, sino que **lo que anuncia ENTRE**: un cartel con una contraseña que
+# no funciona es peor que no tener cartel, porque el visitante concluye que el
+# producto está roto y se va sin escribir. Así que aquí no se comprueba contra la
+# variable que se puso arriba —eso sería comprobar el códec—: se lee lo que el
+# binario publica y se hace login con ESO.
+curl -sS "$U/api/demostracion" -o "$SALA/demo.json"
+LEE_DEMO='import json,sys; d=json.load(open(sys.argv[1])); print(d[0][sys.argv[2]] if d else "")'
+D_CORREO="$(python3 -c "$LEE_DEMO" "$SALA/demo.json" correo 2>/dev/null)"
+D_CLAVE="$(python3 -c "$LEE_DEMO" "$SALA/demo.json" clave 2>/dev/null)"
+comprobar "la demostración anuncia una cuenta"    "humo@example.com" "$D_CORREO"
+comprobar "y con lo anunciado SE ENTRA"           200 \
+  "$(codigo api/sesion /dev/null -X POST -H 'Content-Type: application/json' \
+      -d "{\"email\":\"$D_CORREO\",\"clave\":\"$D_CLAVE\"}")"
 curl -sS -b "$GALLETAS" -X POST "$U/api/2fa/iniciar" -o "$SALA/enrolamiento.json"
 QR="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["qr_svg"])' "$SALA/enrolamiento.json" 2>/dev/null)"
 comprobar "el enrolamiento devuelve un SVG"  0 "$(grep -q '^<svg ' <<<"$QR" && echo 0 || echo 1)"
