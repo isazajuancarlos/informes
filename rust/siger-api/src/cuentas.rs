@@ -269,42 +269,50 @@ fn trabajo(p: &argon2::Params) -> u64 {
 
 /// ¿Este hash está por debajo de lo que hoy produciría [`hashear`]?
 ///
-/// La regla, en una frase: **nunca se reescribe un hash que cueste MÁS trabajo que
-/// el de hoy; se reescribe si cuesta menos, o si cuesta lo mismo y además es de
-/// una variante o de una versión anticuada.**
+/// La regla, en una frase: **solo se reescribe un hash al que el de hoy DOMINA —le
+/// gana o iguala en memoria Y en trabajo total— y solo si hay algo que ganar.**
+///
+/// Dos ejes, no uno, y los dos tienen que estar a favor:
 ///
 /// | hash guardado | ¿se reescribe? | por qué |
 /// |---|---|---|
-/// | menos trabajo que hoy | **sí** | es exactamente para lo que existe esto |
-/// | el mismo trabajo, pero `argon2i`/`argon2d` o `v=0x10` | **sí** | mismo coste y mejor variante: puro beneficio |
-/// | el mismo trabajo, `Argon2id` al día | no | no hay nada que ganar |
-/// | **más** trabajo que hoy | **NO, jamás** | ver abajo |
+/// | menos memoria y menos o igual trabajo | **sí** | es para lo que existe esto |
+/// | igual memoria e igual trabajo, pero `argon2i`/`argon2d` o `v=0x10` | **sí** | no se pierde nada y se gana la variante |
+/// | igual en todo y `Argon2id` al día | no | no hay nada que ganar |
+/// | **más memoria** que hoy | **NO, jamás** | aunque su trabajo total sea menor |
+/// | **más trabajo** que hoy | **NO, jamás** | aunque su memoria sea menor |
 ///
-/// # Por qué no basta comparar parámetro a parámetro
+/// # Dos rondas de auditoría, y el fallo cambió de lado las dos veces
 ///
-/// La primera versión de esta función preguntaba cinco cosas por separado —
-/// algoritmo, versión, `m`, `t`, `p`— y las unía con un OR. Con eso, un hash
-/// **más fuerte en conjunto pero más flojo en un eje** salía «por debajo» y se
-/// reescribía con los parámetros de hoy, destruyéndolo sin vuelta atrás:
+/// **Primera versión**: cinco preguntas —algoritmo, versión, `m`, `t`, `p`— unidas
+/// por un OR. Un hash más fuerte en conjunto pero más flojo en un eje salía «por
+/// debajo» y se destruía: `Argon2id v19 m=2GiB t=1 p=4` —la **primera opción
+/// recomendada por el RFC 9106**— tiene `t=1 < 2`, así que se rebajaba a
+/// `m=19MiB t=2`, **53 veces menos trabajo**.
 ///
-/// - `Argon2id v19 m=2GiB t=1 p=4` —que es la **primera opción recomendada por el
-///   RFC 9106**— tiene `t=1 < 2`, así que se rebajaba a `m=19MiB t=2`: **53 veces
-///   menos trabajo**;
-/// - `Argon2i v19 m=1GiB t=4 p=8` perdía 107 veces el trabajo a cambio de mejorar
-///   la variante, que es un trato pésimo.
+/// **Segunda versión**: una sola pregunta, `m × t`. Arreglaba lo anterior y abría
+/// lo contrario, porque **el producto no pone suelo a la memoria**: un
+/// `Argon2id m=8 t=4864` da exactamente el mismo `m × t` que hoy (38 912), así que
+/// se certificaba «al día» — y 8 KiB **caben en la caché L1**. Era una credencial
+/// de calidad PBKDF2 declarada conforme a una política de 19 MiB, y lo peor es que
+/// la primera versión sí la cazaba: fue una regresión.
 ///
-/// Y no se notaba: la cuenta seguía entrando y el log decía «puesto al día». Lo
-/// cazó la auditoría de este mismo cambio (2026-08-03). Es la directiva 23 en
-/// estado puro — el fallo estaba en la REGLA, escrita como cinco preguntas cuando
-/// era una, y la prueba que decía vigilarla usaba un caso más fuerte en TODOS los
-/// ejes, así que nunca ejercía el mixto.
+/// La lección, que es la que vale más que las dos correcciones: **un criterio
+/// único sobre magnitudes que no son intercambiables no es «simple», es ciego.**
+/// El trabajo total y la dureza de memoria son cosas distintas —lo que hace de
+/// Argon2 algo mejor que PBKDF2 es la segunda, y la capacidad de una granja de
+/// craqueo escala con `1/m`—, así que cambiar `m` por `t` a producto constante es
+/// seguro hacia arriba y ruinoso hacia abajo. De ahí la **dominancia**: hoy tiene
+/// que ganar o igualar en los dos ejes antes de tocar nada.
 ///
-/// # Y por qué la variante sola no justifica reescribir
+/// # Lo que queda sin resolver, y se dice en vez de certificarse
 ///
-/// `Argon2id` es preferible a `argon2i`, pero esa preferencia vale bastante menos
-/// que dos órdenes de magnitud de coste. Un cambio de variante solo sale gratis
-/// cuando el trabajo no baja; si baja, se deja el hash como está y quien quiera
-/// mejorar la variante de todo el padrón tiene el camino honesto: **subir
+/// Un hash con **menos memoria pero más trabajo total** —`m=4096 t=10`, típico de
+/// un sistema afinado a 100 ms en una máquina con poca RAM— no lo domina hoy ni
+/// domina a hoy. No hay elección silenciosa honesta: reescribirlo pierde memoria y
+/// dejarlo lo deja por debajo de la política. Así que **no se reescribe y se
+/// anota**, con su id, en vez de dar por bueno lo que no lo está (directiva 20).
+/// El camino honesto para esas cuentas es el mismo que para la variante: **subir
 /// `Params::DEFAULT`**, no rebajar a los demás para igualarlos.
 ///
 /// Devuelve `false` ante un hash que no se puede leer o cuyos parámetros no se
@@ -318,19 +326,31 @@ fn por_debajo_de_la_politica(h: &PasswordHash) -> bool {
     let Ok(p) = Params::try_from(h) else { return false };
     let hoy = Params::DEFAULT;
 
-    match trabajo(&p).cmp(&trabajo(&hoy)) {
-        // Cuesta menos: para esto existe la función.
-        std::cmp::Ordering::Less => true,
-        // Cuesta MÁS: no se toca, y da igual la variante. Reescribirlo sería
-        // empeorar una cuenta para que encaje en una tabla.
-        std::cmp::Ordering::Greater => false,
-        // El mismo trabajo: solo se reescribe si hay algo que ganar sin perder
-        // nada, y eso es la variante o la versión. Una versión ausente en el PHC
-        // la lee el verificador como la actual, así que no cuenta como anticuada.
-        std::cmp::Ordering::Equal => {
-            alg != Algorithm::Argon2id || h.version.is_some_and(|v| v < Version::default() as u32)
-        }
+    // Hoy tiene que ganar o igualar en LOS DOS ejes. Si el guardado tiene más
+    // memoria, o más trabajo total, se deja en paz — sin mirar la variante: la
+    // preferencia por `Argon2id` no vale ni un factor de dos de memoria.
+    let domina = hoy.m_cost() >= p.m_cost() && trabajo(&hoy) >= trabajo(&p);
+    if !domina {
+        return false;
     }
+    // Y tiene que haber algo que ganar, o esto reescribiría el hash de todo el
+    // mundo en cada acceso para dejarlo igual.
+    hoy.m_cost() > p.m_cost()
+        || trabajo(&hoy) > trabajo(&p)
+        || alg != Algorithm::Argon2id
+        || h.version.is_some_and(|v| v < Version::default() as u32)
+}
+
+/// ¿Está por debajo de la política en MEMORIA, sin que hoy lo domine?
+///
+/// Es el caso que [`por_debajo_de_la_politica`] no puede resolver: menos memoria
+/// que hoy pero más trabajo total, así que ni reescribir ni dejarlo es
+/// gratis. No se decide en silencio — se anota, para que exista en algún sitio
+/// distinto de la cabeza de quien lo leyó (directiva 20).
+fn flojo_en_memoria_pero_no_dominado(h: &PasswordHash) -> bool {
+    let Ok(p) = argon2::Params::try_from(h) else { return false };
+    let hoy = argon2::Params::DEFAULT;
+    p.m_cost() < hoy.m_cost() && trabajo(&p) > trabajo(&hoy)
 }
 
 /// Vuelve a escribir el hash de quien acaba de acertar su contraseña, si el que
@@ -380,6 +400,15 @@ pub(crate) async fn renovar_hash_si_hace_falta(
 ) {
     let Ok(analizado) = PasswordHash::new(hash_viejo) else { return };
     if !por_debajo_de_la_politica(&analizado) {
+        if flojo_en_memoria_pero_no_dominado(&analizado) {
+            // Ni se reescribe ni se da por bueno: se dice. Subir
+            // `Params::DEFAULT.m_cost` es lo que pondría estas cuentas al día.
+            tracing::warn!(
+                "el hash del usuario {id} usa menos memoria que la política actual, pero \
+                 más trabajo total: no se reescribe para no rebajarle la dureza de memoria. \
+                 Se pone al día subiendo Params::DEFAULT"
+            );
+        }
         return;
     }
 
@@ -1419,15 +1448,86 @@ mod pruebas {
             );
         }
 
-        // Y al revés: mismo trabajo que hoy pero variante o versión anticuadas SÍ se
+        // Y al revés: IGUAL en los dos ejes pero variante o versión anticuadas SÍ se
         // reescribe, porque no se pierde nada. Es lo que impide que la corrección de
         // arriba se pase de frenada y deje de subir lo que sí conviene subir.
-        let mismo_trabajo_peor_variante =
+        let mismo_todo_peor_variante =
             phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2i);
         assert!(
-            por_debajo_de_la_politica(&PasswordHash::new(&mismo_trabajo_peor_variante).unwrap()),
-            "un argon2i del mismo coste debería subirse a argon2id: es gratis"
+            por_debajo_de_la_politica(&PasswordHash::new(&mismo_todo_peor_variante).unwrap()),
+            "un argon2i con los mismos parámetros debería subirse a argon2id: es gratis"
         );
+        // La versión, que es la mitad gemela de la anterior. Sin este caso se puede
+        // borrar la comprobación de `v=` sin que nada se caiga — lo comprobó la
+        // segunda auditoría, y por eso está aquí.
+        let mismo_todo_version_vieja = phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id)
+            .replace("$v=19$", "$v=16$");
+        assert!(
+            por_debajo_de_la_politica(&PasswordHash::new(&mismo_todo_version_vieja).unwrap()),
+            "un v=16 con los mismos parámetros debería subirse a v=19: es gratis"
+        );
+
+        // EL SUELO DE MEMORIA. Estos tienen el MISMO `m × t` que hoy —o más— y una
+        // memoria irrisoria: si la regla mira solo el producto, los certifica «al
+        // día» y esa cuenta se queda con 8 KiB de dureza para siempre. 8 KiB caben
+        // en la caché L1: es PBKDF2 con otro nombre.
+        for (m, t) in [(8u32, 4864u32), (16, 2432), (64, 608), (1024, 38), (9728, 4)] {
+            let h = phc_con(m, t, 1, Algorithm::Argon2id);
+            let leido = PasswordHash::new(&h).unwrap();
+            let suyo = argon2::Params::try_from(&leido).unwrap();
+            assert!(
+                trabajo(&suyo) >= trabajo(&hoy),
+                "el montaje no iguala el trabajo de hoy: m={m} t={t}"
+            );
+            assert!(
+                por_debajo_de_la_politica(&leido),
+                "m={m} t={t} tiene el mismo trabajo que hoy pero {}× menos memoria, \
+                 y se estaba dando por bueno",
+                hoy.m_cost() / m
+            );
+        }
+
+        // Y el que NO se puede resolver: menos memoria, más trabajo. Ni se reescribe
+        // —perdería dureza de memoria— ni se certifica: se anota.
+        let ni_uno_ni_otro = phc_con(4096, 10, 1, Algorithm::Argon2id);
+        let leido = PasswordHash::new(&ni_uno_ni_otro).unwrap();
+        assert!(!por_debajo_de_la_politica(&leido), "se iba a rebajar la memoria de m=4096 t=10");
+        assert!(
+            flojo_en_memoria_pero_no_dominado(&leido),
+            "y tampoco se estaba anotando: quedaría certificado en silencio"
+        );
+        // La mitad que discrimina: lo que está al día no se anota, o el aviso sonaría
+        // en cada acceso de todo el mundo y a la tercera nadie lo miraría.
+        assert!(!flojo_en_memoria_pero_no_dominado(&PasswordHash::new(&al_dia).unwrap()));
+
+        // `p=` NO entra en el trabajo: reparte el mismo, no lo aumenta. El caso está
+        // elegido para que meter `p` en el producto CAMBIE la decisión — la mitad de
+        // memoria que hoy y el mismo trabajo real (9728 × 4 = 38912), pero con `p=2`
+        // el producto inflado daría 77 824 y esto se daría por bueno. Un caso con la
+        // misma decisión en los dos casos no probaría nada.
+        let reparto_infla_el_producto = phc_con(9728, 4, 2, Algorithm::Argon2id);
+        assert!(
+            por_debajo_de_la_politica(&PasswordHash::new(&reparto_infla_el_producto).unwrap()),
+            "`p=` se estaba contando como trabajo, y con eso un hash con la mitad de \
+             memoria pasaba por «al día»"
+        );
+
+        // EL TECHO DE MEMORIA, que es la pareja del suelo. Un hash con MÁS memoria que
+        // hoy no se toca aunque su trabajo total sea menor: reescribirlo cambiaría 38
+        // MiB por 19 MiB a trabajo casi idéntico, o sea pura pérdida. Sin estos casos
+        // la dominancia se puede reducir a mirar solo el trabajo y nada se cae.
+        for (m, t, alg, que_es) in [
+            (38911u32, 1u32, Algorithm::Argon2id, "menos trabajo, pero el doble de memoria"),
+            (38912, 1, Algorithm::Argon2i, "igual trabajo, doble memoria, variante vieja"),
+        ] {
+            let h = phc_con(m, t, 1, alg);
+            let leido = PasswordHash::new(&h).unwrap();
+            assert!(
+                !por_debajo_de_la_politica(&leido),
+                "«{que_es}» (m={m} t={t}): se iba a rebajar de {m} KiB a {} KiB de memoria",
+                hoy.m_cost()
+            );
+        }
 
         // Reparto distinto, mismo trabajo y misma variante: no hay nada que ganar.
         if hoy.p_cost() < 4 {
@@ -1441,10 +1541,13 @@ mod pruebas {
         // Un hash que no se puede leer NO se declara flojo: no se sabe qué tiene,
         // y suponerlo significaría reescribir el hash de alguien sobre nada.
         assert!(PasswordHash::new("esto-no-es-un-phc").is_err());
-        let bcrypt = "$2b$12$KIXQJHFy8Zx0Zx0Zx0Zx0uGZ8Zx0Zx0Zx0Zx0Zx0Zx0Zx0Zx0Zx0";
-        if let Ok(h) = PasswordHash::new(bcrypt) {
-            assert!(!por_debajo_de_la_politica(&h), "un hash ajeno a Argon2 no se toca aquí");
-        }
+        // Un PHC que SÍ parsea y NO es Argon2. Antes aquí había un bcrypt dentro de
+        // un `if let Ok(...)`, y era código muerto: `PasswordHash::new` lo rechaza
+        // por la sal, así que el cuerpo no se ejecutaba nunca y la afirmación no se
+        // comprobaba. Lo señaló la segunda auditoría.
+        let ajeno = PasswordHash::new("$scrypt$ln=16,r=8,p=1$c2FsZGVsYXNwcnVlYmFz$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
+            .expect("este PHC parsea, aunque no sea Argon2");
+        assert!(!por_debajo_de_la_politica(&ajeno), "un hash ajeno a Argon2 no se toca aquí");
     }
 
     #[tokio::test]
