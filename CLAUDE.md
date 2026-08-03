@@ -231,11 +231,29 @@ por un banco de mutación, ver abajo):
 
 6. **El hash se pone al día en el acierto, y eso NO sube `token_version`.**
    `renovar_hash_si_hace_falta` reescribe el hash de quien acaba de entrar si el
-   guardado se quedó por debajo de lo que hoy produce `hashear` — algoritmo,
-   versión, `m=`, `t=` o `p=`—, y **solo sube, nunca baja**: un hash más fuerte
-   que el actual se deja en paz. Es el único momento en que se puede hacer,
-   porque reescribir un hash exige la contraseña en claro. Tres cosas que se
-   rompen solas si alguien las "simplifica":
+   guardado se quedó por debajo de la política de hoy. La regla es **una sola
+   frase, y tiene que seguir siéndolo**: *nunca se reescribe un hash que cueste
+   MÁS trabajo (`m × t`) que el de hoy; se reescribe si cuesta menos, o si cuesta
+   lo mismo y además es de una variante o versión anticuada.* Es el único momento
+   en que se puede hacer, porque reescribir un hash exige la contraseña en claro.
+
+   **La primera versión preguntaba cinco cosas por separado —algoritmo, versión,
+   `m`, `t`, `p`— unidas por un OR, y eso DESTRUÍA hashes buenos**: un
+   `Argon2id m=2GiB t=1 p=4` —la primera opción recomendada por el RFC 9106— tiene
+   `t=1 < 2`, así que salía «por debajo» y se rebajaba a `m=19MiB t=2`: **53 veces
+   menos trabajo, sin vuelta atrás y sin que nada se notara**, porque la cuenta
+   seguía entrando y el log decía «puesto al día». Lo cazó la auditoría del propio
+   cambio (2026-08-03) y es la directiva 23 en estado puro: el fallo estaba en la
+   REGLA, y la prueba que decía vigilarla usaba un caso más fuerte en TODOS los
+   ejes, así que nunca ejercía el mixto. Si alguien vuelve a tocar esto: el caso de
+   prueba que importa es **más fuerte en conjunto, más flojo en un eje**. `p=` no
+   entra en la cuenta —reparte el mismo trabajo, no lo aumenta— y la variante sola
+   no justifica reescribir: `Argon2id` es mejor que `argon2i`, pero no vale dos
+   órdenes de magnitud de coste. Quien quiera mejorar la variante de todo el padrón
+   tiene el camino honesto: **subir `Params::DEFAULT`**, no rebajar a los demás
+   para igualarlos.
+
+   Tres cosas más que se rompen solas si alguien las "simplifica":
    - **el `UPDATE` va condicionado al hash viejo** (`AND clave_hash = ?`). Entre
      verificar y reescribir pasan un turno de semáforo y un Argon2id, y en ese
      rato la persona puede cambiar su contraseña desde otra pestaña: sin la
@@ -246,10 +264,15 @@ por un banco de mutación, ver abajo):
      misma contraseña escrita de otra forma. Subirlo echaría a la persona de sus
      otras sesiones al entrar, sin que nada se lo explique — y contradiría la
      regla 2 solo en apariencia;
-   - **no puede impedir entrar**: el acierto ya ocurrió. Sin turno de cripto, con
-     el Argon2 fallando o con el `UPDATE` a cero filas, se anota en el log y se
-     sigue (modo degradado, #71). Por eso no devuelve `Result`: un `?` convertiría
-     una mejora silenciosa en un fallo de acceso.
+   - **no puede impedir entrar NI hacer esperar**: el acierto ya ocurrió. Con el
+     Argon2 fallando o el `UPDATE` a cero filas, se anota y se sigue (modo
+     degradado, #71). Y el turno de cripto se pide con `try_acquire`, **sin
+     esperar** — es el único sitio del sistema que lo hace así: `con_turno` aguarda
+     30 s porque en sus otros usos no hay respuesta que dar sin el Argon2, pero
+     aquí la sesión ya está ganada y esperar dejaría medio minuto en blanco a quien
+     ya tiene derecho a entrar, justo cuando hay más carga. Si no hay sitio, no se
+     hace y el próximo acceso lo reintenta. Por eso no devuelve `Result`: un `?`
+     convertiría una mejora silenciosa en un fallo de acceso.
 
    El caso que lo destapó fue el volcado (#231), que acepta cualquier Argon2
    válido, pero **el que de verdad importa es el general**: el día que se suban
