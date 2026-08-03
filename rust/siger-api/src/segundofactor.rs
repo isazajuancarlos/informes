@@ -233,10 +233,18 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
 /// con el teléfono del ladrón.
 ///
 /// La contraseña se comprueba **después** de los dos conflictos y **antes** del
-/// código: los conflictos son gratis y no dicen nada que la propia sesión no pueda
-/// ver ya en `GET /api/2fa`, mientras que verificar la contraseña cuesta un
-/// Argon2id de 64 MiB con turno de semáforo. No se paga por una petición que iba a
+/// código, porque los conflictos son gratis y verificar la contraseña cuesta un
+/// Argon2id de 64 MiB con turno de semáforo: no se paga por una petición que iba a
 /// ser rechazada de todos modos.
+///
+/// Y no adelantan nada que valga a quien ya tiene la sesión. El primero —«ya
+/// estaba activo»— es el mismo bit que `GET /api/2fa` publica en `activo`. El
+/// segundo —«no hay enrolamiento en curso»— **sí** dice algo que ese extremo no
+/// dice: que hay un secreto sin confirmar en la fila. Pero quien tenga la sesión
+/// saca más llamando a `iniciar`, que tampoco pide contraseña y devuelve el secreto
+/// entero; así que ese bit no le añade nada. Se anota la diferencia porque una
+/// frase redonda de más —«no dicen NADA»— es la que mañana sostiene un veredicto
+/// que no le corresponde.
 pub async fn activar(
     State(e): State<Estado>,
     actor: Actor,
