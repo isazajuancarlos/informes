@@ -201,7 +201,7 @@ activos, porque lo consume el selector de partes. La administración necesita
 también los desactivados —si no, reactivar a alguien exigiría `sqlite3`— y el
 rol. Dos vocabularios sobre una fila; el valor lo fija quien ya lee.
 
-Cinco reglas que no se pueden relajar sin romper algo (las siete están cubiertas
+Seis reglas que no se pueden relajar sin romper algo (las siete están cubiertas
 por un banco de mutación, ver abajo):
 
 1. **Solo `Admin`.** `Supervisor` NO, aunque su alcance también sea `Todas`: eso
@@ -229,8 +229,44 @@ por un banco de mutación, ver abajo):
    restablecer la contraseña de cualquiera. Lo que faltaba era poder hacerlo con
    su línea en la bitácora en vez de con un cliente de SQLite.
 
+6. **El hash se pone al día en el acierto, y eso NO sube `token_version`.**
+   `renovar_hash_si_hace_falta` reescribe el hash de quien acaba de entrar si el
+   guardado se quedó por debajo de lo que hoy produce `hashear` — algoritmo,
+   versión, `m=`, `t=` o `p=`—, y **solo sube, nunca baja**: un hash más fuerte
+   que el actual se deja en paz. Es el único momento en que se puede hacer,
+   porque reescribir un hash exige la contraseña en claro. Tres cosas que se
+   rompen solas si alguien las "simplifica":
+   - **el `UPDATE` va condicionado al hash viejo** (`AND clave_hash = ?`). Entre
+     verificar y reescribir pasan un turno de semáforo y un Argon2id, y en ese
+     rato la persona puede cambiar su contraseña desde otra pestaña: sin la
+     condición se escribiría el hash de la contraseña VIEJA encima de la nueva, la
+     nueva dejaría de servir y la vieja volvería a valer. Mismo patrón que el
+     contador del TOTP y `usado_en IS NULL`;
+   - **no toca `token_version`**, porque no es un cambio de contraseña sino la
+     misma contraseña escrita de otra forma. Subirlo echaría a la persona de sus
+     otras sesiones al entrar, sin que nada se lo explique — y contradiría la
+     regla 2 solo en apariencia;
+   - **no puede impedir entrar**: el acierto ya ocurrió. Sin turno de cripto, con
+     el Argon2 fallando o con el `UPDATE` a cero filas, se anota en el log y se
+     sigue (modo degradado, #71). Por eso no devuelve `Result`: un `?` convertiría
+     una mejora silenciosa en un fallo de acceso.
+
+   El caso que lo destapó fue el volcado (#231), que acepta cualquier Argon2
+   válido, pero **el que de verdad importa es el general**: el día que se suban
+   los parámetros del KDF, esto es lo único que pone al día las cuentas que ya
+   existían — sin él, subir la política solo protegería a quien se dé de alta
+   después.
+
 El hash sale del **mismo** Argon2 que verifica el acceso, con turno del semáforo
 de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo.
+
+**Cuidado con las dos cifras de memoria, que no son la misma** (corregido el
+2026-08-03, y estaba mal en siete comentarios): el Argon2 de **contraseñas**
+—login, alta, `clave_correcta`, los códigos de recuperación— es
+`Params::DEFAULT`, o sea **m=19456 (19 MiB), t=2, p=1, ~35 ms medidos en
+release**. Los **64 MiB** son otra cosa: el Argon2id de `guaca::reposo`, que
+descifra el archivo de una entrega o el secreto TOTP. Quien dimensione el
+semáforo de cripto con 64 MiB para el login se equivoca por más de tres veces.
 
 ## La bitácora (`auditoria`, escrita por `rutas::auditar`)
 
@@ -396,7 +432,7 @@ Siete cosas que se rompen solas si alguien las "simplifica":
    la primera se cumple igual de bien con el teléfono del ladrón. El orden es
    conflictos → contraseña → código: los conflictos son gratis y no dicen nada
    que la propia sesión no vea ya en `GET /api/2fa`, y así no se paga un Argon2id
-   de 64 MiB por una petición que iba a ser rechazada igual.
+   de 19 MiB por una petición que iba a ser rechazada igual.
 5. **Sin `SIGER_CLAVE_REPOSO` no se puede enrolar, y se dice.** El secreto se
    guarda cifrado con `guaca::reposo`; en claro, quien copie el archivo genera
    los códigos igual que su dueño. No se guarda en claro «mientras tanto». Esto
