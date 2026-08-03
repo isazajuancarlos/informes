@@ -424,6 +424,20 @@ async fn abrir_sesion(
     }
     let id = id.expect("`entra` exige que haya usuario");
 
+    // ESTE es el único momento en que el sistema tiene la contraseña en claro y
+    // sabe que es la buena, así que es el único en que se puede reescribir su hash
+    // si el guardado se quedó por debajo de la política de hoy. Va ANTES de la
+    // bifurcación del segundo factor porque la contraseña ya demostró ser correcta
+    // en los dos caminos; ponerlo en uno solo dejaría sin poner al día justo a las
+    // cuentas mejor protegidas.
+    //
+    // No devuelve nada y no puede fallar hacia arriba: la sesión se abre igual
+    // (ver `renovar_hash_si_hace_falta`). Y no abre ninguna rendija de cronómetro
+    // aunque cueste un Argon2 más: solo ocurre tras un ACIERTO, y un acierto ya
+    // dice que la cuenta existe — el que entra lo sabe porque entra.
+    let hash_guardado = fila.expect("`entra` exige que haya usuario").1;
+    crate::cuentas::renovar_hash_si_hace_falta(&e, id, cred.clave.clone(), &hash_guardado).await;
+
     // Con segundo factor, la contraseña correcta **no abre nada**: emite el token
     // pendiente, que solo sirve para `/api/2fa/verificar` y dura cinco minutos.
     //

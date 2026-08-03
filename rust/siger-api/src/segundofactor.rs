@@ -234,7 +234,7 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
 ///
 /// La contraseña se comprueba **después** de los dos conflictos y **antes** del
 /// código, porque los conflictos son gratis y verificar la contraseña cuesta un
-/// Argon2id de 64 MiB con turno de semáforo: no se paga por una petición que iba a
+/// Argon2id de 19 MiB con turno de semáforo: no se paga por una petición que iba a
 /// ser rechazada de todos modos.
 ///
 /// Y no adelantan nada que valga a quien ya tiene la sesión. El primero —«ya
@@ -366,7 +366,7 @@ pub async fn renovar_codigos(
 
 /// El Argon2 de cada código, FUERA de la transacción.
 ///
-/// Diez hashes son diez veces 64 MiB con su turno de semáforo: hacerlos con la
+/// Diez hashes son diez veces 19 MiB con su turno de semáforo: hacerlos con la
 /// transacción abierta la mantiene viva varios segundos y bloquea a los demás
 /// escritores de SQLite, que es de un solo escritor.
 async fn hashear_codigos(e: &Estado, codigos: &[String]) -> Result<Vec<String>, Error> {
@@ -762,7 +762,8 @@ mod pruebas {
     ///
     /// No es un atajo cosmético: `gastar_codigo_recuperacion` compara **todos**
     /// los vigentes sin salir en el primer acierto, así que cada código erróneo
-    /// paga once Argon2id de 64 MiB —uno del secreto y diez de los códigos— y una
+    /// paga once Argon2id —64 MiB el del secreto, que va por `guaca::reposo`, y
+    /// 19 MiB cada uno de los diez códigos— y una
     /// prueba de seis intentos se va a un minuto. Las pruebas del FRENO no
     /// afirman nada sobre la recuperación; las que sí lo hacen no llaman a esto.
     async fn sin_codigos_de_recuperacion(e: &Estado) {

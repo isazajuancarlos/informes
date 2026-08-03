@@ -254,6 +254,178 @@ pub(crate) async fn clave_correcta(e: &Estado, hash_texto: String, clave: String
     .await
 }
 
+// --- El hash se pone al día cuando su dueño acierta ---------------------------
+
+/// El trabajo que cuesta calcular un Argon2: memoria × iteraciones.
+///
+/// `p=` no entra. El paralelismo reparte el MISMO trabajo entre más carriles: no
+/// lo aumenta ni lo reduce, así que meterlo en la cuenta diría que un hash es más
+/// fuerte por estar peor repartido. En `u64` porque `m` va en KiB y `m × t`
+/// desborda `u32` mucho antes de llegar a valores absurdos (m=4 GiB con t=2 ya lo
+/// hace).
+fn trabajo(p: &argon2::Params) -> u64 {
+    p.m_cost() as u64 * p.t_cost() as u64
+}
+
+/// ¿Este hash está por debajo de lo que hoy produciría [`hashear`]?
+///
+/// La regla, en una frase: **nunca se reescribe un hash que cueste MÁS trabajo que
+/// el de hoy; se reescribe si cuesta menos, o si cuesta lo mismo y además es de
+/// una variante o de una versión anticuada.**
+///
+/// | hash guardado | ¿se reescribe? | por qué |
+/// |---|---|---|
+/// | menos trabajo que hoy | **sí** | es exactamente para lo que existe esto |
+/// | el mismo trabajo, pero `argon2i`/`argon2d` o `v=0x10` | **sí** | mismo coste y mejor variante: puro beneficio |
+/// | el mismo trabajo, `Argon2id` al día | no | no hay nada que ganar |
+/// | **más** trabajo que hoy | **NO, jamás** | ver abajo |
+///
+/// # Por qué no basta comparar parámetro a parámetro
+///
+/// La primera versión de esta función preguntaba cinco cosas por separado —
+/// algoritmo, versión, `m`, `t`, `p`— y las unía con un OR. Con eso, un hash
+/// **más fuerte en conjunto pero más flojo en un eje** salía «por debajo» y se
+/// reescribía con los parámetros de hoy, destruyéndolo sin vuelta atrás:
+///
+/// - `Argon2id v19 m=2GiB t=1 p=4` —que es la **primera opción recomendada por el
+///   RFC 9106**— tiene `t=1 < 2`, así que se rebajaba a `m=19MiB t=2`: **53 veces
+///   menos trabajo**;
+/// - `Argon2i v19 m=1GiB t=4 p=8` perdía 107 veces el trabajo a cambio de mejorar
+///   la variante, que es un trato pésimo.
+///
+/// Y no se notaba: la cuenta seguía entrando y el log decía «puesto al día». Lo
+/// cazó la auditoría de este mismo cambio (2026-08-03). Es la directiva 23 en
+/// estado puro — el fallo estaba en la REGLA, escrita como cinco preguntas cuando
+/// era una, y la prueba que decía vigilarla usaba un caso más fuerte en TODOS los
+/// ejes, así que nunca ejercía el mixto.
+///
+/// # Y por qué la variante sola no justifica reescribir
+///
+/// `Argon2id` es preferible a `argon2i`, pero esa preferencia vale bastante menos
+/// que dos órdenes de magnitud de coste. Un cambio de variante solo sale gratis
+/// cuando el trabajo no baja; si baja, se deja el hash como está y quien quiera
+/// mejorar la variante de todo el padrón tiene el camino honesto: **subir
+/// `Params::DEFAULT`**, no rebajar a los demás para igualarlos.
+///
+/// Devuelve `false` ante un hash que no se puede leer o cuyos parámetros no se
+/// entienden: si no se sabe qué tiene, no se afirma que está por debajo
+/// (directiva 20 — la ausencia de dato no se sustituye por una suposición, y aquí
+/// suponer «está mal» significaría reescribir el hash de alguien sobre nada).
+fn por_debajo_de_la_politica(h: &PasswordHash) -> bool {
+    use argon2::{Algorithm, Params, Version};
+
+    let Ok(alg) = Algorithm::try_from(h.algorithm) else { return false };
+    let Ok(p) = Params::try_from(h) else { return false };
+    let hoy = Params::DEFAULT;
+
+    match trabajo(&p).cmp(&trabajo(&hoy)) {
+        // Cuesta menos: para esto existe la función.
+        std::cmp::Ordering::Less => true,
+        // Cuesta MÁS: no se toca, y da igual la variante. Reescribirlo sería
+        // empeorar una cuenta para que encaje en una tabla.
+        std::cmp::Ordering::Greater => false,
+        // El mismo trabajo: solo se reescribe si hay algo que ganar sin perder
+        // nada, y eso es la variante o la versión. Una versión ausente en el PHC
+        // la lee el verificador como la actual, así que no cuenta como anticuada.
+        std::cmp::Ordering::Equal => {
+            alg != Algorithm::Argon2id || h.version.is_some_and(|v| v < Version::default() as u32)
+        }
+    }
+}
+
+/// Vuelve a escribir el hash de quien acaba de acertar su contraseña, si el que
+/// tenía guardado se quedó por debajo de la política de hoy.
+///
+/// # Por qué existe
+///
+/// El sistema anterior lo hacía y al migrar a Rust se perdió sin decirlo. Sin
+/// esto, un hash que entró con un coste bajo lo conserva **para siempre**: la
+/// cuenta sigue entrando, así que nadie se entera nunca. El caso que lo destapó
+/// fue el volcado (#231), que acepta cualquier Argon2 válido — pero el que de
+/// verdad importa es el general: **el día que se suban los parámetros del KDF,
+/// esto es lo único que pone al día las cuentas que ya existían.** Sin él, subir
+/// la política solo protegería a quien se dé de alta después.
+///
+/// Solo puede hacerse aquí, en el acierto: reescribir un hash exige la contraseña
+/// en claro, y este es el único momento en que el sistema la tiene y sabe que es
+/// la buena.
+///
+/// # Tres cosas que se rompen solas si alguien las "simplifica"
+///
+/// 1. **El `UPDATE` va condicionado al hash viejo.** Entre la verificación y esta
+///    escritura pasan un turno de semáforo y un Argon2id completo (19 MiB, ~35 ms
+///    medidos en release), y en ese rato
+///    la persona puede haber cambiado su contraseña desde otra pestaña. Sin el
+///    `AND clave_hash = ?`, esto escribiría el hash de la contraseña VIEJA encima
+///    de la nueva: la nueva dejaría de servir y la vieja volvería a valer. Es el
+///    mismo patrón que el contador del TOTP y que `usado_en IS NULL` en los
+///    códigos de recuperación, y por la misma razón.
+/// 2. **No se toca `token_version`.** La regla 2 de la administración de cuentas
+///    dice que todo cambio de contraseña lo sube, y esto **no es un cambio de
+///    contraseña**: es la misma contraseña escrita de otra forma. Subirlo echaría
+///    a la persona de sus otras sesiones al entrar, sin que nada se lo explique.
+/// 3. **Nada de esto puede impedir entrar NI HACER ESPERAR.** El acierto ya
+///    ocurrió; la sesión se abre igual. Si el Argon2 falla o si el `UPDATE` no
+///    encuentra su fila, se anota en el log y se sigue — modo degradado (#71). Y
+///    el turno de cripto se pide **sin esperar**: con el semáforo lleno esto se
+///    salta en vez de retener medio minuto a quien ya tiene derecho a entrar. Por
+///    eso no devuelve `Result`: no hay nada que el llamante pueda decidir, y
+///    devolverlo invitaría a un `?` que convertiría una mejora silenciosa en un
+///    fallo de acceso.
+pub(crate) async fn renovar_hash_si_hace_falta(
+    e: &Estado,
+    id: i64,
+    clave: String,
+    hash_viejo: &str,
+) {
+    let Ok(analizado) = PasswordHash::new(hash_viejo) else { return };
+    if !por_debajo_de_la_politica(&analizado) {
+        return;
+    }
+
+    // El turno se pide SIN ESPERAR, y esa es la diferencia con todo lo demás que
+    // usa `con_turno`.
+    //
+    // `con_turno` aguarda hasta `ESPERA_CRIPTO` —30 s— porque en sus otros usos no
+    // hay respuesta que dar sin el resultado del Argon2. Aquí sí la hay: la sesión
+    // ya está ganada. Esperar por un turno significaría que quien acertó su
+    // contraseña se queda medio minuto mirando una pantalla en blanco para que
+    // ocurra algo que no ha pedido y que no le cambia nada — y justo en el momento
+    // de más carga, que es cuando el semáforo está lleno. Si no hay sitio, no se
+    // hace: el hash sigue donde estaba y el próximo acceso vuelve a intentarlo.
+    let Ok(permiso) = e.cfg.cripto.clone().try_acquire_owned() else {
+        tracing::info!("sin turno libre de cripto: el hash de {id} se renovará en otro acceso");
+        return;
+    };
+    let hecho = tokio::task::spawn_blocking(move || {
+        let sal = SaltString::generate(&mut OsRng);
+        let r = Argon2::default().hash_password(clave.as_bytes(), &sal).map(|h| h.to_string());
+        drop(permiso); // el turno se libera con la memoria, no antes
+        r
+    })
+    .await;
+    let Ok(Ok(nuevo)) = hecho else {
+        tracing::warn!("no se pudo renovar el hash del usuario {id}; entra igual");
+        return;
+    };
+
+    match sqlx::query("UPDATE usuarios SET clave_hash = ? WHERE id = ? AND clave_hash = ?")
+        .bind(&nuevo)
+        .bind(id)
+        .bind(hash_viejo)
+        .execute(&e.bd)
+        .await
+    {
+        // Cero filas no es un error: significa que la contraseña cambió mientras
+        // esto trabajaba, y entonces lo correcto es NO escribir.
+        Ok(r) if r.rows_affected() == 0 => {
+            tracing::info!("el hash del usuario {id} cambió mientras se renovaba; se deja el nuevo")
+        }
+        Ok(_) => tracing::info!("hash del usuario {id} puesto al día con la política actual"),
+        Err(err) => tracing::warn!("no se pudo guardar el hash renovado de {id}: {err}"),
+    }
+}
+
 // --- Extremos -----------------------------------------------------------------
 
 /// `GET /api/cuentas` — todas, **incluidas las desactivadas**.
@@ -871,8 +1043,9 @@ mod pruebas {
     /// Le pone a Bruno un segundo factor activo con un código de recuperación.
     ///
     /// Se escriben las columnas a mano y no se enrola de verdad: lo que se prueba
-    /// aquí es RETIRARLO, y enrolar cuesta dos Argon2id de 64 MiB —el del secreto
-    /// y el del código— que no afirman nada sobre lo que estas pruebas dicen.
+    /// aquí es RETIRARLO, y enrolar cuesta dos Argon2id —64 MiB el del secreto,
+    /// que va por `guaca::reposo`, y 19 MiB el del código— que no afirman nada sobre
+    /// lo que estas pruebas dicen.
     async fn con_segundo_factor_puesto(e: &crate::rutas::Estado) {
         sqlx::query(
             "UPDATE usuarios SET totp_secreto_cifrado = X'00', \
@@ -1135,5 +1308,255 @@ mod pruebas {
             .await
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    // --- El hash se pone al día cuando su dueño acierta -----------------------
+
+    /// Una CADENA PHC con los parámetros que se le pidan, sin calcular nada.
+    ///
+    /// `por_debajo_de_la_politica` solo LEE la cabecera del hash: no verifica
+    /// ninguna contraseña, así que el digest puede ser cualquiera. Y esa
+    /// diferencia no es cosmética — fabricar de verdad un `m=2GiB` reserva dos
+    /// gigas y llevó esta prueba de 15 a 83 segundos antes de darse cuenta. Para
+    /// los casos que sí necesitan entrar por HTTP está [`hash_con`], que calcula.
+    fn phc_con(m: u32, t: u32, p: u32, alg: argon2::Algorithm) -> String {
+        // Sal y digest de relleno con las longitudes que el parseador exige.
+        format!(
+            "${alg}$v=19$m={m},t={t},p={p}\
+             $c2FsZGVsYXNwcnVlYmFzZGVjdWVudA\
+             $AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+        )
+    }
+
+    /// Un hash de la MISMA contraseña pero con los parámetros que se le pidan.
+    /// CALCULA, así que solo para parámetros baratos y cuando hace falta que la
+    /// contraseña entre de verdad. Para leer parámetros, [`phc_con`].
+    fn hash_con(clave: &str, m: u32, t: u32, p: u32, alg: argon2::Algorithm) -> String {
+        let params = argon2::Params::new(m, t, p, None).expect("parámetros válidos");
+        let a2 = Argon2::new(alg, argon2::Version::V0x13, params);
+        let sal = SaltString::from_b64("c2FsZGVsYXNwcnVlYmFzZGVjdWVudA").unwrap();
+        a2.hash_password(clave.as_bytes(), &sal).unwrap().to_string()
+    }
+
+    /// Los parámetros de un hash guardado, para afirmar sobre ellos.
+    async fn params_de(e: &crate::rutas::Estado, id: i64) -> (String, u32, u32, u32) {
+        let texto: String = sqlx::query_scalar("SELECT clave_hash FROM usuarios WHERE id = ?")
+            .bind(id)
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        let h = PasswordHash::new(&texto).expect("el hash guardado se lee");
+        let p = argon2::Params::try_from(&h).expect("y sus parámetros también");
+        (texto, p.m_cost(), p.t_cost(), p.p_cost())
+    }
+
+    #[test]
+    fn la_politica_solo_sube_y_nunca_baja() {
+        use argon2::{Algorithm, Params};
+        let hoy = Params::DEFAULT;
+
+        // Lo que hoy produce `hashear` no está por debajo de sí mismo.
+        let al_dia = phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id);
+        assert!(!por_debajo_de_la_politica(&PasswordHash::new(&al_dia).unwrap()));
+
+        // Cada parámetro por separado, para que la regla no pase por casualidad
+        // de que los tres bajen a la vez.
+        for (m, t, p) in [
+            (8, hoy.t_cost(), hoy.p_cost()),               // memoria de risa
+            (hoy.m_cost(), 1, hoy.p_cost()),               // una sola iteración
+            (hoy.m_cost(), hoy.t_cost(), 1),               // sin paralelismo, si hoy hay
+        ] {
+            if m == hoy.m_cost() && t == hoy.t_cost() && p == hoy.p_cost() {
+                continue; // ese eje ya está en el mínimo hoy: no dice nada
+            }
+            let flojo = phc_con(m, t, p, Algorithm::Argon2id);
+            assert!(
+                por_debajo_de_la_politica(&PasswordHash::new(&flojo).unwrap()),
+                "m={m} t={t} p={p} debería estar por debajo de m={} t={} p={}",
+                hoy.m_cost(),
+                hoy.t_cost(),
+                hoy.p_cost()
+            );
+        }
+
+        // Otra variante de Argon2 verifica bien, pero no es lo que hoy se emite.
+        let otra = phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2i);
+        assert!(por_debajo_de_la_politica(&PasswordHash::new(&otra).unwrap()));
+
+        // Y la otra mitad, que es la que impide que esto se vuelva una excusa para
+        // reescribir hashes ajenos: MÁS fuerte que hoy se deja en paz.
+        let fuerte = phc_con(hoy.m_cost() * 2, hoy.t_cost() + 1, hoy.p_cost(), Algorithm::Argon2id);
+        assert!(
+            !por_debajo_de_la_politica(&PasswordHash::new(&fuerte).unwrap()),
+            "se estaba rebajando un hash mejor que el actual"
+        );
+
+        // EL EJE MIXTO, que es donde la primera versión de esta regla destruía
+        // hashes buenos: más fuerte en conjunto, más flojo en UN eje. Sin estos
+        // casos la afirmación del nombre no se comprueba — el «más fuerte» de
+        // arriba lo es en todos los ejes a la vez, así que pasaría igual con la
+        // regla rota.
+        for (m, t, p, alg, que_es) in [
+            // La PRIMERA opción recomendada por el RFC 9106: t=1 con memoria enorme.
+            (2 * 1024 * 1024, 1, 4, Algorithm::Argon2id, "RFC 9106, opción 1"),
+            (256 * 1024, 1, 1, Algorithm::Argon2id, "256 MiB con una iteración"),
+            // Variante peor, pero 107 veces más trabajo: cambiarla saldría carísimo.
+            (1024 * 1024, 4, 8, Algorithm::Argon2i, "argon2i con 1 GiB"),
+        ] {
+            let h = phc_con(m, t, p, alg);
+            let leido = PasswordHash::new(&h).unwrap();
+            let suyo = argon2::Params::try_from(&leido).unwrap();
+            assert!(
+                trabajo(&suyo) > trabajo(&hoy),
+                "el montaje de la prueba no es más fuerte que hoy: {que_es}"
+            );
+            assert!(
+                !por_debajo_de_la_politica(&leido),
+                "se iba a rebajar «{que_es}» (m={m} t={t}) a m={} t={}: {}× menos trabajo",
+                hoy.m_cost(),
+                hoy.t_cost(),
+                trabajo(&suyo) / trabajo(&hoy)
+            );
+        }
+
+        // Y al revés: mismo trabajo que hoy pero variante o versión anticuadas SÍ se
+        // reescribe, porque no se pierde nada. Es lo que impide que la corrección de
+        // arriba se pase de frenada y deje de subir lo que sí conviene subir.
+        let mismo_trabajo_peor_variante =
+            phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2i);
+        assert!(
+            por_debajo_de_la_politica(&PasswordHash::new(&mismo_trabajo_peor_variante).unwrap()),
+            "un argon2i del mismo coste debería subirse a argon2id: es gratis"
+        );
+
+        // Reparto distinto, mismo trabajo y misma variante: no hay nada que ganar.
+        if hoy.p_cost() < 4 {
+            let otro_reparto = phc_con(hoy.m_cost(), hoy.t_cost(), 4, Algorithm::Argon2id);
+            assert!(
+                !por_debajo_de_la_politica(&PasswordHash::new(&otro_reparto).unwrap()),
+                "`p=` no cambia el trabajo: no es motivo para reescribir"
+            );
+        }
+
+        // Un hash que no se puede leer NO se declara flojo: no se sabe qué tiene,
+        // y suponerlo significaría reescribir el hash de alguien sobre nada.
+        assert!(PasswordHash::new("esto-no-es-un-phc").is_err());
+        let bcrypt = "$2b$12$KIXQJHFy8Zx0Zx0Zx0Zx0uGZ8Zx0Zx0Zx0Zx0Zx0Zx0Zx0Zx0Zx0";
+        if let Ok(h) = PasswordHash::new(bcrypt) {
+            assert!(!por_debajo_de_la_politica(&h), "un hash ajeno a Argon2 no se toca aquí");
+        }
+    }
+
+    #[tokio::test]
+    async fn un_hash_flojo_se_pone_al_dia_al_entrar_y_la_clave_sigue_sirviendo() {
+        let (app, e) = servidor().await;
+        let hoy = argon2::Params::DEFAULT;
+
+        // Ada queda con un hash de coste ridículo, como el que podría haber
+        // entrado por el volcado (#231).
+        let flojo = hash_con(CLAVE, 8, 1, 1, argon2::Algorithm::Argon2id);
+        sqlx::query("UPDATE usuarios SET clave_hash = ? WHERE id = 1")
+            .bind(&flojo)
+            .execute(&e.bd)
+            .await
+            .unwrap();
+        let (_, m, _, _) = params_de(&e, 1).await;
+        assert_eq!(m, 8, "el montaje de la prueba no dejó el hash flojo");
+
+        // Entra, y entra de verdad.
+        assert!(entrar(&app, "ada@x.co", CLAVE).await.is_some(), "no pudo entrar con el hash flojo");
+
+        let (texto, m, t, p) = params_de(&e, 1).await;
+        assert_ne!(texto, flojo, "el hash no se reescribió");
+        assert_eq!((m, t, p), (hoy.m_cost(), hoy.t_cost(), hoy.p_cost()));
+
+        // Y lo que de verdad importa: el hash nuevo es de la MISMA contraseña. Si
+        // esto no se comprobara, un re-hash que guardara cualquier otra cosa
+        // pasaría las dos afirmaciones de arriba y dejaría la cuenta perdida.
+        assert!(
+            entrar(&app, "ada@x.co", CLAVE).await.is_some(),
+            "tras poner el hash al día, la contraseña dejó de servir"
+        );
+        assert!(
+            entrar(&app, "ada@x.co", "otra-cualquiera").await.is_none(),
+            "y cualquier contraseña abría"
+        );
+    }
+
+    #[tokio::test]
+    async fn un_hash_que_ya_esta_al_dia_no_se_reescribe() {
+        // La mitad que discrimina. Sin ella, una regla que devolviera siempre
+        // `true` pasaría la prueba de arriba — y todo el mundo pagaría un Argon2id
+        // de 19 MiB extra en CADA entrada, para nada.
+        let (app, e) = servidor().await;
+        let (antes, _, _, _) = params_de(&e, 1).await;
+        assert!(entrar(&app, "ada@x.co", CLAVE).await.is_some());
+        let (despues, _, _, _) = params_de(&e, 1).await;
+        assert_eq!(antes, despues, "se reescribió un hash que ya estaba al día");
+    }
+
+    #[tokio::test]
+    async fn cambiar_la_contrasena_mientras_se_renueva_el_hash_no_la_pierde() {
+        // El caso que convierte la mejora en pérdida de la cuenta. Entre verificar
+        // y reescribir pasan un turno de semáforo y un Argon2id de 19 MiB, y en ese
+        // rato la persona puede cambiar su contraseña desde otra pestaña. Sin el
+        // `AND clave_hash = ?` del UPDATE, aquí se escribiría el hash de la
+        // contraseña VIEJA encima de la nueva.
+        //
+        // Se simula llamando a la renovación con el hash viejo en la mano DESPUÉS
+        // de que la fila ya lleve el nuevo, que es exactamente el estado en que la
+        // carrera deja al segundo escritor.
+        //
+        // El hash viejo tiene que ser FLOJO, y eso no es un detalle del montaje: si
+        // se le pasa uno que ya está al día, `renovar_hash_si_hace_falta` sale por
+        // el `return` de la política y no llega nunca al `UPDATE` — la prueba queda
+        // verde sin haber ejercido la condición que dice vigilar. Escrita así la
+        // primera vez, el banco de mutación lo destapó: quitar el
+        // `AND clave_hash = ?` no ponía roja ninguna prueba.
+        let (_app, e) = servidor().await;
+        let viejo = hash_con(CLAVE, 8, 1, 1, argon2::Algorithm::Argon2id);
+        sqlx::query("UPDATE usuarios SET clave_hash = ? WHERE id = 1")
+            .bind(&viejo)
+            .execute(&e.bd)
+            .await
+            .unwrap();
+
+        const NUEVA: &str = "la-contraseña-nueva-de-ada";
+        let hash_nuevo = hashear(&e, NUEVA.to_string()).await.unwrap();
+        sqlx::query("UPDATE usuarios SET clave_hash = ? WHERE id = 1")
+            .bind(&hash_nuevo)
+            .execute(&e.bd)
+            .await
+            .unwrap();
+
+        // El rezagado llega con el hash viejo y la contraseña vieja.
+        renovar_hash_si_hace_falta(&e, 1, CLAVE.to_string(), &viejo).await;
+
+        let (ahora, _, _, _) = params_de(&e, 1).await;
+        assert_eq!(ahora, hash_nuevo, "el rezagado pisó la contraseña nueva");
+        assert!(
+            Argon2::default()
+                .verify_password(NUEVA.as_bytes(), &PasswordHash::new(&ahora).unwrap())
+                .is_ok(),
+            "la contraseña nueva dejó de valer"
+        );
+        assert!(
+            Argon2::default()
+                .verify_password(CLAVE.as_bytes(), &PasswordHash::new(&ahora).unwrap())
+                .is_err(),
+            "la contraseña vieja volvió a valer"
+        );
+    }
+
+    #[tokio::test]
+    async fn si_la_renovacion_no_puede_escribir_se_entra_igual() {
+        // Modo degradado (#71): esto es una mejora silenciosa, no un requisito
+        // para entrar. Se le da un id que no existe, así que el UPDATE afecta a
+        // cero filas — el mismo camino que un fallo de escritura— y se comprueba
+        // que no explota y que la puerta sigue abriendo.
+        let (app, e) = servidor().await;
+        let flojo = hash_con(CLAVE, 8, 1, 1, argon2::Algorithm::Argon2id);
+        renovar_hash_si_hace_falta(&e, 9999, CLAVE.to_string(), &flojo).await;
+        assert!(entrar(&app, "ada@x.co", CLAVE).await.is_some(), "la puerta dejó de abrir");
     }
 }
