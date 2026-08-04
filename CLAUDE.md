@@ -152,7 +152,8 @@ Python anterior), `alertas` (una pasada, para un timer),
 `respaldar <carpeta>` / `restaurar <carpeta> [--forzar]` (base en caliente vía
 `VACUUM INTO` + los archivos de entrega, y la copia **se verifica** antes de
 darse por buena), `generar-secreto`, `generar-claves-firma`, `hashear` (Argon2,
-mismos parámetros que el acceso). Todos leen del entorno **dónde** está la base:
+mismos parámetros que el acceso), `revisar-hashes` (cuántas cuentas están por
+debajo de la política del KDF y por qué eje). Todos leen del entorno **dónde** está la base:
 respaldan lo que el servicio usa de verdad, no lo que alguien creía.
 
 **La demostración pública anuncia sus credenciales, y ninguna otra instalación
@@ -273,6 +274,22 @@ por un banco de mutación, ver abajo):
      ya tiene derecho a entrar, justo cuando hay más carga. Si no hay sitio, no se
      hace y el próximo acceso lo reintenta. Por eso no devuelve `Result`: un `?`
      convertiría una mejora silenciosa en un fallo de acceso.
+
+   **El caso que no se puede arreglar se CUENTA, no se avisa en cada acceso.** Un
+   hash con menos memoria que la política pero más trabajo total no lo domina hoy:
+   reescribirlo pierde memoria y dejarlo lo deja por debajo, así que no se toca. Eso
+   se anotaba con `warn!` en cada entrada de las mismas cuentas y **nada cierra ese
+   estado**, así que la advertencia sonaba para siempre — una alarma que no se puede
+   resolver es una que a la tercera semana nadie mira, aunque sea cierta
+   (directiva 23). Ahora va en `debug!`, y el recuento del padrón —que es la
+   pregunta de verdad: «¿puedo subir `Params::DEFAULT` sin dejar a nadie atrás?»—
+   vive en el subcomando **`revisar-hashes`**, que se consulta cuando se decide y
+   cubre **los dos** cuadrantes no dominados. El otro, «más memoria y menos trabajo»,
+   no aparecía en ninguna parte: su déficit está acotado por debajo de 2× mientras
+   la memoria está por encima, así que no es más débil en conjunto — pero «no sale
+   en ningún sitio» y «no pasa nada» no son lo mismo. `revisar-hashes` sale distinto
+   de cero **solo** por los hashes ilegibles, que sí son una avería: ésos no pueden
+   entrar y el login les responde lo mismo que a una clave mala.
 
    El caso que lo destapó fue el volcado (#231), que acepta cualquier Argon2
    válido, pero **el que de verdad importa es el general**: el día que se suban
