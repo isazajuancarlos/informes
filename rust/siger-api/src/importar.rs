@@ -161,6 +161,28 @@ fn clave_argon2(id: i64, email: &str, hash: &str) -> Result<String, ErrorImporta
     argon2::Params::try_from(&phc)
         .map_err(|e| no(format!("los parámetros del Argon2 no se pueden leer: {e}")))?;
 
+    // AQUÍ NO SE MIRA `keyid=`, Y ESO ESTÁ MEDIDO.
+    //
+    // La tentación es obvia: `keyid` significa «esto se calculó con un secreto
+    // aparte de la contraseña», ese secreto vivía en la configuración del sistema
+    // anterior y no viaja en su base, así que el hash no abriría nunca — el mismo
+    // bloqueo silencioso que el resto de esta función cierra. Se propuso, se
+    // escribió, y la prueba `no_pasa_ningun_hash_con_el_que_el_dueno_no_pueda_
+    // entrar` la tumbó. Lo medido, con `argon2 0.5.3` y la contraseña en la mano:
+    //
+    // - un PHC **con** `keyid=` cuyo digest se calculó **sin** pepper **ABRE**: el
+    //   verificador ignora ese parámetro. Rechazarlo dejaría fuera de la migración
+    //   a una cuenta que funciona — el error contrario y peor (directiva 21: se
+    //   rechaza lo imposible, nunca lo inusual);
+    // - un hash calculado **con** pepper de verdad **no lleva `keyid=`** en su
+    //   cadena: `argon2` no lo emite. O sea que el caso que de verdad falla no
+    //   trae ninguna señal que leer.
+    //
+    // `keyid` no correlaciona con el pepper en ninguna de las dos direcciones, así
+    // que no discrimina: sería una alarma que suena cuando no pasa nada y calla
+    // cuando pasa. Un hash calculado con pepper es indetectable desde aquí y se
+    // acepta; lo que lo destapa es el primer acceso de su dueño, no este volcado.
+
     // La SAL y la SALIDA. Un PHC puede traer solo la cabecera —`$argon2id$v=19$
     // m=...,t=...,p=...`, que es una descripción de parámetros, no una
     // credencial—: parsea, es Argon2 y sus parámetros son buenos, pero no hay
@@ -546,6 +568,20 @@ mod tests {
                 "$argon2id$v=19$m=19456,t=2,p=1$YWJjZGVm$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
                     .to_string(),
             ),
+            // `keyid=`: el verificador lo IGNORA, así que un hash que lo lleve abre
+            // igual y el volcado tiene que aceptarlo. Está aquí porque parece la
+            // señal de un pepper y no lo es — ver
+            // `el_keyid_no_dice_nada_del_pepper_y_por_eso_no_se_rechaza`. Si algún
+            // día la librería empieza a mirarlo, este caso se pone rojo.
+            //
+            // `data=` NO está en esta lista, y la ausencia es deliberada: a
+            // diferencia de `keyid`, sí entra en el cálculo del digest (medido),
+            // así que insertarlo en un hash ya hecho produce una cadena
+            // INCOHERENTE —dice llevar datos asociados que no se usaron— y eso es
+            // corrupción, no una forma que pueda venir de una migración. Exigirle
+            // al volcado que la detecte sería pedirle que distinga un hash con un
+            // byte cambiado, que es imposible por construcción.
+            ("un Argon2 con keyid=", bueno.replacen("p=1$", "p=1,keyid=YWJj$", 1)),
         ] {
             // Los dos controles importan tanto como los casos: sin ellos, un
             // chequeo que rechazara TODO también pasaría esta prueba.
@@ -557,6 +593,80 @@ mod tests {
                  siempre; rechazar lo que sí verifica la deja fuera de la migración."
             );
         }
+    }
+
+    /// Por qué `keyid=` NO se rechaza, con la medida que lo decidió.
+    ///
+    /// Se propuso rechazarlo —parece la señal de que el hash se calculó con un
+    /// pepper que no viaja en el volcado, o sea de una cuenta que nunca podrá
+    /// entrar— y se escribió. Esta prueba y la del acuerdo con el login lo
+    /// tumbaron, midiendo con `argon2 0.5.3` y la contraseña en la mano:
+    ///
+    /// 1. un PHC **con** `keyid=` cuyo digest se hizo **sin** pepper **abre**: el
+    ///    verificador ignora el parámetro. Rechazarlo deja fuera de la migración a
+    ///    una cuenta que funciona;
+    /// 2. un hash hecho **con** pepper de verdad **no lleva `keyid=`**: `argon2` no
+    ///    lo emite, así que el caso que sí falla no trae señal que leer.
+    ///
+    /// Las dos mitades juntas dicen que el parámetro no discrimina en ninguna
+    /// dirección. Queda como prueba y no como comentario porque un comentario no
+    /// se cae el día que la librería cambie de comportamiento: si algún día
+    /// `verify_password` empieza a mirar `keyid`, el punto 1 se pone rojo y
+    /// entonces —y solo entonces— rechazarlo tendrá sentido.
+    #[test]
+    fn el_keyid_no_dice_nada_del_pepper_y_por_eso_no_se_rechaza() {
+        use argon2::password_hash::{PasswordHasher, PasswordVerifier, SaltString};
+        use argon2::{Algorithm, Argon2, Params, PasswordHash, Version};
+
+        const CLAVE: &[u8] = b"la-contrasena-del-dueno";
+        let sal = SaltString::from_b64("c2FsdHNhbHRzYWx0c2Fs").unwrap();
+        let abre = |h: &str| {
+            PasswordHash::new(h)
+                .map(|p| Argon2::default().verify_password(CLAVE, &p).is_ok())
+                .unwrap_or(false)
+        };
+
+        // 1. `keyid=` presente y digest sin pepper: el verificador lo ignora, así
+        //    que ABRE — y el volcado tiene que dejarlo pasar.
+        let base = Argon2::default().hash_password(CLAVE, &sal).unwrap().to_string();
+        let con_keyid = base.replacen("p=1$", "p=1,keyid=YWJj$", 1);
+        assert_ne!(con_keyid, base, "el montaje no insertó «keyid=»");
+        assert!(abre(&con_keyid), "si esto cambia, rechazar keyid empieza a tener sentido");
+        assert_eq!(
+            clave_argon2(11, "con@keyid.co", &con_keyid).unwrap(),
+            con_keyid,
+            "se rechazó un hash con el que su dueño SÍ entra"
+        );
+
+        // 2. Pepper de verdad: no abre, y no hay `keyid=` que delatarlo.
+        let con_pepper = Argon2::new_with_secret(b"el-pepper", Algorithm::Argon2id, Version::V0x13, Params::DEFAULT)
+            .unwrap()
+            .hash_password(CLAVE, &sal)
+            .unwrap()
+            .to_string();
+        assert!(!abre(&con_pepper), "un hash con pepper no debería abrir sin el pepper");
+        assert!(
+            !con_pepper.contains("keyid"),
+            "si `argon2` empieza a emitir keyid, este caso pasa a ser detectable"
+        );
+
+        // 3. Y LA ASIMETRÍA, que es lo que hace falta saber para no volver a
+        //    proponer lo mismo con el otro parámetro: `data=` NO se ignora. Entra
+        //    en el cálculo del digest, así que insertarlo en un hash ya hecho lo
+        //    vuelve incoherente y deja de abrir. Eso NO lo convierte en algo que
+        //    rechazar: un `data=` cuyo digest sí se calculó con esos datos abriría
+        //    igual, y desde aquí las dos cadenas son indistinguibles. Rechazar por
+        //    `data=` volvería a dejar fuera al cliente legítimo; lo que se rechaza
+        //    es lo imposible, no lo inusual.
+        let con_data = base.replacen("p=1$", "p=1,data=YWJj$", 1);
+        assert!(
+            !abre(&con_data),
+            "`data=` dejó de afectar al cálculo: si esto pasa, revisar el párrafo de arriba"
+        );
+        assert!(
+            clave_argon2(11, "con@data.co", &con_data).is_ok(),
+            "el volcado no puede rechazar por `data=`: no distingue el coherente del corrupto"
+        );
     }
 
     /// Ni el vacío ni la basura caen a un defecto: son la misma parada.
