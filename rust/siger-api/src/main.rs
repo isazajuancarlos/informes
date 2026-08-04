@@ -304,9 +304,6 @@ async fn importar_cmd() -> std::process::ExitCode {
     }
 }
 
-/// `siger-api alertas`: corre UNA pasada de alertas ahora, con la configuración
-/// del entorno. Útil para operar («manda los avisos pendientes ya») y para probar
-/// contra un buzón local. Si las alertas no están activas, lo dice y no hace nada.
 /// `revisar-hashes` — cuántas cuentas están por debajo de la política del KDF.
 ///
 /// # Por qué es un subcomando y no un aviso en el log
@@ -404,6 +401,9 @@ async fn revisar_hashes_cmd() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+/// `siger-api alertas`: corre UNA pasada de alertas ahora, con la configuración
+/// del entorno. Útil para operar («manda los avisos pendientes ya») y para probar
+/// contra un buzón local. Si las alertas no están activas, lo dice y no hace nada.
 async fn alertas_cmd() -> std::process::ExitCode {
     let cfg = match config::Config::desde_entorno() {
         Ok(c) => c,
