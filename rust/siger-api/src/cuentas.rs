@@ -272,15 +272,21 @@ fn trabajo(p: &argon2::Params) -> u64 {
 /// La regla, en una frase: **solo se reescribe un hash al que el de hoy DOMINA —le
 /// gana o iguala en memoria Y en trabajo total— y solo si hay algo que ganar.**
 ///
-/// Dos ejes, no uno, y los dos tienen que estar a favor:
+/// **La dominancia son DOS ejes** —memoria y trabajo total— y los dos tienen que
+/// estar a favor. **Lo que hay que ganar son CINCO**: esos dos, la variante, la
+/// versión y la longitud del digest.
 ///
 /// | hash guardado | ¿se reescribe? | por qué |
 /// |---|---|---|
 /// | menos memoria y menos o igual trabajo | **sí** | es para lo que existe esto |
 /// | igual memoria e igual trabajo, pero `argon2i`/`argon2d` o `v=0x10` | **sí** | no se pierde nada y se gana la variante |
+/// | igual en todo, pero digest más corto de 32 bytes | **sí** | mismo coste, más salida: gratis |
 /// | igual en todo y `Argon2id` al día | no | no hay nada que ganar |
 /// | **más memoria** que hoy | **NO, jamás** | aunque su trabajo total sea menor |
 /// | **más trabajo** que hoy | **NO, jamás** | aunque su memoria sea menor |
+///
+/// La longitud del digest está en la segunda lista y **no** en la primera a
+/// propósito: ver [`digest_corto`].
 ///
 /// # Dos rondas de auditoría, y el fallo cambió de lado las dos veces
 ///
@@ -339,6 +345,36 @@ fn por_debajo_de_la_politica(h: &PasswordHash) -> bool {
         || trabajo(&hoy) > trabajo(&p)
         || alg != Algorithm::Argon2id
         || h.version.is_some_and(|v| v < Version::default() as u32)
+        || digest_corto(&p)
+}
+
+/// ¿El digest guardado es más corto de lo que hoy se emite?
+///
+/// Es el quinto eje, y va en «lo que hay que ganar» y **no en la dominancia**. La
+/// diferencia importa: metido en `domina`, un hash con digest de 64 bytes dejaría
+/// de poder subirse nunca aunque su `m` fuera de 8 KiB, porque hoy no lo domina en
+/// ESE eje. Conservar un digest más largo no cuesta nada; lo que hay que subir es
+/// uno corto.
+///
+/// Un `None` no cuenta como corto: `Params::try_from` rellena este campo con la
+/// longitud del digest que trae el PHC, así que llegar aquí sin él significa que no
+/// se sabe — y no se supone (directiva 20).
+///
+/// # El único eje en que el reescrito puede quedar por debajo, y por qué se acepta
+///
+/// El reescrito sale siempre de `Argon2::default()`, o sea con 32 bytes. Un hash
+/// con digest de 48 o 64 bytes **y** parámetros flojos se reescribe por los otros
+/// motivos y pierde longitud de digest en el camino: 512 bits pasan a 256. Se
+/// acepta, y no es una excepción escondida — 256 bits siguen siendo inalcanzables,
+/// mientras que lo que se gana en el mismo movimiento puede ser un factor de 2432
+/// en memoria. Preservar el máximo sería posible, pero exigiría emitir con
+/// parámetros distintos de los del resto del sistema para una población que no
+/// existe: el `hashear` de SIGER emite 32 bytes siempre y el volcado venía de
+/// passlib, que también. Lo fija
+/// `un_digest_mas_largo_no_impide_subir_los_parametros`.
+fn digest_corto(p: &argon2::Params) -> bool {
+    p.output_len().unwrap_or(argon2::Params::DEFAULT_OUTPUT_LEN)
+        < argon2::Params::DEFAULT_OUTPUT_LEN
 }
 
 /// ¿Está por debajo de la política en MEMORIA, sin que hoy lo domine?
@@ -1349,12 +1385,24 @@ mod pruebas {
     /// gigas y llevó esta prueba de 15 a 83 segundos antes de darse cuenta. Para
     /// los casos que sí necesitan entrar por HTTP está [`hash_con`], que calcula.
     fn phc_con(m: u32, t: u32, p: u32, alg: argon2::Algorithm) -> String {
-        // Sal y digest de relleno con las longitudes que el parseador exige.
-        format!(
-            "${alg}$v=19$m={m},t={t},p={p}\
-             $c2FsZGVsYXNwcnVlYmFzZGVjdWVudA\
-             $AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
-        )
+        phc_con_digest(m, t, p, alg, argon2::Params::DEFAULT_OUTPUT_LEN)
+    }
+
+    /// Igual que [`phc_con`], con la longitud de digest que se le pida. `bytes`
+    /// tiene que caer entre 10 y 64: `password_hash::Output` rechaza el resto, así
+    /// que un montaje fuera de rango se delataría al parsear.
+    fn phc_con_digest(
+        m: u32,
+        t: u32,
+        p: u32,
+        alg: argon2::Algorithm,
+        bytes: usize,
+    ) -> String {
+        use argon2::password_hash::Output;
+        let relleno: Vec<u8> = (0..bytes).map(|i| i as u8).collect();
+        let digest = Output::new(&relleno).expect("longitud de digest admitida");
+        // Sal de relleno con la longitud que el parseador exige.
+        format!("${alg}$v=19$m={m},t={t},p={p}$c2FsZGVsYXNwcnVlYmFzZGVjdWVudA${digest}")
     }
 
     /// Un hash de la MISMA contraseña pero con los parámetros que se le pidan.
@@ -1512,6 +1560,31 @@ mod pruebas {
              memoria pasaba por «al día»"
         );
 
+        // EL QUINTO EJE: la longitud del digest. Un hash idéntico a la política en
+        // todo lo demás pero con salida corta se subía a «al día» y se quedaba así
+        // para siempre — 80 bits de digest certificados como conformes con una
+        // política de 256. No era explotable (2^80 Argon2id), pero la invariante que
+        // este módulo DECLARA —«sin reescribir ⟹ está a la altura, o se anota»— era
+        // falsa tal como estaba escrita, y eso es lo que se cierra.
+        for bytes in [10usize, 16, 24, 31] {
+            let corto = phc_con_digest(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id, bytes);
+            let leido = PasswordHash::new(&corto).unwrap();
+            assert_eq!(
+                argon2::Params::try_from(&leido).unwrap().output_len(),
+                Some(bytes),
+                "el montaje no produjo un digest de {bytes} bytes"
+            );
+            assert!(
+                por_debajo_de_la_politica(&leido),
+                "un digest de {bytes} bytes se estaba certificando «al día»"
+            );
+        }
+
+        // Y la mitad que impide pasarse de frenada por el otro lado: un digest de 32
+        // —lo que hoy se emite— NO es motivo para reescribir nada.
+        let justo = phc_con_digest(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id, 32);
+        assert!(!por_debajo_de_la_politica(&PasswordHash::new(&justo).unwrap()));
+
         // EL TECHO DE MEMORIA, que es la pareja del suelo. Un hash con MÁS memoria que
         // hoy no se toca aunque su trabajo total sea menor: reescribirlo cambiaría 38
         // MiB por 19 MiB a trabajo casi idéntico, o sea pura pérdida. Sin estos casos
@@ -1548,6 +1621,43 @@ mod pruebas {
         let ajeno = PasswordHash::new("$scrypt$ln=16,r=8,p=1$c2FsZGVsYXNwcnVlYmFz$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8")
             .expect("este PHC parsea, aunque no sea Argon2");
         assert!(!por_debajo_de_la_politica(&ajeno), "un hash ajeno a Argon2 no se toca aquí");
+    }
+
+    #[test]
+    fn un_digest_mas_largo_no_impide_subir_los_parametros() {
+        use argon2::{Algorithm, Params};
+        let hoy = Params::DEFAULT;
+
+        // Es la razón de que la longitud del digest esté en «lo que hay que ganar» y
+        // NO en la dominancia. Metida en `domina`, este hash —8 KiB de memoria, o
+        // sea lo que esta función existe para arreglar— dejaría de poder subirse
+        // nunca, solo por traer una salida más larga de la que hoy se emite.
+        for bytes in [48usize, 64] {
+            let flojo_pero_largo = phc_con_digest(8, hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id, bytes);
+            let leido = PasswordHash::new(&flojo_pero_largo).unwrap();
+            assert_eq!(Params::try_from(&leido).unwrap().output_len(), Some(bytes));
+            assert!(
+                por_debajo_de_la_politica(&leido),
+                "un digest de {bytes} bytes bloqueó la subida de m=8 KiB a {} KiB",
+                hoy.m_cost()
+            );
+        }
+
+        // Y el precio, dicho en una prueba y no solo en un comentario: al
+        // reescribirlo, la salida pasa a 32 bytes. Se acepta porque 256 bits siguen
+        // siendo inalcanzables y en el mismo movimiento la memoria sube 2432 veces.
+        // Si algún día se decide conservar el máximo, esta afirmación se cae y
+        // avisa.
+        assert_eq!(hoy.output_len(), None, "Params::DEFAULT no fija salida");
+        assert_eq!(Params::DEFAULT_OUTPUT_LEN, 32);
+
+        // Un digest más largo, con todo lo demás al día, NO se toca: no hay nada
+        // que ganar y bajarlo sería la única forma de empeorarlo.
+        let solo_mas_largo = phc_con_digest(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id, 64);
+        assert!(
+            !por_debajo_de_la_politica(&PasswordHash::new(&solo_mas_largo).unwrap()),
+            "se iba a rebajar un digest de 64 bytes sin ganar nada a cambio"
+        );
     }
 
     #[tokio::test]
