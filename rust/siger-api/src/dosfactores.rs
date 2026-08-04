@@ -202,6 +202,45 @@ pub fn generar_codigos_recuperacion(cuantos: usize) -> Vec<String> {
         .collect()
 }
 
+/// ¿Lo que se tecleó tiene FORMA de código de recuperación, y no de TOTP?
+///
+/// No dice si es correcto —eso lo decide el hash de la base—: dice si el segundo
+/// paso debe molestarse en comprobarlo contra los códigos de recuperación.
+///
+/// # Para qué hace falta saberlo
+///
+/// El día que el secreto TOTP no se pueda leer —frase de reposo rotada, blob
+/// alterado— los códigos de recuperación siguen siendo válidos: viven en otra
+/// tabla, son hashes Argon2 y **no necesitan el secreto para nada**. Pero
+/// entonces el sistema no puede comprobar un TOTP de seis dígitos, y ahí está la
+/// diferencia que decide si un fallo se le cobra al usuario:
+///
+/// - forma de recuperación → se comprueba de verdad, así que un fallo ES un fallo
+///   y cuenta para el freno (si no, el estado de avería sería un carril para
+///   ensayar códigos de recuperación sin límite);
+/// - cualquier otra cosa → no se pudo comprobar nada, así que no se cobra: cobrar
+///   un fallo por una avería del servidor es la misma clase de mentira que acusar
+///   de alteración a un documento que no se llegó a mirar.
+///
+/// # La regla, y lo que deja fuera a propósito
+///
+/// Se acepta exactamente lo que produce [`generar_codigos_recuperacion`]: ocho
+/// caracteres, un guion, ocho caracteres. Nada más — y en particular **no** se
+/// acepta «cualquier cosa que no sean seis dígitos» (directiva 23: la regla
+/// enumera lo que SÍ significa algo y manda el resto a «no se puede saber»).
+///
+/// Se es permisivo con el CASO de las letras y con los espacios de alrededor
+/// porque esto solo decide si se intenta, no si se abre: quien teclee minúsculas
+/// llegará a la comparación y fallará allí, igual que antes. Ser estricto aquí
+/// solo cambiaría el mensaje de error, no el resultado.
+pub fn parece_codigo_de_recuperacion(tecleado: &str) -> bool {
+    let t = tecleado.trim();
+    let Some((izq, der)) = t.split_once('-') else { return false };
+    izq.len() == 8
+        && der.len() == 8
+        && izq.chars().chain(der.chars()).all(|c| c.is_ascii_alphanumeric())
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
