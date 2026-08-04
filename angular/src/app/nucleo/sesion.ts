@@ -52,8 +52,25 @@ export class Sesion {
     return this.dentro();
   }
 
-  async entrar(email: string, clave: string) {
-    await firstValueFrom(this.api.entrar(email, clave));
+  /**
+   * Primer paso. Devuelve `true` si la contraseña era correcta pero **falta el
+   * segundo factor**: en ese caso NO hay sesión, y el actor sigue en `null`.
+   *
+   * Se devuelve el dato en vez de navegar aquí porque el que sabe qué pantalla
+   * toca es el componente. Lo que sí es responsabilidad de este servicio es no
+   * mentir sobre el estado: `comprobar()` solo se llama cuando de verdad hay
+   * cookie de sesión.
+   */
+  async entrar(email: string, clave: string): Promise<boolean> {
+    const r = await firstValueFrom(this.api.entrar(email, clave));
+    if (r.segundo_factor) return true;
+    await this.comprobar();
+    return false;
+  }
+
+  /** Segundo paso. Al volver ya hay sesión, o la llamada ha fallado. */
+  async completarSegundoFactor(codigo: string) {
+    await firstValueFrom(this.api.verificarSegundoFactor(codigo));
     await this.comprobar();
   }
 
@@ -67,6 +84,27 @@ export class Sesion {
       this._actor.set(null);
       this.router.navigate(['/acceso']);
     }
+  }
+
+  /**
+   * Cierra la sesión en TODOS los dispositivos (#194).
+   *
+   * # Por qué esto NO lleva el `finally` de `salir()`, que es la asimetría
+   *
+   * En `salir()`, tragarse el error es lo correcto: lo que el usuario pide es
+   * dejar de estar dentro AQUÍ, y eso se consigue vaciando el estado local pase
+   * lo que pase en el servidor.
+   *
+   * Aquí lo que pide es lo contrario: que dejen de valer sesiones que están en
+   * OTRAS máquinas, y eso solo lo puede hacer el servidor. Si la llamada falla y
+   * aun así vaciáramos la pantalla y volviéramos al acceso, la persona se iría
+   * convencida de haber echado a quien le robó el portátil, sin que se hubiera
+   * echado a nadie. El error se propaga para que la pantalla lo diga.
+   */
+  async salirDeTodo() {
+    await firstValueFrom(this.api.salirDeTodo());
+    this._actor.set(null);
+    this.router.navigate(['/acceso']);
   }
 }
 

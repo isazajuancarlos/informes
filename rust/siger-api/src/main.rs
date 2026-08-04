@@ -11,7 +11,9 @@ mod acceso;
 mod alertas;
 mod autz;
 mod config;
+mod cuentas;
 mod db;
+mod dosfactores;
 mod estadisticas;
 mod estaticos;
 mod firma;
@@ -25,8 +27,10 @@ mod participacion;
 mod planificador;
 #[cfg(test)]
 mod pruebas_cronograma;
+mod qr;
 mod respaldo;
 mod rutas;
+mod segundofactor;
 mod sesion;
 
 use axum::{routing::get, Router};

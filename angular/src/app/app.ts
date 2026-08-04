@@ -15,6 +15,8 @@ interface Entrada {
   ruta: string;
   titulo: string;
   icono: string;
+  /** Solo para administradores. Ver `menuVisible`. */
+  soloAdmin?: boolean;
 }
 
 @Component({
@@ -57,7 +59,21 @@ export class App {
     { ruta: '/estadisticas', titulo: 'Estadísticas', icono: 'insights' },
     { ruta: '/informes', titulo: 'Informes', icono: 'description' },
     { ruta: '/cronograma', titulo: 'Cronograma', icono: 'event_repeat' },
+    { ruta: '/cuentas', titulo: 'Cuentas', icono: 'manage_accounts', soloAdmin: true },
   ];
+
+  /**
+   * Lo que se pinta en el lateral.
+   *
+   * Ocultar una entrada es COMODIDAD, no seguridad: quien edite su rol en memoria
+   * la verá, y el servidor le seguirá contestando 403. La autorización vive en
+   * `autz::Alcance` y en `cuentas::solo_admin`, en un solo sitio. Esto solo evita
+   * enseñar una puerta que no se puede abrir.
+   */
+  readonly menuVisible = computed(() => {
+    const admin = this.sesion.actor()?.rol === 'Admin';
+    return this.menu.filter((e) => !e.soloAdmin || admin);
+  });
 
   /** El lateral arranca abierto solo si hay sitio. En un portátil de 13" abierto
    *  por defecto deja la tabla de entregas sin ancho para sus seis columnas. */
@@ -67,6 +83,9 @@ export class App {
   readonly tituloActual = computed(
     () => this.menu.find((e) => this.ruta().startsWith(e.ruta))?.titulo ?? 'SIGER',
   );
+
+  /** Lo que falló al cerrar en todos los dispositivos, si falló. */
+  readonly errorCuenta = signal('');
 
   constructor() {
     this.router.events
@@ -87,5 +106,21 @@ export class App {
         error: () => this.licencia.set(null),
       });
     });
+  }
+
+  /**
+   * «Cerrar sesión en todos los dispositivos» (#194).
+   *
+   * Si el servidor no pudo revocar, se queda aquí y lo dice. No se navega al
+   * acceso: salir de la pantalla sería indistinguible del caso en que sí
+   * funcionó, y esto se pulsa justo cuando saberlo importa.
+   */
+  async cerrarEnTodos() {
+    this.errorCuenta.set('');
+    try {
+      await this.sesion.salirDeTodo();
+    } catch (e) {
+      this.errorCuenta.set((e as Error).message);
+    }
   }
 }

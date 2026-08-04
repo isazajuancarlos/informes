@@ -73,7 +73,20 @@ fi
 
 echo "==> 3/5  copiar a $DESTINO:$REMOTO"
 ssh "$DESTINO" "sudo mkdir -p $REMOTO /etc/siger-demo && sudo chown -R \$(id -un):\$(id -gn) $REMOTO"
-scp "$BIN" rust/sembrar_demo.py "$DESTINO:$REMOTO/"
+# El binario viaja con OTRO NOMBRE y se pone en su sitio abajo, con el servicio
+# ya parado. Escribir encima del ejecutable que un proceso está corriendo lo
+# rechaza el núcleo —ETXTBSY—, y `scp` lo cuenta como
+# `dest open "…/siger-api": Failure`, que no se parece en nada a la causa.
+#
+# No se veía en el primer despliegue, porque entonces no había servicio que
+# parar: apareció en el primero que REPITE (2026-08-02). Y dejaba el destino a
+# medias — el `chown` de arriba ya había pasado, así que la base quedaba con el
+# dueño equivocado y el servicio viejo sin poder escribirla.
+#
+# Parar el servicio antes de copiar también valdría, pero alarga la caída todo lo
+# que tarde la subida. Así la ventana es el `mv`, que es un renombrado.
+scp "$BIN" "$DESTINO:$REMOTO/siger-api.nuevo"
+scp rust/sembrar_demo.py "$DESTINO:$REMOTO/"
 scp despliegue/siger-demo.service despliegue/siger-demo-sembrar.service \
     despliegue/siger-demo-sembrar.timer "$DESTINO:/tmp/"
 # El respaldo NO se instala aquí: la demostración se regenera cada noche, así que
@@ -122,12 +135,41 @@ else
     echo "  /etc/siger-demo/siger.env ya existe: se conserva"
 fi
 
+# EL CARTEL DE LA DEMOSTRACIÓN, y va FUERA del `if` de arriba a propósito.
+#
+# Un visitante cae en la pantalla de acceso sin saber ninguna contraseña, y una
+# demostración en la que nadie puede entrar no demuestra nada. `SIGER_DEMO_CUENTAS`
+# es lo que esa pantalla anuncia — y en cualquier instalación que no sea ésta la
+# variable no existe, así que no se anuncia nada.
+#
+# El valor lo imprime `sembrar_demo.py --anunciar`, o sea la MISMA fuente que
+# siembra las cuentas. Si saliera de aquí, el día que cambie una contraseña en el
+# guion de siembra el cartel seguiría diciendo la vieja: un cartel que miente es
+# peor que no tener cartel, porque el visitante concluye que el producto no
+# funciona y se va sin escribir.
+#
+# Se reescribe en CADA despliegue —de ahí que no esté dentro del `if` que conserva
+# el archivo—: el secreto de sesión no se rota para no echar a quien esté mirando,
+# pero el cartel tiene que seguir a la siembra.
+ANUNCIO="$(python3 "$REMOTO/sembrar_demo.py" --anunciar)"
+sudo sed -i '/^SIGER_DEMO_CUENTAS=/d' /etc/siger-demo/siger.env
+echo "SIGER_DEMO_CUENTAS=$ANUNCIO" | sudo tee -a /etc/siger-demo/siger.env >/dev/null
+echo "  cartel de la demostración: $(echo "$ANUNCIO" | tr ';' '\n' | wc -l) cuentas anunciadas"
+
 sudo install -m 644 /tmp/siger-demo.service /tmp/siger-demo-sembrar.service \
      /tmp/siger-demo-sembrar.timer /etc/systemd/system/
 sudo install -m 644 /tmp/informes.xiliux.com.nginx \
      /etc/nginx/sites-available/informes.xiliux.com
 
 sudo systemctl stop siger-demo.service 2>/dev/null || true
+
+# Y AHORA el binario nuevo ocupa su sitio, con el servicio ya parado. `mv` sobre
+# un ejecutable en uso sí está permitido —renombrar no es escribir dentro—, pero
+# se hace igualmente con el servicio abajo: si el `mv` fallara, lo que quedaría
+# corriendo sería el binario viejo, entero, y no uno a medio escribir.
+if [ -f "$REMOTO/siger-api.nuevo" ]; then
+    sudo mv "$REMOTO/siger-api.nuevo" "$REMOTO/siger-api"
+fi
 sudo chown -R siger:siger "$REMOTO"
 # …pero el binario y el guion de siembra vuelven a root. `siger` tiene que poder
 # ESCRIBIR la base y el almacén, no el ejecutable que corre ni el guion que root

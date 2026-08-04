@@ -61,6 +61,16 @@ infer = "0.16"
 rust-embed = { version = "8", features = ["mime-guess"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Segundo factor TOTP (#212). `default-features = false` a propósito: sus
+# features opcionales traen `qr` e `image` para pintar el código, y un binario
+# que se instala offline no necesita cargar un decodificador de imágenes para
+# generar seis dígitos — el QR lo pinta la interfaz desde el URI. Lo que queda es
+# HMAC + base32, tres crates en total.
+#
+# No se reimplementa aunque el RFC 6238 quepa en cuarenta líneas: el fallo típico
+# —la unidad del argumento, el truncamiento dinámico— no rompe nada visible,
+# solo ensancha la ventana en silencio.
+totp-rs = { version = "5.7.2", default-features = false }
 
 # Solo para las pruebas del modo degradado (#71): el timeout que hace que un
 # envío colgado falle ruidosamente en vez de parecer una compilación lenta. No

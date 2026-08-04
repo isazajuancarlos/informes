@@ -13,7 +13,7 @@
         <span class="largo">Sistema Integral de Gestión de Informes</span>
       </div>
       <mat-nav-list>
-        @for (entrada of menu; track entrada.ruta) {
+        @for (entrada of menuVisible(); track entrada.ruta) {
           <a mat-list-item [routerLink]="entrada.ruta" routerLinkActive
              #activo="routerLinkActive" [activated]="activo.isActive">
             <mat-icon matListItemIcon>{{ entrada.icono }}</mat-icon>
@@ -40,9 +40,29 @@
             <strong>{{ sesion.actor()?.email }}</strong>
             <span>{{ sesion.actor()?.rol }}</span>
           </div>
+          <button mat-menu-item routerLink="/mi-clave">
+            <mat-icon>password</mat-icon> Cambiar mi contraseña
+          </button>
+          <button mat-menu-item routerLink="/segundo-factor">
+            <mat-icon>phonelink_lock</mat-icon> Verificación en dos pasos
+          </button>
           <button mat-menu-item (click)="sesion.salir()">
             <mat-icon>logout</mat-icon> Salir
           </button>
+          <!--
+            Cerrar en TODOS los dispositivos. Va aparte de «Salir» y con su
+            propio icono porque hacen cosas distintas: «Salir» cierra este
+            navegador, esto invalida también la sesión del portátil que se quedó
+            en la oficina. Confundirlas es lo que hace que nadie use la segunda.
+          -->
+          <button mat-menu-item (click)="cerrarEnTodos()">
+            <mat-icon>devices_off</mat-icon> Cerrar en todos los dispositivos
+          </button>
+          @if (errorCuenta()) {
+            <p class="error-cuenta" role="alert">
+              <mat-icon>error_outline</mat-icon> {{ errorCuenta() }}
+            </p>
+          }
         </mat-menu>
       </mat-toolbar>
 

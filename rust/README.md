@@ -1,8 +1,10 @@
 # SIGER en Rust + Angular
 
-Reescritura de la arquitectura. Conviven con la versión de Python **a
-propósito**: la de Python es la implementación de referencia contra la que se
-mide esta, y no se retira hasta que el diferencial pase entero.
+**El producto, entero.** El cutover fue el 2026-07-28: la versión de Python se
+retiró a la historia de git una vez el diferencial pasó completo, y hoy SIGER es
+un solo binario con la interfaz dentro. De aquella etapa solo sobrevive lo que
+sirve al cliente y no a la aplicación: `sembrar_demo.py`, y el
+`verificar_clausulado.py` de la raíz.
 
 ## Qué hay
 
@@ -32,9 +34,13 @@ que recordar: la base se crea y se migra sola al arrancar.
 
 No se revisó: se **midió**.
 
+Los corpus se congelaron con el motor de Python **antes** del cutover y viajan
+versionados en el repositorio (`siger-core/tests/oraculo/` y los
+`oraculo_*.json`). Ya no hay guion que los regenere, y es a propósito: un oráculo
+que se puede rehacer deja de ser un oráculo.
+
 ```bash
-python herramientas/congelar_oraculo.py   # congela lo que produce el motor de Python
-cd rust && cargo test                     # exige que el de Rust produzca lo mismo
+cd rust && cargo test -p siger-core       # exige que el de Rust produzca lo mismo
 ```
 
 El oráculo son **484 festivos día a día entre 2020 y 2045** y **8 534
@@ -66,14 +72,27 @@ calcula los plazos de julio distinto, y nada se lo dice.
 
 ## Lo que todavía no está
 
-Se dice aquí y no en una lista aparte, para que no se lea como terminado:
+**Nada de la versión de Python.** El port quedó completo el 2026-08-03, cuando
+entró la licencia offline, que era lo último que faltaba.
 
-- La **inferencia de periodicidad** (marcar fechas y que el sistema diga qué
-  patrón son) sigue solo en Python: `app/services/inferir_periodicidad.py`.
-- La **firma de entregas** con Quipu: en Rust son crates propios, pero el
-  servicio aún no está portado.
-- El **planificador en segundo plano** que crea las entregas.
-- La **subida** de archivos (la descarga sí está, y con la comprobación de
-  pertenencia que la versión anterior no tenía).
-- La **carga de datos** existentes: falta el paso que lee la base de Python y la
-  vuelca en este esquema.
+Eso no significa que no haya trabajo por hacer: hay fichas de mejora abiertas
+—cosas que el sistema hace y podría hacer mejor—, y viven como tareas y PR, no
+aquí. Esta sección solo responde a «¿le falta algo respecto a lo que había?», y la
+respuesta es que no. **Antes de dar por pendiente cualquier cosa, mira los PR
+abiertos**: en este repositorio el trabajo terminado espera turno de merge los
+lunes, así que «no está en `main`» y «no está hecho» no son lo mismo.
+
+Lo que sí está, y este documento daba por pendiente hasta el 2026-08-01:
+la inferencia de periodicidad (`siger-core/src/inferencia.rs`), la firma de
+entregas (`siger-api/src/firma.rs`), el planificador en segundo plano
+(`planificador.rs`), la subida de archivos (`POST /api/entregas/{id}/archivo`,
+con tope de cuerpo y comprobación de pertenencia) y la carga de la base anterior
+(`siger-api importar <origen> <destino>`). Además, posteriores al texto original:
+el **cifrado en reposo** de las entregas, el **freno** al ensayo de contraseñas
+con revocación de sesiones, `respaldar`/`restaurar` con copia verificada, la
+**administración de cuentas** y la **verificación en dos pasos** (TOTP, con sus
+tres pantallas y el QR dibujado por el propio binario en `qr.rs`, sin ninguna
+dependencia nueva). Y la **licencia offline** (`licencia.rs`), que cierra el port:
+archivo firmado verificado en local, sin red, con los diez campos del Anexo A del
+EULA — y que **no bloquea nada nunca**, ni ausente, ni vencida, ni alterada, ni con
+exceso de usuarios.
