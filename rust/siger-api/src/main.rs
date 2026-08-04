@@ -358,6 +358,7 @@ async fn revisar_hashes_cmd() -> std::process::ExitCode {
     let mut se_suben = 0usize;
     let mut flojos_memoria = Vec::new();
     let mut flojos_trabajo = Vec::new();
+    let mut digest_corto = Vec::new();
     let mut ilegibles = Vec::new();
     for (id, email, hash) in &filas {
         match cuentas::situacion_de(hash) {
@@ -365,6 +366,7 @@ async fn revisar_hashes_cmd() -> std::process::ExitCode {
             S::SeSubeAlEntrar => se_suben += 1,
             S::FlojoEnMemoria => flojos_memoria.push((id, email)),
             S::FlojoEnTrabajo => flojos_trabajo.push((id, email)),
+            S::DigestCorto => digest_corto.push((id, email)),
             S::Ilegible => ilegibles.push((id, email)),
         }
     }
@@ -376,11 +378,13 @@ async fn revisar_hashes_cmd() -> std::process::ExitCode {
     println!("  {se_suben:>4}  se ponen al día solas en el próximo acceso de su dueño");
     println!("  {:>4}  con menos memoria que la política (no se pueden subir sin rebajarla)", flojos_memoria.len());
     println!("  {:>4}  con menos trabajo total, pero más memoria (déficit acotado bajo 2×)", flojos_trabajo.len());
+    println!("  {:>4}  con parámetros suficientes pero DIGEST más corto de 32 bytes", digest_corto.len());
     println!("  {:>4}  ILEGIBLES: no los reconoce el verificador", ilegibles.len());
 
     for (titulo, lista) in [
         ("Se ponen al día subiendo Params::DEFAULT", &flojos_memoria),
         ("Sin acción: no son más débiles en conjunto", &flojos_trabajo),
+        ("Salida corta, parámetros por encima: no se reescriben para no rebajarlos", &digest_corto),
     ] {
         if !lista.is_empty() {
             println!("\n{titulo}:");

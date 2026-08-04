@@ -401,8 +401,22 @@ pub(crate) enum SituacionHash {
     /// encima, así que no es más débil en conjunto. Se cuenta igual, porque «no
     /// aparece en ningún sitio» y «no pasa nada» no son lo mismo.
     FlojoEnTrabajo,
-    /// El PHC no se puede leer, o no es Argon2. Desde aquí no se puede decir nada
-    /// de él — y quien no puede entrar con él ya lo sabe.
+    /// Los parámetros están a la altura —o por encima—, pero el digest es más corto
+    /// de los 32 bytes que hoy se emiten.
+    ///
+    /// **No se reescribe**, y ahí está la diferencia con [`Self::SeSubeAlEntrar`]:
+    /// llegar aquí significa que su memoria o su trabajo están POR ENCIMA de la
+    /// política, así que reescribirlo con `Params::DEFAULT` los rebajaría para ganar
+    /// unos bytes de salida — un trato malo. Se cuenta, que es lo que faltaba: hasta
+    /// el 2026-08-04 este caso salía como `AlDia`, o sea **certificado como
+    /// conforme**, porque el quinto eje solo se consultaba dentro de la dominancia y
+    /// el `return false` de arriba lo dejaba en la sombra. Lo cazó la auditoría de
+    /// este mismo cambio: la invariante que el módulo declara seguía siendo falsa,
+    /// en un cuadrante más estrecho que antes.
+    DigestCorto,
+    /// El PHC no se puede leer, no es Argon2, o no trae digest contra el que
+    /// comparar. Desde aquí no se puede decir nada de él — y quien no puede entrar
+    /// con él ya lo sabe.
     Ilegible,
 }
 
@@ -411,6 +425,14 @@ pub(crate) enum SituacionHash {
 pub(crate) fn situacion_de(texto: &str) -> SituacionHash {
     let Ok(h) = PasswordHash::new(texto) else { return SituacionHash::Ilegible };
     if argon2::Algorithm::try_from(h.algorithm).is_err() {
+        return SituacionHash::Ilegible;
+    }
+    // Sin digest no hay nada contra lo que comparar: el PHC describe unos parámetros
+    // y su dueño no puede entrar con él. `Ilegible` es la etiqueta honesta — antes
+    // caía en `AlDia`, o sea que el recuento decía «nada que hacer» de una cuenta
+    // que no abre. Es la misma clase de mentira que `clave_argon2` cierra en el
+    // volcado, por otra puerta.
+    if h.hash.is_none() {
         return SituacionHash::Ilegible;
     }
     let Ok(p) = argon2::Params::try_from(&h) else { return SituacionHash::Ilegible };
@@ -422,6 +444,13 @@ pub(crate) fn situacion_de(texto: &str) -> SituacionHash {
         SituacionHash::FlojoEnMemoria
     } else if trabajo(&p) < trabajo(&hoy) {
         SituacionHash::FlojoEnTrabajo
+    } else if digest_corto(&p) {
+        // FUERA de la sombra del `return false` de la dominancia, y por eso está
+        // aquí y no dentro de `por_debajo_de_la_politica`: para REESCRIBIR hay que
+        // dominar —si no, se rebajaría la memoria—, pero para CONTAR no. Un hash con
+        // 64 MiB de memoria y 80 bits de salida no está «al día» por mucho que no se
+        // pueda arreglar reescribiéndolo.
+        SituacionHash::DigestCorto
     } else {
         SituacionHash::AlDia
     }
@@ -1738,6 +1767,19 @@ mod pruebas {
             // Más memoria, menos trabajo: el cuadrante espejo, que no se contaba en
             // ninguna parte hasta que existió este recuento.
             (SituacionHash::FlojoEnTrabajo, phc_con(38911, 1, 1, Algorithm::Argon2id)),
+            // Parámetros por ENCIMA de la política y digest corto: no se puede
+            // reescribir sin rebajar la memoria, pero tampoco está «al día». Hasta
+            // que la auditoría lo midió, este caso caía en `AlDia` y NINGUNA prueba
+            // lo notaba — el quinto eje solo se consultaba dentro de la dominancia.
+            (SituacionHash::DigestCorto, phc_con_digest(hoy.m_cost() * 2, hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id, 10)),
+            (SituacionHash::DigestCorto, phc_con_digest(hoy.m_cost(), hoy.t_cost() + 1, hoy.p_cost(), Algorithm::Argon2id, 16)),
+            // Y la pareja que lo distingue de `SeSubeAlEntrar`: mismo digest corto,
+            // pero con los parámetros dominados, SÍ se reescribe.
+            (SituacionHash::SeSubeAlEntrar, phc_con_digest(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id, 10)),
+            // Un PHC sin digest: describe parámetros y no contiene ninguna
+            // contraseña, así que su dueño no puede entrar. Decir «nada que hacer»
+            // de una cuenta que no abre era la misma mentira que el volcado cierra.
+            (SituacionHash::Ilegible, "$argon2id$v=19$m=19456,t=2,p=1$c2FsZGVsYXNwcnVlYmFzZGVjdWVudA".to_string()),
             (SituacionHash::Ilegible, "$2b$12$KIXQd7yPQhLpqZ0e0O9K0eXhO0LNnRZQ1B3D8dQPmZfJPjMcCsGvC".to_string()),
             (SituacionHash::Ilegible, "esto-no-es-un-phc".to_string()),
             (SituacionHash::Ilegible, "$scrypt$ln=16,r=8,p=1$c2FsZGVsYXNwcnVlYmFz$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8".to_string()),
