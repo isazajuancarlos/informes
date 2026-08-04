@@ -669,18 +669,23 @@ el index empotrado, y `humo.sh` por socket. No cites `npm test` como verde.
 
 ## Pendiente conocido
 
-- **Volcado: el hash de contraseña (#231)** — igual, escrito y sin mergear, en
-  `fix/volcado-comprueba-el-hash` (PR #16). Éste sí entra limpio: medido el
-  2026-08-03 contra el `main` de después de #19, sin un solo conflicto.
+**Ninguno.** Medido el 2026-08-04: cero PR abiertos
+(`gh pr list --state open`) y cero ramas remotas fuera de `main`
+(`git branch -r --no-merged origin/main`). Todo lo escrito está mergeado.
 
-**Antes de dar por pendiente cualquier cosa de esta sección, mira las ramas y los
-PR abiertos.** El 2026-08-03 entraron en `main` la administración de cuentas, el
-segundo factor, el hash del volcado (#231) y **esta licencia**: si un documento
-los da por pendientes, está viejo.
+**Esta sección se mide, no se recuerda: corre esos dos comandos antes de dar
+nada por pendiente.** Se lleva ya dos mentiras por no hacerlo: el volcado (#231)
+figuró aquí como «escrito y sin mergear en PR #16» **hasta el 2026-08-04, un día
+entero después de entrar en `main`** —el PR se mergeó el 2026-08-03 a las 13:06,
+y tres párrafos más abajo este mismo archivo ya lo daba por dentro—, y antes le
+había pasado igual a la administración de cuentas, el segundo factor y la
+licencia. Una lista de pendientes escrita a mano envejece en silencio y hace
+trabajar sobre algo que ya no existe.
 
-Es lo **único** pendiente, y `rust/README.md` dice lo mismo. Si encuentras otro
-documento que dé por pendiente la inferencia, la firma, el planificador, la
-subida o la importación, está desactualizado: las cinco están hechas.
+Si encuentras otro documento que dé por pendiente la inferencia, la firma, el
+planificador, la subida, la importación, el volcado (#231), el segundo factor
+(#212), la administración de cuentas o la licencia offline, está desactualizado:
+las diez están hechas y en `main`.
 
 ## Documentos de negocio (no se editan sin pedirlo)
 

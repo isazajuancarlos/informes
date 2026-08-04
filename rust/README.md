@@ -79,8 +79,12 @@ Eso no significa que no haya trabajo por hacer: hay fichas de mejora abiertas
 —cosas que el sistema hace y podría hacer mejor—, y viven como tareas y PR, no
 aquí. Esta sección solo responde a «¿le falta algo respecto a lo que había?», y la
 respuesta es que no. **Antes de dar por pendiente cualquier cosa, mira los PR
-abiertos**: en este repositorio el trabajo terminado espera turno de merge los
-lunes, así que «no está en `main`» y «no está hecho» no son lo mismo.
+abiertos y las ramas** (`gh pr list --state open`,
+`git branch -r --no-merged origin/main`): «no está en `main`» y «no está hecho»
+no son lo mismo. Hasta el 2026-08-03 el trabajo terminado esperaba turno de merge
+los **lunes**; ese régimen se acabó —ahora se mergea cuando está listo, y el
+límite es el cupo de minutos de Actions, no el calendario—. Al 2026-08-04 los dos
+comandos salen vacíos: no hay nada esperando.
 
 Lo que sí está, y este documento daba por pendiente hasta el 2026-08-01:
 la inferencia de periodicidad (`siger-core/src/inferencia.rs`), la firma de
