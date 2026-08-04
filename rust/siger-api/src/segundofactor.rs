@@ -502,28 +502,65 @@ pub async fn verificar(
         return Ok((StatusCode::TOO_MANY_REQUESTS, cabeceras, "demasiados intentos").into_response());
     }
 
-    let Some(blob) = blob else { return Err(rechazo()) };
-    let Some(secreto) = descifrar_secreto(&e, blob).await? else {
-        return Err(Error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "el servidor no puede leer el segundo factor ahora mismo".into(),
-        ));
-    };
-
+    // EL SECRETO ES OPCIONAL PARA ESTE PASO, y eso es lo que rescata a quien
+    // tiene sus diez códigos en el papel.
+    //
+    // Antes, no poder leerlo cortaba aquí con un 503 y `gastar_codigo_recuperacion`
+    // no se alcanzaba nunca. Pero un código de recuperación vive en OTRA tabla, es
+    // un hash Argon2 y no necesita el secreto para nada: lo único que hacía falta
+    // era el orden. Con el orden viejo, la avería que obliga a rescatar tumbaba
+    // también el mecanismo de rescate, y la única salida quedaba en manos de un
+    // administrador — para algo que el papel del usuario resuelve solo.
+    //
+    // Los tres caminos por los que el secreto puede faltar acaban en el mismo
+    // sitio, `SecretoIlegible`, porque para este paso significan lo mismo («no se
+    // pudo mirar») y ninguno es culpa de quien está tecleando: no hay blob, no hay
+    // frase de reposo o el blob no descifra, y el secreto descifrado no es base32.
     let ultimo = ultimo.map(|v| v as u64);
-    let veredicto = dosfactores::verificar(&secreto, &p.codigo, ahora.timestamp() as u64, ultimo);
+    let secreto = match blob {
+        Some(b) => descifrar_secreto(&e, b).await?,
+        None => None,
+    };
+    let veredicto = match &secreto {
+        Some(s) => dosfactores::verificar(s, &p.codigo, ahora.timestamp() as u64, ultimo),
+        None => Veredicto::SecretoIlegible,
+    };
 
     let contador_nuevo = match veredicto {
         Veredicto::Correcto { contador } => Some(contador),
         Veredicto::SecretoIlegible => {
-            // Una avería del servidor no se cobra al usuario: ni cuenta como
-            // fallo para el freno ni le dice que su código está mal.
+            // La avería se registra igual, y una sola vez: es del despliegue y
+            // alguien tiene que enterarse.
             tracing::error!("usuario {}: el secreto TOTP guardado no es legible", pendiente.usuario_id);
             auditar(&e.bd, "2fa_secreto_ilegible", Some(&email), None).await;
-            return Err(Error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "el servidor no puede comprobar el segundo factor ahora mismo".into(),
-            ));
+
+            // PERO LOS CÓDIGOS DE RECUPERACIÓN SIGUEN VALIENDO. Son hashes en otra
+            // tabla y no dependen del secreto, así que esta es exactamente la
+            // situación para la que existen: el segundo factor no está disponible.
+            if !dosfactores::parece_codigo_de_recuperacion(&p.codigo) {
+                // Un TOTP de seis dígitos no se puede comprobar sin el secreto, y
+                // una avería del servidor no se le cobra al usuario: ni cuenta como
+                // fallo para el freno ni se le dice que su código está mal.
+                return Err(Error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "el servidor no puede comprobar el segundo factor ahora mismo. \
+                     Use uno de sus códigos de recuperación"
+                        .into(),
+                ));
+            }
+            if !gastar_codigo_recuperacion(&e, pendiente.usuario_id, &p.codigo).await? {
+                // Aquí SÍ se cobra el fallo, y es la diferencia que impide que la
+                // avería sea un carril libre: un código de recuperación se pudo
+                // comprobar de verdad contra la tabla, así que fallar es fallar.
+                // Sin esto, quien tenga la contraseña probaría los códigos sin
+                // freno mientras el secreto siga ilegible.
+                crate::acceso::anotar(&e.bd, &email, &origen, false, ahora).await?;
+                auditar(&e.bd, "2fa_fallido", Some(&email), None).await;
+                return Err(rechazo());
+            }
+            auditar(&e.bd, "2fa_recuperacion_usada", Some(&email), None).await;
+            // Sin contador que quemar: no hubo TOTP.
+            None
         }
         Veredicto::Reutilizado | Veredicto::Incorrecto => {
             // Un código de recuperación es la otra puerta legítima, y se prueba
@@ -1085,6 +1122,102 @@ mod pruebas {
         )
         .await;
         assert_eq!(s, StatusCode::UNAUTHORIZED, "el código de recuperación se pudo reutilizar");
+    }
+
+    #[tokio::test]
+    async fn con_el_secreto_ilegible_el_codigo_de_recuperacion_todavia_rescata() {
+        // La avería que obliga a rescatar tumbaba también el mecanismo de rescate:
+        // `verificar` devolvía 503 antes de llegar a `gastar_codigo_recuperacion`,
+        // así que los diez códigos del papel dejaban de servir justo el día que
+        // hacían falta, y la única salida quedaba en manos de un administrador.
+        //
+        // Un código de recuperación es un hash Argon2 en OTRA tabla y no necesita
+        // el secreto para nada: lo único que había que arreglar era el orden.
+        let (app, e) = servidor(true).await;
+        let (_, _, cookies) = login(&app).await;
+        let sesion = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE).unwrap();
+        let (_, codigos) = enrolar_con_codigos(&app, &sesion).await;
+
+        // Se rompe el blob del secreto, que es lo que pasa cuando se rota
+        // `SIGER_CLAVE_REPOSO` sin volver a enrolar a nadie.
+        sqlx::query("UPDATE usuarios SET totp_secreto_cifrado = X'00010203' WHERE id = 1")
+            .execute(&e.bd)
+            .await
+            .unwrap();
+
+        // 1. Un TOTP de seis dígitos no se puede comprobar: 503, y NO se le cobra
+        //    al usuario — la avería es del servidor.
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        let (s, _) = llamar(
+            &app,
+            peticion("POST", "/api/2fa/verificar", Some(&pendiente), Some(r#"{"codigo":"123456"}"#)),
+        )
+        .await;
+        assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "un TOTP incomprobable no dio 503");
+        let fallos: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM intento_acceso WHERE exito = 0")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(fallos, 0, "se le cobró al usuario una avería del servidor");
+
+        // 2. Y EL RESCATE: con un código de recuperación, ABRE. Es la mitad que da
+        //    sentido a todo lo demás.
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        let (s, _, abiertas) = cookies_de(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/verificar",
+                Some(&pendiente),
+                Some(&format!(r#"{{"codigo":"{}"}}"#, codigos[0])),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "el código de recuperación no rescató la cuenta");
+        assert!(
+            valor_de(&abiertas, crate::sesion::NOMBRE_COOKIE).is_some(),
+            "rescató sin entregar sesión: no sirve de nada"
+        );
+
+        // 3. Un código de recuperación FALSO sí se cobra, porque sí se pudo
+        //    comprobar. Sin esto, el estado de avería sería un carril para probar
+        //    códigos de recuperación sin freno mientras el secreto siga roto.
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        let (s, _) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/verificar",
+                Some(&pendiente),
+                Some(r#"{"codigo":"AAAAAAAA-BBBBBBBB"}"#),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "un código de recuperación falso no fue rechazado");
+        let fallos: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM intento_acceso WHERE exito = 0")
+            .fetch_one(&e.bd)
+            .await
+            .unwrap();
+        assert_eq!(fallos, 1, "el freno no contó el intento contra los códigos de recuperación");
+
+        // 4. Y el gastado no vuelve: la avería no convierte el rescate en una
+        //    puerta permanente.
+        let (_, _, cookies) = login(&app).await;
+        let pendiente = valor_de(&cookies, crate::sesion::NOMBRE_COOKIE_PENDIENTE).unwrap();
+        let (s, _) = llamar(
+            &app,
+            peticion(
+                "POST",
+                "/api/2fa/verificar",
+                Some(&pendiente),
+                Some(&format!(r#"{{"codigo":"{}"}}"#, codigos[0])),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::UNAUTHORIZED, "el código ya gastado volvió a abrir");
     }
 
     #[tokio::test]

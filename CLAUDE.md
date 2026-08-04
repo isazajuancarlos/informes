@@ -408,7 +408,7 @@ rato con la cuenta protegida por la contraseña sola, que es el estado del que e
 segundo factor viene a sacarla—. Quedarse sin códigos es lo normal: se gastan de
 uno en uno, y cada uno se usa el día que el teléfono no está.
 
-Siete cosas que se rompen solas si alguien las "simplifica":
+Ocho cosas que se rompen solas si alguien las "simplifica":
 
 1. **El login con 2FA no emite cookie de sesión**, sino un token *pendiente* en
    **otra cookie** (`siger_pendiente`, 5 min) y firmado en **otro dominio**
@@ -463,10 +463,29 @@ Siete cosas que se rompen solas si alguien las "simplifica":
    nadie queda fuera — lo único que no se puede es activar un factor nuevo.
 6. **Desactivar exige la contraseña actual**, y se lleva los códigos de
    recuperación. Sin eso, una sesión robada apaga el segundo factor.
+7. **El secreto ilegible NO tumba los códigos de recuperación**, y el orden es
+   toda la regla. `verificar` devolvía 503 antes de llegar a
+   `gastar_codigo_recuperacion`, así que una frase de reposo rotada dejaba sin
+   servir los diez códigos del papel **justo el día que hacían falta**: la avería
+   que obliga a rescatar tumbaba también el mecanismo de rescate, y la única
+   salida quedaba en manos de un administrador. Un código de recuperación es un
+   hash Argon2 en **otra tabla** y no necesita el secreto para nada. Los tres
+   caminos por los que el secreto puede faltar —sin blob, sin frase o blob que no
+   descifra, y secreto que no es base32— acaban en el mismo `SecretoIlegible`,
+   porque para este paso significan lo mismo.
+
+   **Y lo que decide si el fallo se cobra es el FORMATO**
+   (`dosfactores::parece_codigo_de_recuperacion`): con forma de código de
+   recuperación —ocho, guion, ocho— se comprueba de verdad contra la tabla, así
+   que fallar cuenta para el freno; cualquier otra cosa no se pudo comprobar y no
+   se cobra. Sin esa distinción el estado de avería sería **un carril para ensayar
+   códigos de recuperación sin freno**, y con ella un TOTP de seis dígitos sigue
+   recibiendo 503 sin que se le cobre nada a quien no tiene culpa.
 
 `Veredicto` tiene **cuatro** estados por la misma razón que `Documento`:
-`SecretoIlegible` es una avería del despliegue y no se cobra al usuario —ni
-cuenta como fallo para el freno ni le dice que su código está mal—, y
+`SecretoIlegible` es una avería del despliegue y no se le cobra al usuario **por
+lo que no se pudo comprobar** —un TOTP no cuenta como fallo para el freno ni se le
+dice que su código está mal—, pero sí por lo que sí: ver el punto 7. Y
 `Reutilizado` se anota aparte de `Incorrecto` aunque el cliente reciba lo mismo:
 un código repetido escondido entre los dedazos es un ataque que no se ve.
 
