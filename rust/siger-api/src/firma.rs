@@ -23,6 +23,7 @@ use std::collections::BTreeMap;
 use quipu::api::{decode_verified, encode_signed};
 use quipu::dictionary::Dictionary;
 use quipu::pqsign::{generate_keypair, SigningKey, VerifyingKey};
+use crate::hex::{a_hex, de_hex};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -42,20 +43,6 @@ pub fn sha256_hex(datos: &[u8]) -> String {
     format!("{:x}", h.finalize())
 }
 
-fn de_hex(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    if s.len() % 2 != 0 {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
-}
-
-fn a_hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
-}
 
 /// Los campos auditables de una entrega. Es lo que se firma; cualquier cambio
 /// posterior en cualquiera de ellos invalida la firma.
@@ -202,5 +189,32 @@ mod tests {
     fn sin_clave_no_se_firma_pero_no_se_rompe() {
         assert!(firmar(&ejemplo(), None).is_none());
         assert!(!verificar(&ejemplo(), "loquesea", None).0);
+    }
+
+    /// Una clave PRESENTE pero inservible degrada igual que la ausencia, y no
+    /// rompe nada.
+    ///
+    /// Esta prueba existe porque `de_hex` se movió a `crate::hex` para arreglar
+    /// un pánico, y ese movimiento tocó el camino de FIRMA sin que la firma
+    /// fuera el objeto del cambio. La versión de aquí aceptaba la cadena vacía
+    /// (devolvía `Some(vec![])`) y la nueva la rechaza: el resultado observable
+    /// tiene que ser el mismo —ninguna firma, ninguna verificación, ningún
+    /// pánico—, y sin esto no había nada que lo sujetara. El caso multibyte es
+    /// el pánico original.
+    #[test]
+    fn una_clave_inservible_degrada_igual_que_la_ausencia() {
+        for clave in ["", "  ", "impar", "zz", "no-es-hex", "€a", "añb1", "—"] {
+            assert!(
+                firmar(&ejemplo(), Some(clave)).is_none(),
+                "con la clave {clave:?} no se puede firmar, y tampoco reventar"
+            );
+            let (ok, _) = verificar(&ejemplo(), "loquesea", Some(clave));
+            assert!(!ok, "con la clave {clave:?} nada puede verificar");
+        }
+        // Y el control: con una clave BUENA sí se firma y sí verifica. Sin esto,
+        // un `firmar` que devolviera siempre `None` pasaría la prueba entera.
+        let (vk, sk) = generar_claves();
+        let f = firmar(&ejemplo(), Some(&sk)).expect("con clave buena se firma");
+        assert!(verificar(&ejemplo(), &f, Some(&vk)).0);
     }
 }

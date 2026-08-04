@@ -123,6 +123,22 @@ pub struct Config {
     /// firmado, pero sí seguir firmando.
     pub firma_vk_hex: Option<String>,
 
+    /// Dónde está el archivo de licencia offline (#175). No es un secreto y su
+    /// ausencia no impide nada, así que aquí sí hay valor por defecto — es lo
+    /// contrario del caso de arriba: un archivo que no existe da «sin licencia»,
+    /// que es un estado legítimo, no una instalación insegura silenciosa.
+    pub licencia_archivo: String,
+    /// Clave PÚBLICA del licenciante (hex), con la que se verifica la licencia.
+    ///
+    /// Va en configuración y no incrustada en el código a propósito: así el mismo
+    /// binario sirve para varios licenciantes (revendedor, filial) sin
+    /// recompilar. Su secreto no importa —es pública—; lo que importa es que el
+    /// cliente no la pueda cambiar sin que se note, y de eso se ocupa el
+    /// contrato, no el código: sustituirla es exactamente igual de detectable que
+    /// borrar el archivo. Sin ella el veredicto es «sin verificador», nunca
+    /// «inválida»: no se acusa a una licencia que no se ha podido mirar.
+    pub licencia_pubkey: Option<String>,
+
     /// Frase de cifrado EN REPOSO de los archivos de entrega (A1). `None` =
     /// desactivado CON GRACIA: los archivos se guardan en claro, como antes —
     /// cifrar es una postura que se elige, y no cifrar nunca impide entregar.
@@ -396,6 +412,8 @@ impl Config {
             extensiones: vec![".pdf".into()],
             firma_sk_hex: None,
             firma_vk_hex: None,
+            licencia_archivo: crate::licencia::ARCHIVO_POR_DEFECTO.into(),
+            licencia_pubkey: None,
             clave_reposo: None,
             correo: None,
             tras_proxy: false,
@@ -451,6 +469,11 @@ impl Config {
             // Firma opcional (perfil `entorno`): sin clave, se registra sin firmar.
             firma_sk_hex: opcional("QUIPU_SIGNING_KEY"),
             firma_vk_hex: opcional("QUIPU_VERIFYING_KEY"),
+            // Licencia offline (#175). Ninguna de las dos bloquea nada: sin
+            // archivo, «ausente»; sin clave pública, «sin verificador».
+            licencia_archivo: opcional("INFORMES_LICENCIA")
+                .unwrap_or_else(|| crate::licencia::ARCHIVO_POR_DEFECTO.into()),
+            licencia_pubkey: opcional("INFORMES_LICENCIA_PUBKEY"),
             // Cifrado en reposo opcional (validado arriba): sin frase, en claro.
             clave_reposo,
             // Alertas dormidas por defecto; se encienden con ALERTAS_ACTIVAS.
@@ -478,6 +501,8 @@ impl Config {
             extensiones: vec![],
             firma_sk_hex: None,
             firma_vk_hex: None,
+            licencia_archivo: crate::licencia::ARCHIVO_POR_DEFECTO.into(),
+            licencia_pubkey: None,
             clave_reposo: None,
             correo: None,
             tras_proxy: false,

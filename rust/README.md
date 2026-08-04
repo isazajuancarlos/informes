@@ -72,11 +72,15 @@ calcula los plazos de julio distinto, y nada se lo dice.
 
 ## Lo que todavía no está
 
-Se dice aquí y no en una lista aparte, para que no se lea como terminado:
+**Nada de la versión de Python.** El port quedó completo el 2026-08-03, cuando
+entró la licencia offline, que era lo último que faltaba.
 
-- La **licencia offline**. La versión de Python traía una licencia firmada por
-  el licenciante y verificada en local (`INFORMES_LICENCIA`); el port no la trae
-  aún. Cuando llegue, mantendrá el modo degradado: **nunca bloquea nada**.
+Eso no significa que no haya trabajo por hacer: hay fichas de mejora abiertas
+—cosas que el sistema hace y podría hacer mejor—, y viven como tareas y PR, no
+aquí. Esta sección solo responde a «¿le falta algo respecto a lo que había?», y la
+respuesta es que no. **Antes de dar por pendiente cualquier cosa, mira los PR
+abiertos**: en este repositorio el trabajo terminado espera turno de merge los
+lunes, así que «no está en `main`» y «no está hecho» no son lo mismo.
 
 Lo que sí está, y este documento daba por pendiente hasta el 2026-08-01:
 la inferencia de periodicidad (`siger-core/src/inferencia.rs`), la firma de
@@ -88,4 +92,7 @@ el **cifrado en reposo** de las entregas, el **freno** al ensayo de contraseñas
 con revocación de sesiones, `respaldar`/`restaurar` con copia verificada, la
 **administración de cuentas** y la **verificación en dos pasos** (TOTP, con sus
 tres pantallas y el QR dibujado por el propio binario en `qr.rs`, sin ninguna
-dependencia nueva).
+dependencia nueva). Y la **licencia offline** (`licencia.rs`), que cierra el port:
+archivo firmado verificado en local, sin red, con los diez campos del Anexo A del
+EULA — y que **no bloquea nada nunca**, ni ausente, ni vencida, ni alterada, ni con
+exceso de usuarios.

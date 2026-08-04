@@ -578,6 +578,51 @@ produjo el motor de Python antes del cutover, congelados y vendorizados:
 `tests/oraculo_inferencia.json` + `tests/oraculo_interpretaciones.json`. Una sola
 fecha distinta pone el test rojo.
 
+## Licencia offline (`licencia.rs`)
+
+Archivo firmado por el licenciante, verificado **en local** y sin red, con la
+misma criptografía que sella las entregas. Los campos son los diez del Anexo A
+del EULA, ni uno más: si el Anexo cambia, el módulo cambia con él.
+
+**No bloquea nada. Nunca** — ni ausente, ni con el mantenimiento vencido, ni
+alterada, ni con exceso de usuarios (invariante 2). Da visibilidad y evidencia;
+el remedio ante el exceso es contractual. `veredicto` devuelve `Estado`, no
+`Result`: no hay forma de que un llamante la convierta en un camino de error.
+
+`GET /api/licencia` reparte en dos: el **aviso** (situación, mensaje, si es
+grave) lo ve cualquiera con sesión —es la visibilidad que justifica el módulo—,
+y los **datos del Anexo A** más el exceso de usuarios solo `Admin` o
+`Supervisor`, porque llevan NIT, alcance contratado y el recuento exacto de
+usuarios activos, que `/api/usuarios` ya le niega a un `Tercero`.
+
+Tres detalles que parecen descuidos y no lo son:
+
+- **`mantenimiento_hasta` NO es la vigencia.** El derecho de uso es perpetuo
+  (3.1, 3.2, 7.6). Pasada la fecha se dice «mantenimiento vencido», nunca
+  «licencia vencida»; y no lleva color de alarma, que solo merece `Invalida`.
+- **El veredicto NO valida contra las listas del Anexo A; la emisión sí.** Un
+  binario viejo que rechazara una edición nueva pintaría de rojo una licencia
+  legítima y bien firmada. Quien dice si el documento es auténtico es la firma.
+- **El reloj es UTC, y la zona horaria del cliente vive en `DIAS_DE_GRACIA`.**
+  `mantenimiento_hasta` no es un instante: es una fecha de un contrato firmado en
+  Colombia, y comparar con UTC a secas le quitaba al cliente las últimas cinco
+  horas del día que pagó. La primera solución fue `chrono::Local`, y era peor:
+  cuando el sistema no puede resolver su zona, `Local` **degrada a UTC en
+  silencio** — la directiva 20 al revés. Así que `licencia::hoy` es
+  `Utc::now().date_naive()` y la tolerancia es un día de gracia en la
+  comparación, con dos aserciones en tiempo de compilación que lo acotan (cubre
+  las 14 horas de desfase máximo y no pasa de dos días). Lo que se guarda firmado
+  sigue siendo la fecha exacta del contrato.
+  **Y la suma va `checked`**: `NaiveDate + Duration` entra en pánico al desbordar,
+  y `%Y-%m-%d` acepta `+262142-12-31` —que `emitir` firma sin queja—, con lo que
+  el handler moría y el aviso desaparecía en silencio. Al desbordar se toma «no
+  vencido», que es la dirección que nunca empeora la situación del cliente.
+
+El par de claves del licenciante es DISTINTO del de las entregas
+(`generar-claves-licencia`), y `INFORMES_LICENCIA_SK` no se acepta por argumento
+—quedaría en el historial del intérprete y a la vista de `ps`—. Despliegue y
+emisión, en `DESPLIEGUE.md`.
+
 ## La interfaz (`angular/`)
 
 **Angular 22.1.x** (`@angular/cli` y `@angular/build` 22.1.2) + `@angular/material`
@@ -607,23 +652,14 @@ el index empotrado, y `humo.sh` por socket. No cites `npm test` como verde.
 
 ## Pendiente conocido
 
-- **Licencia offline — escrita, sin mergear.** No está en `main`, pero **no la
-  escribas de nuevo**: vive en la rama `feat/licencia-offline-rust` (PR #17), son
-  712 líneas de `licencia.rs` más interfaz, `hex.rs` y `DESPLIEGUE.md`. Mantiene
-  el modo degradado: **nunca bloquea nada**. Su verde es de antes del merge de
-  #19, así que **hay que rebasarla y volver a medirla**: el 2026-08-03,
-  `git merge-tree` daba conflicto de contenido en cuatro archivos —`rutas.rs`,
-  `nucleo/api.ts`, `app.scss` y este `CLAUDE.md`—, todos por haber crecido las
-  dos ramas en el mismo sitio. No es un choque de diseño, es un rebase a mano.
 - **Volcado: el hash de contraseña (#231)** — igual, escrito y sin mergear, en
   `fix/volcado-comprueba-el-hash` (PR #16). Éste sí entra limpio: medido el
   2026-08-03 contra el `main` de después de #19, sin un solo conflicto.
 
 **Antes de dar por pendiente cualquier cosa de esta sección, mira las ramas y los
-PR abiertos.** Los dos «pendientes» que quedan son trabajo terminado esperando
-turno de merge, no trabajo por hacer — y el tercero de esta lista (la
-administración de cuentas y el segundo factor) ya está en `main` desde el
-2026-08-03: si un documento lo da por pendiente, está viejo.
+PR abiertos.** El 2026-08-03 entraron en `main` la administración de cuentas, el
+segundo factor, el hash del volcado (#231) y **esta licencia**: si un documento
+los da por pendientes, está viejo.
 
 Es lo **único** pendiente, y `rust/README.md` dice lo mismo. Si encuentras otro
 documento que dé por pendiente la inferencia, la firma, el planificador, la

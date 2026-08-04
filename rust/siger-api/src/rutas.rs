@@ -112,6 +112,7 @@ pub fn router(estado: Estado) -> Router {
         .route("/api/sesion", post(abrir_sesion).delete(cerrar_sesion))
         .route("/api/salir-todo", post(salir_todo))
         .route("/api/yo", get(yo))
+        .route("/api/licencia", get(licencia))
         .route("/api/entregas", get(listar_entregas))
         .route("/api/entregas/{id}/verificar", get(verificar_entrega))
         .route(
@@ -540,6 +541,102 @@ async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, E
 
 async fn yo(actor: Actor) -> Json<Actor> {
     Json(actor)
+}
+
+/// El estado de la licencia offline, para el aviso de la cabecera (#175).
+///
+/// **La respuesta tiene dos mitades y no se reparten igual**, que es lo que
+/// señaló la revisión de seguridad:
+///
+/// - El **aviso** —situación, mensaje, si hay que avisar, si es grave— lo ve
+///   todo el que tenga sesión. Es la «visibilidad» que justifica este módulo;
+///   esconderla a los operadores la convertiría en visibilidad para uno solo.
+/// - Los **datos del Anexo A** y el aviso de exceso solo los ve `Admin` o
+///   `Supervisor`. Traen razón social, NIT, alcance contratado y —cuando hay
+///   exceso— **el número exacto de usuarios activos**, que es un dato que
+///   `/api/usuarios` ya le niega a un `Tercero`. Dárselo por esta puerta sería
+///   una incoherencia entre dos endpoints sobre el mismo dato, y el `Tercero`
+///   es por definición quien no pertenece a la organización.
+///
+/// **Lo único del licenciatario que SÍ atraviesa el reparto es la fecha de fin
+/// de mantenimiento**, que viaja dentro de `mensaje` («Mantenimiento vigente
+/// hasta …»). Es deliberado y no un descuido: sin ella el aviso no dice nada
+/// —«mantenimiento vencido» sin decir cuándo no sirve a quien tiene que
+/// renovarlo—, y una fecha de renovación no identifica a nadie ni revela el
+/// alcance contratado. Ni NIT, ni razón social, ni edición, ni recuentos pasan
+/// por ahí. Lo señaló la re-revisión, y se anota aquí para que la próxima
+/// persona que lea esta lista sepa que la fecha se dejó pasar a propósito.
+///
+/// Ni esta ruta ni ninguna otra consultan la licencia para DECIDIR nada. Si un
+/// día alguien quiere que un endpoint dependa de esto, que lea primero la nota
+/// de módulo de `licencia.rs`.
+async fn licencia(actor: Actor, State(e): State<Estado>) -> Json<serde_json::Value> {
+    // Se lee del disco en cada consulta, sin caché: una licencia que se
+    // sustituye en caliente tiene que verse sin reiniciar el binario. Un archivo
+    // ilegible se trata como ausente — que es lo que es desde aquí— y no como
+    // alterado: acusar de manipulación a un problema de permisos sería falso.
+    //
+    // Y se lee con TRES cautelas, que son la única forma que encontró la revisión
+    // de hacer que este módulo contradiga su propia invariante:
+    //
+    // 1. `spawn_blocking`, porque `read_to_string` es síncrono y esto corre en un
+    //    hilo del runtime. La interfaz pide esta ruta en cada navegación de cada
+    //    sesión, así que un archivo que no termina de leerse nunca —un *named
+    //    pipe* en esa ruta— colgaría hilos del vivero hasta dejar sin atender a
+    //    rutas que no tienen nada que ver. «Nunca bloquea nada» tiene que valer
+    //    también para el resto de la aplicación.
+    // 2. `is_file()`, porque una tubería o un dispositivo no son un documento.
+    // 3. Un tope de tamaño: descifrar la envoltura convierte el artefacto entero en
+    //    un entero grande, y eso es **cuadrático** en el número de símbolos. Una
+    //    licencia real son cientos de bytes; un mega es un archivo que no es una
+    //    licencia, y leerlo entero para descubrirlo cuesta minutos de CPU.
+    //
+    // Nada de esto cambia el veredicto: lo que no se puede leer sigue siendo
+    // `Ausente`, igual que antes. Solo deja de costar lo que costaba averiguarlo.
+    const TOPE_LICENCIA: u64 = 64 * 1024;
+    let ruta = e.cfg.licencia_archivo.clone();
+    let firmado = tokio::task::spawn_blocking(move || {
+        let md = std::fs::metadata(&ruta).ok()?;
+        if !md.is_file() || md.len() > TOPE_LICENCIA {
+            return None;
+        }
+        std::fs::read_to_string(&ruta).ok()
+    })
+    .await
+    .ok()
+    .flatten();
+    let estado = crate::licencia::veredicto(
+        firmado.as_deref(),
+        e.cfg.licencia_pubkey.as_deref(),
+        crate::licencia::hoy(),
+    );
+
+    // ¿Quién ve el detalle? Admin y Supervisor. Ver la nota de arriba.
+    let ve_el_detalle = matches!(actor.rol, crate::autz::Rol::Admin | crate::autz::Rol::Supervisor);
+
+    // El exceso de Usuarios Autorizados se mide contra los usuarios ACTIVOS, que
+    // es la definición del Anexo A (credencial nominal vigente). Si la consulta
+    // falla, no se inventa un número: no hay aviso. Y no se cuenta siquiera si
+    // quien pregunta no va a poder verlo.
+    let exceso = if ve_el_detalle {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM usuarios WHERE activo != 0")
+            .fetch_one(&e.bd)
+            .await
+            .ok()
+            .and_then(|n| u32::try_from(n).ok())
+            .and_then(|n| crate::licencia::excede_usuarios(&estado, n))
+    } else {
+        None
+    };
+
+    Json(serde_json::json!({
+        "situacion": estado.situacion,
+        "mensaje": estado.mensaje,
+        "hay_que_avisar": estado.hay_que_avisar(),
+        "es_grave": estado.es_grave(),
+        "datos": if ve_el_detalle { estado.datos } else { None },
+        "exceso_usuarios": exceso,
+    }))
 }
 
 /// `GET /api/demostracion` — las cuentas que esta instalación anuncia.
@@ -1496,6 +1593,217 @@ mod pruebas_demostracion {
 /// No basta con que `guaca::freno` diga la regla: el borde que importa es el que
 /// aplica este manejador, y las dos maneras de contar la misma cosa es como se
 /// llega a que una diga cinco y la otra seis.
+/// El endpoint de licencia, comprobado como ENDPOINT (#175).
+///
+/// Que `licencia.rs` esté probado no dice que la ruta esté cableada ni que
+/// devuelva lo que la interfaz lee: son dos cosas distintas y la segunda es la
+/// que se ve en pantalla. Aquí se llama al manejador de verdad, contra una base
+/// de verdad y un archivo de verdad.
+#[cfg(test)]
+mod pruebas_licencia {
+    use super::*;
+    use crate::licencia::Licencia;
+
+    fn actor() -> Actor {
+        con_rol(crate::autz::Rol::Admin)
+    }
+
+    fn con_rol(rol: crate::autz::Rol) -> Actor {
+        Actor {
+            id: 1,
+            nombre: "Ada".into(),
+            email: "ada@x.co".into(),
+            rol,
+            stakeholder_id: None,
+        }
+    }
+
+    fn ejemplo() -> Licencia {
+        Licencia {
+            licenciatario: "ACME S.A.S.".into(),
+            nit: "900123456-1".into(),
+            edicion: "profesional".into(),
+            perfil: "onprem".into(),
+            version: "4.0".into(),
+            usuarios: 2,
+            sedes: 1,
+            modalidad: "asistida".into(),
+            emitida: "2026-07-31".into(),
+            mantenimiento_hasta: "2099-12-31".into(),
+        }
+    }
+
+    /// Base con `n` usuarios activos, para medir el exceso contra el Anexo A.
+    async fn estado_con(activos: i64, archivo: &str, pubkey: Option<String>) -> Estado {
+        let bd = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&bd).await.unwrap();
+        for i in 1..=activos {
+            sqlx::query(
+                "INSERT INTO usuarios (id,nombre,email,clave_hash,rol,activo) \
+                 VALUES (?,'U',?,'x','ADMIN',1)",
+            )
+            .bind(i)
+            .bind(format!("u{i}@x.co"))
+            .execute(&bd)
+            .await
+            .unwrap();
+        }
+        let mut cfg = Config::de_prueba();
+        cfg.licencia_archivo = archivo.to_string();
+        cfg.licencia_pubkey = pubkey;
+        Estado {
+            bd,
+            cfg,
+            motor: std::sync::Arc::new(siger_core::Motor::nuevo(
+                siger_core::Calendario::de_pais("CO", 2024, 2030).unwrap(),
+            )),
+        }
+    }
+
+    /// Sin archivo y sin clave, el endpoint responde igual y NO se cae. Es el
+    /// estado de cualquier instalación recién puesta, y tiene que ser un camino
+    /// normal, no un error que la interfaz tenga que tratar.
+    #[tokio::test]
+    async fn sin_licencia_el_endpoint_responde_y_no_avisa_en_rojo() {
+        let e = estado_con(1, "/no/existe/licencia.quipu", None).await;
+        let Json(v) = licencia(actor(), State(e)).await;
+        assert_eq!(v["situacion"], "sin_verificador", "{v}");
+        assert_eq!(v["es_grave"], false);
+        assert!(v["mensaje"].as_str().is_some_and(|m| !m.is_empty()));
+        assert_eq!(v["datos"], serde_json::Value::Null);
+        assert_eq!(v["exceso_usuarios"], serde_json::Value::Null);
+    }
+
+    /// El camino completo: se emite, se escribe, se lee y llega a la interfaz
+    /// con la forma que la interfaz espera. Y el exceso de usuarios se mide
+    /// contra los ACTIVOS de la base, no contra un número inventado.
+    #[tokio::test]
+    async fn una_licencia_de_verdad_llega_entera_a_la_interfaz() {
+        let (vk, sk) = crate::licencia::generar_claves();
+        let firmado = crate::licencia::emitir(&ejemplo(), &sk).unwrap();
+        let dir = std::env::temp_dir().join(format!("siger-lic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("licencia.quipu");
+        std::fs::write(&ruta, &firmado).unwrap();
+
+        // Dos usuarios activos y un tope de dos: el tope EXACTO no excede.
+        let e = estado_con(2, ruta.to_str().unwrap(), Some(vk.clone())).await;
+        let Json(v) = licencia(actor(), State(e)).await;
+        assert_eq!(v["situacion"], "valida", "{v}");
+        assert_eq!(v["hay_que_avisar"], false);
+        assert_eq!(v["datos"]["licenciatario"], "ACME S.A.S.");
+        assert_eq!(v["datos"]["usuarios"], 2);
+        assert_eq!(v["exceso_usuarios"], serde_json::Value::Null, "2 no excede a 2");
+
+        // Un usuario activo más y SÍ excede — pero sigue sin ser grave y sin
+        // impedir nada: el remedio es contractual.
+        let e = estado_con(3, ruta.to_str().unwrap(), Some(vk)).await;
+        let Json(v) = licencia(actor(), State(e)).await;
+        assert_eq!(v["situacion"], "valida", "el exceso NO invalida la licencia: {v}");
+        assert_eq!(v["es_grave"], false);
+        let aviso = v["exceso_usuarios"].as_str().expect("3 > 2 tiene que avisar");
+        assert!(aviso.contains('3') && aviso.contains('2'), "{aviso}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// El AVISO lo ve todo el mundo; el DETALLE, solo Admin y Supervisor.
+    ///
+    /// Lo señaló una revisión de seguridad: `datos` trae razón social, NIT y
+    /// alcance contratado, y `exceso_usuarios` lleva dentro **el número exacto
+    /// de usuarios activos** — un dato que `/api/usuarios` ya le niega a un
+    /// `Tercero`, que por definición no pertenece a la organización. Dárselo por
+    /// esta otra puerta sería que dos endpoints digan cosas distintas sobre el
+    /// mismo dato.
+    ///
+    /// Y la otra mitad importa igual: al `Tercero` **no** se le esconde el
+    /// aviso. Ocultárselo convertiría la visibilidad que justifica el módulo en
+    /// visibilidad para dos roles.
+    #[tokio::test]
+    async fn el_aviso_es_para_todos_y_el_detalle_no() {
+        let (vk, sk) = crate::licencia::generar_claves();
+        // Tope de 2 y tres usuarios activos: hay exceso que contar.
+        let firmado = crate::licencia::emitir(&ejemplo(), &sk).unwrap();
+        let dir = std::env::temp_dir().join(format!("siger-lic-rol-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("licencia.quipu");
+        std::fs::write(&ruta, &firmado).unwrap();
+
+        for (rol, ve) in [
+            (crate::autz::Rol::Admin, true),
+            (crate::autz::Rol::Supervisor, true),
+            (crate::autz::Rol::Operador, false),
+            (crate::autz::Rol::Tercero, false),
+        ] {
+            let e = estado_con(3, ruta.to_str().unwrap(), Some(vk.clone())).await;
+            let Json(v) = licencia(con_rol(rol), State(e)).await;
+
+            // El aviso, para todos: sin mensaje no hay nada que enseñar.
+            assert_eq!(v["situacion"], "valida", "{rol:?}: {v}");
+            assert!(v["mensaje"].as_str().is_some_and(|m| !m.is_empty()), "{rol:?}");
+            assert_eq!(v["es_grave"], false, "{rol:?}");
+
+            // El detalle, solo a quien corresponde.
+            assert_eq!(v["datos"].is_null(), !ve, "{rol:?}: datos");
+            assert_eq!(v["exceso_usuarios"].is_null(), !ve, "{rol:?}: exceso");
+            if ve {
+                // Y cuando se ve, se ve entero: sin esto, un `datos` vacío
+                // pasaría la prueba por el lado equivocado.
+                assert_eq!(v["datos"]["nit"], "900123456-1", "{rol:?}");
+                assert_eq!(v["datos"]["licenciatario"], "ACME S.A.S.", "{rol:?}");
+                assert_eq!(v["datos"]["usuarios"], 2, "{rol:?}");
+                // Los DOS números, no solo uno: con `contains('3')` a secas
+                // pasaría cualquier mensaje que llevara un 3 por cualquier
+                // motivo, y lo que se afirma es que dice activos Y tope.
+                let aviso = v["exceso_usuarios"].as_str().unwrap();
+                assert!(aviso.contains('3') && aviso.contains('2'), "{rol:?}: {aviso}");
+            }
+        }
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Un archivo que existe y no es una licencia se trata como INVÁLIDA, y ahí
+    /// sí con alarma: alguien puso algo en el sitio de la licencia.
+    #[tokio::test]
+    async fn un_archivo_que_no_es_licencia_sale_en_rojo() {
+        let (vk, _) = crate::licencia::generar_claves();
+        let dir = std::env::temp_dir().join(format!("siger-lic-mala-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ruta = dir.join("licencia.quipu");
+        std::fs::write(&ruta, "esto no es una licencia").unwrap();
+
+        let e = estado_con(1, ruta.to_str().unwrap(), Some(vk)).await;
+        let Json(v) = licencia(actor(), State(e)).await;
+        assert_eq!(v["situacion"], "invalida", "{v}");
+        assert_eq!(v["es_grave"], true);
+        assert_eq!(v["datos"], serde_json::Value::Null);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// La ruta está en el router y pide sesión. Sin esto, todo lo anterior
+    /// prueba una función que nadie puede llamar desde el navegador.
+    #[tokio::test]
+    async fn la_ruta_existe_y_no_es_publica() {
+        use tower::ServiceExt;
+
+        let e = estado_con(1, "/no/existe", None).await;
+        let r = router(e)
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/api/licencia")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // 401 y no 404: la ruta EXISTE (si no estuviera cableada sería 404) y
+        // exige sesión.
+        assert_eq!(r.status(), StatusCode::UNAUTHORIZED, "sin sesión no se ve la licencia");
+    }
+}
+
 #[cfg(test)]
 mod pruebas_acceso {
     use super::*;

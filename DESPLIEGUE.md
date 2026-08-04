@@ -317,11 +317,49 @@ lo comprobaría él: lee lo anunciado y **entra con eso**.
   `sqlite3`, no copiando el archivo vivo (una copia de una base en uso puede
   capturar una transacción a medias y producir un respaldo que parece bueno y no
   restaura).
-- **Licencia offline — PENDIENTE de portar a Rust.** En el sistema Python existía
-  una licencia firmada por el licenciante que la app verificaba en local
-  (`INFORMES_LICENCIA`). El port a Rust todavía NO la trae; está registrada como
-  tarea. Cuando exista, mantendrá el principio del modo degradado: la licencia
-  **nunca bloquea nada** —ni ausente, ni vencida, ni alterada—, solo da
-  visibilidad; el remedio ante el exceso es contractual. Si una licencia vencida
-  impidiera registrar una entrega, Xiliux pasaría a ser la causa del
-  incumplimiento del cliente.
+- **Licencia offline**: portada a Rust (`licencia.rs`, #175). Un archivo firmado
+  por el licenciante que la aplicación verifica **en local**, sin red, con la
+  misma criptografía post-cuántica que sella las entregas. La licencia **nunca
+  bloquea nada** —ni ausente, ni con el mantenimiento vencido, ni alterada, ni
+  con exceso de usuarios—: solo da visibilidad (`GET /api/licencia`) y evidencia.
+  Ese endpoint reparte en dos: el aviso lo ve cualquiera con sesión; los datos
+  del Anexo A y el exceso de usuarios, solo `Admin` y `Supervisor`.
+  El remedio ante el exceso es contractual. Si una licencia vencida impidiera
+  registrar una entrega, Xiliux pasaría a ser la causa del incumplimiento del
+  cliente.
+
+  En el cliente, dos variables, ninguna obligatoria:
+
+  | Variable | Qué es |
+  |---|---|
+  | `INFORMES_LICENCIA` | ruta del archivo. Por defecto `licencia.quipu`, junto al binario. Sin archivo: «ausente», que es normal en evaluación. |
+  | `INFORMES_LICENCIA_PUBKEY` | clave **pública** del licenciante, en hex. Sin ella el veredicto es «sin verificador», nunca «inválida»: no se acusa a una licencia que no se ha podido mirar. |
+
+  En casa del licenciante, y **solo** ahí:
+
+  ```bash
+  siger-api generar-claves-licencia     # una vez; la SK no viaja al cliente
+
+  # La clave se TECLEA, no se escribe en la línea de órdenes.
+  read -rs -p 'SK del licenciante: ' INFORMES_LICENCIA_SK && export INFORMES_LICENCIA_SK
+  siger-api emitir-licencia \
+      --licenciatario "ACME S.A.S." --nit 900123456-1 \
+      --edicion profesional --perfil onprem --modalidad asistida \
+      --version 4.0 --usuarios 25 --sedes 3 \
+      --mantenimiento-hasta 2027-07-31 --salida licencia.quipu
+  unset INFORMES_LICENCIA_SK
+  ```
+
+  **Por qué `read -rs` y no `INFORMES_LICENCIA_SK=<hex> siger-api …`**, que es lo
+  que decía aquí hasta el 2026-08-03: el binario se niega a aceptar la clave como
+  argumento precisamente para que no acabe en el historial del intérprete ni a la
+  vista de `ps`. El prefijo de entorno la saca de `ps`, pero **la deja escrita en
+  el historial igual**, así que la mitad del control se perdía en la propia
+  documentación que lo explicaba. Con `read -rs` no se teclea en pantalla ni se
+  guarda, y el `unset` cierra el rato en que está en el entorno. Lo señaló la
+  revisión de seguridad de la rama.
+
+  `--mantenimiento-hasta` es el fin del **Período de Mantenimiento**, no de la
+  licencia: el derecho de uso es perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA).
+  Pasada esa fecha la interfaz dice «mantenimiento vencido» y **nunca** «licencia
+  vencida», que sería falso y empujaría al cliente a pagar por lo que ya tiene.
