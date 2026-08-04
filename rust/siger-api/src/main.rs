@@ -54,6 +54,10 @@ async fn main() -> std::process::ExitCode {
         return alertas_cmd().await;
     }
 
+    if std::env::args().nth(1).as_deref() == Some("revisar-hashes") {
+        return revisar_hashes_cmd().await;
+    }
+
     if matches!(
         std::env::args().nth(1).as_deref(),
         Some("respaldar") | Some("restaurar")
@@ -303,6 +307,99 @@ async fn importar_cmd() -> std::process::ExitCode {
 /// `siger-api alertas`: corre UNA pasada de alertas ahora, con la configuración
 /// del entorno. Útil para operar («manda los avisos pendientes ya») y para probar
 /// contra un buzón local. Si las alertas no están activas, lo dice y no hace nada.
+/// `revisar-hashes` — cuántas cuentas están por debajo de la política del KDF.
+///
+/// # Por qué es un subcomando y no un aviso en el log
+///
+/// La pregunta que alguien se hace no es «¿este hash está bien?» —eso lo arregla el
+/// acceso solo, cuando puede— sino **«¿puedo subir `Params::DEFAULT` sin dejar a
+/// nadie con un hash que no se pueda poner al día?»**. Eso es un recuento del
+/// padrón, y se consulta cuando se decide, no una línea que se repite en cada
+/// login: `renovar_hash_si_hace_falta` avisaba con `warn!` de las cuentas que no
+/// puede arreglar, y como nada resuelve ese estado, la misma advertencia sonaba
+/// para siempre hasta que nadie la mirara.
+///
+/// No lee ninguna contraseña ni la necesita: solo parsea la cabecera PHC de cada
+/// fila. Es barato y no toca el KDF.
+///
+/// Sale con FAILURE si hay hashes ilegibles, porque ésos SÍ son un problema —
+/// alguien no puede entrar y el login no distingue eso de una clave mala—; con
+/// SUCCESS en cualquier otro caso, incluidos los dos cuadrantes flojos, que no son
+/// una avería sino una decisión pendiente.
+async fn revisar_hashes_cmd() -> std::process::ExitCode {
+    let cfg = match config::Config::desde_entorno() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("\nno se pudo leer la configuración:\n  {e}\n");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let bd = match db::abrir(&cfg.url_bd).await {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("no se pudo abrir la base: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+    let filas: Vec<(i64, String, String)> =
+        match sqlx::query_as("SELECT id, email, clave_hash FROM usuarios ORDER BY id")
+            .fetch_all(&bd)
+            .await
+        {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("no se pudo leer el padrón: {e}");
+                return std::process::ExitCode::FAILURE;
+            }
+        };
+
+    use cuentas::SituacionHash as S;
+    let mut al_dia = 0usize;
+    let mut se_suben = 0usize;
+    let mut flojos_memoria = Vec::new();
+    let mut flojos_trabajo = Vec::new();
+    let mut ilegibles = Vec::new();
+    for (id, email, hash) in &filas {
+        match cuentas::situacion_de(hash) {
+            S::AlDia => al_dia += 1,
+            S::SeSubeAlEntrar => se_suben += 1,
+            S::FlojoEnMemoria => flojos_memoria.push((id, email)),
+            S::FlojoEnTrabajo => flojos_trabajo.push((id, email)),
+            S::Ilegible => ilegibles.push((id, email)),
+        }
+    }
+
+    let p = argon2::Params::DEFAULT;
+    println!("Política de hoy: m={} KiB, t={}, p={}", p.m_cost(), p.t_cost(), p.p_cost());
+    println!("{} cuentas en el padrón\n", filas.len());
+    println!("  {al_dia:>4}  a la altura de la política, o por encima");
+    println!("  {se_suben:>4}  se ponen al día solas en el próximo acceso de su dueño");
+    println!("  {:>4}  con menos memoria que la política (no se pueden subir sin rebajarla)", flojos_memoria.len());
+    println!("  {:>4}  con menos trabajo total, pero más memoria (déficit acotado bajo 2×)", flojos_trabajo.len());
+    println!("  {:>4}  ILEGIBLES: no los reconoce el verificador", ilegibles.len());
+
+    for (titulo, lista) in [
+        ("Se ponen al día subiendo Params::DEFAULT", &flojos_memoria),
+        ("Sin acción: no son más débiles en conjunto", &flojos_trabajo),
+    ] {
+        if !lista.is_empty() {
+            println!("\n{titulo}:");
+            for (id, email) in lista {
+                println!("  id={id} {email}");
+            }
+        }
+    }
+    if !ilegibles.is_empty() {
+        println!("\nNO PUEDEN ENTRAR, y el login les responde lo mismo que a una clave mala:");
+        for (id, email) in &ilegibles {
+            println!("  id={id} {email}");
+        }
+        println!("\nRepóngales la contraseña con `siger-api hashear` o desde la administración.");
+        return std::process::ExitCode::FAILURE;
+    }
+    std::process::ExitCode::SUCCESS
+}
+
 async fn alertas_cmd() -> std::process::ExitCode {
     let cfg = match config::Config::desde_entorno() {
         Ok(c) => c,

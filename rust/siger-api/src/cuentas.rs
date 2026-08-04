@@ -377,6 +377,56 @@ fn digest_corto(p: &argon2::Params) -> bool {
         < argon2::Params::DEFAULT_OUTPUT_LEN
 }
 
+/// En qué situación está un hash guardado respecto de la política de hoy.
+///
+/// Existe porque la pregunta que de verdad se hace alguien no es «¿este hash está
+/// bien?» sino **«¿puedo subir `Params::DEFAULT` sin dejar a nadie con un hash que
+/// no se pueda poner al día?»**, y eso es un recuento del padrón, no un aviso por
+/// acceso. Ver el subcomando `revisar-hashes`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SituacionHash {
+    /// A la altura de la política, o por encima. Nada que hacer.
+    AlDia,
+    /// Hoy lo domina y hay algo que ganar: se pone al día en el próximo acceso de
+    /// su dueño, solo. No hace falta hacer nada.
+    SeSubeAlEntrar,
+    /// Menos memoria que la política pero más trabajo total. No se puede
+    /// reescribir sin rebajarle la dureza de memoria, así que **se queda como
+    /// está**: lo que lo pone al día es subir `Params::DEFAULT`.
+    FlojoEnMemoria,
+    /// Más memoria que la política pero menos trabajo total. El espejo del
+    /// anterior, y por mucho tiempo el cuadrante que no se contaba en ninguna
+    /// parte: su déficit está acotado por debajo de 2× —si `m > m_hoy` y
+    /// `m·t < m_hoy·t_hoy`, entonces `t < t_hoy`— mientras la memoria está por
+    /// encima, así que no es más débil en conjunto. Se cuenta igual, porque «no
+    /// aparece en ningún sitio» y «no pasa nada» no son lo mismo.
+    FlojoEnTrabajo,
+    /// El PHC no se puede leer, o no es Argon2. Desde aquí no se puede decir nada
+    /// de él — y quien no puede entrar con él ya lo sabe.
+    Ilegible,
+}
+
+/// Clasifica un hash guardado. La lógica de decisión es la MISMA que usa el
+/// acceso; esto solo la nombra para poder contarla.
+pub(crate) fn situacion_de(texto: &str) -> SituacionHash {
+    let Ok(h) = PasswordHash::new(texto) else { return SituacionHash::Ilegible };
+    if argon2::Algorithm::try_from(h.algorithm).is_err() {
+        return SituacionHash::Ilegible;
+    }
+    let Ok(p) = argon2::Params::try_from(&h) else { return SituacionHash::Ilegible };
+    if por_debajo_de_la_politica(&h) {
+        return SituacionHash::SeSubeAlEntrar;
+    }
+    let hoy = argon2::Params::DEFAULT;
+    if p.m_cost() < hoy.m_cost() {
+        SituacionHash::FlojoEnMemoria
+    } else if trabajo(&p) < trabajo(&hoy) {
+        SituacionHash::FlojoEnTrabajo
+    } else {
+        SituacionHash::AlDia
+    }
+}
+
 /// ¿Está por debajo de la política en MEMORIA, sin que hoy lo domine?
 ///
 /// Es el caso que [`por_debajo_de_la_politica`] no puede resolver: menos memoria
@@ -437,12 +487,22 @@ pub(crate) async fn renovar_hash_si_hace_falta(
     let Ok(analizado) = PasswordHash::new(hash_viejo) else { return };
     if !por_debajo_de_la_politica(&analizado) {
         if flojo_en_memoria_pero_no_dominado(&analizado) {
-            // Ni se reescribe ni se da por bueno: se dice. Subir
-            // `Params::DEFAULT.m_cost` es lo que pondría estas cuentas al día.
-            tracing::warn!(
+            // `debug!` y no `warn!`, y el cambio es deliberado: nada resuelve este
+            // estado —a diferencia de la reescritura, que ocurre una vez y
+            // converge—, así que en `warn!` esta línea sonaba en CADA acceso de las
+            // mismas cuentas, para siempre. Una alarma que se repite sin que nada la
+            // cierre es una alarma que a la tercera semana nadie mira, y se lleva
+            // por delante las que sí son nuevas (directiva 23) — incluso siendo
+            // cierta, que es lo que la hacía tentadora.
+            //
+            // El recuento del padrón, que es la pregunta que alguien se hace de
+            // verdad —«¿puedo subir `Params::DEFAULT` sin dejar a nadie atrás?»—,
+            // vive en el subcomando `revisar-hashes`: se consulta cuando se decide,
+            // y cubre los DOS cuadrantes no dominados en vez de uno.
+            tracing::debug!(
                 "el hash del usuario {id} usa menos memoria que la política actual, pero \
                  más trabajo total: no se reescribe para no rebajarle la dureza de memoria. \
-                 Se pone al día subiendo Params::DEFAULT"
+                 Recuento del padrón en `siger-api revisar-hashes`"
             );
         }
         return;
@@ -1658,6 +1718,45 @@ mod pruebas {
             !por_debajo_de_la_politica(&PasswordHash::new(&solo_mas_largo).unwrap()),
             "se iba a rebajar un digest de 64 bytes sin ganar nada a cambio"
         );
+    }
+
+    #[test]
+    fn situacion_de_clasifica_cada_caso() {
+        use argon2::{Algorithm, Params};
+        let hoy = Params::DEFAULT;
+
+        // Los cinco, y cada uno con un caso que NO cae en los otros cuatro: si dos
+        // situaciones compartieran caso, la prueba pasaría con la clasificación
+        // fundida en una sola rama.
+        let casos = [
+            (SituacionHash::AlDia, phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id)),
+            (SituacionHash::AlDia, phc_con(hoy.m_cost() * 2, hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2id)),
+            (SituacionHash::SeSubeAlEntrar, phc_con(8, 1, 1, Algorithm::Argon2id)),
+            (SituacionHash::SeSubeAlEntrar, phc_con(hoy.m_cost(), hoy.t_cost(), hoy.p_cost(), Algorithm::Argon2i)),
+            // Menos memoria, más trabajo: no se puede subir sin rebajar la memoria.
+            (SituacionHash::FlojoEnMemoria, phc_con(4096, 10, 1, Algorithm::Argon2id)),
+            // Más memoria, menos trabajo: el cuadrante espejo, que no se contaba en
+            // ninguna parte hasta que existió este recuento.
+            (SituacionHash::FlojoEnTrabajo, phc_con(38911, 1, 1, Algorithm::Argon2id)),
+            (SituacionHash::Ilegible, "$2b$12$KIXQd7yPQhLpqZ0e0O9K0eXhO0LNnRZQ1B3D8dQPmZfJPjMcCsGvC".to_string()),
+            (SituacionHash::Ilegible, "esto-no-es-un-phc".to_string()),
+            (SituacionHash::Ilegible, "$scrypt$ln=16,r=8,p=1$c2FsZGVsYXNwcnVlYmFz$AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8".to_string()),
+        ];
+        for (esperada, texto) in casos {
+            assert_eq!(situacion_de(&texto), esperada, "mal clasificado: {texto}");
+        }
+
+        // Y la coherencia con la decisión del acceso, que es lo que impide que este
+        // recuento y el login cuenten historias distintas: `SeSubeAlEntrar` es
+        // exactamente lo que `por_debajo_de_la_politica` acepta, y nada más.
+        for (_, texto) in [(0, phc_con(8, 1, 1, Algorithm::Argon2id)), (1, phc_con(4096, 10, 1, Algorithm::Argon2id))] {
+            let h = PasswordHash::new(&texto).unwrap();
+            assert_eq!(
+                situacion_de(&texto) == SituacionHash::SeSubeAlEntrar,
+                por_debajo_de_la_politica(&h),
+                "el recuento y el acceso no están de acuerdo sobre {texto}"
+            );
+        }
     }
 
     #[tokio::test]

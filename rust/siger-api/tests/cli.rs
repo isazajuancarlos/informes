@@ -247,3 +247,30 @@ fn importar_sin_argumentos_falla() {
     assert_ne!(codigo(&o), 0);
     assert!(texto(&o).contains("uso:"), "{}", texto(&o));
 }
+
+#[test]
+fn revisar_hashes_lee_el_padron_y_dice_la_politica_de_verdad() {
+    // Este subcomando existe porque la pregunta —«¿puedo subir `Params::DEFAULT`
+    // sin dejar a nadie atrás?»— es un recuento del padrón, y antes se contestaba
+    // con un `warn!` en CADA acceso de las mismas cuentas: una alarma que nada
+    // cierra es una alarma que nadie mira.
+    //
+    // Aquí se comprueba lo que solo se puede comprobar cruzando la frontera del
+    // proceso: que el subcomando esté cableado, abra la base de verdad, y que la
+    // política que imprime salga de `Params::DEFAULT` y no de una copia escrita a
+    // mano en el mensaje. La CLASIFICACIÓN de cada situación —incluido el hash
+    // ilegible que hace salir distinto de cero— se prueba en `cuentas::pruebas::
+    // situacion_de_clasifica_cada_caso`, y se prueba allí y no aquí porque sembrar
+    // hashes a mano exigiría un `sqlite3` que este entorno no tiene: una prueba que
+    // depende de un binario externo se cae en la máquina donde no está, y el rojo
+    // no se parece a su causa.
+    let tmp = tempfile::tempdir().unwrap();
+    instalacion(tmp.path());
+    let o = correr(&["revisar-hashes"], tmp.path(), &entorno_valido());
+    let t = texto(&o);
+    assert_eq!(codigo(&o), 0, "una instalación recién hecha no tiene nada malo:\n{t}");
+    assert!(t.contains("m=19456 KiB, t=2, p=1"), "la política impresa no es la real:\n{t}");
+    assert!(t.contains("cuentas en el padrón"), "{t}");
+    // Y que de verdad LEE: una base recién migrada no trae ninguna cuenta.
+    assert!(t.contains("0 cuentas en el padrón"), "{t}");
+}
