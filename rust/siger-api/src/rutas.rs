@@ -575,7 +575,36 @@ async fn licencia(actor: Actor, State(e): State<Estado>) -> Json<serde_json::Val
     // sustituye en caliente tiene que verse sin reiniciar el binario. Un archivo
     // ilegible se trata como ausente — que es lo que es desde aquí— y no como
     // alterado: acusar de manipulación a un problema de permisos sería falso.
-    let firmado = std::fs::read_to_string(&e.cfg.licencia_archivo).ok();
+    //
+    // Y se lee con TRES cautelas, que son la única forma que encontró la revisión
+    // de hacer que este módulo contradiga su propia invariante:
+    //
+    // 1. `spawn_blocking`, porque `read_to_string` es síncrono y esto corre en un
+    //    hilo del runtime. La interfaz pide esta ruta en cada navegación de cada
+    //    sesión, así que un archivo que no termina de leerse nunca —un *named
+    //    pipe* en esa ruta— colgaría hilos del vivero hasta dejar sin atender a
+    //    rutas que no tienen nada que ver. «Nunca bloquea nada» tiene que valer
+    //    también para el resto de la aplicación.
+    // 2. `is_file()`, porque una tubería o un dispositivo no son un documento.
+    // 3. Un tope de tamaño: descifrar la envoltura convierte el artefacto entero en
+    //    un entero grande, y eso es **cuadrático** en el número de símbolos. Una
+    //    licencia real son cientos de bytes; un mega es un archivo que no es una
+    //    licencia, y leerlo entero para descubrirlo cuesta minutos de CPU.
+    //
+    // Nada de esto cambia el veredicto: lo que no se puede leer sigue siendo
+    // `Ausente`, igual que antes. Solo deja de costar lo que costaba averiguarlo.
+    const TOPE_LICENCIA: u64 = 64 * 1024;
+    let ruta = e.cfg.licencia_archivo.clone();
+    let firmado = tokio::task::spawn_blocking(move || {
+        let md = std::fs::metadata(&ruta).ok()?;
+        if !md.is_file() || md.len() > TOPE_LICENCIA {
+            return None;
+        }
+        std::fs::read_to_string(&ruta).ok()
+    })
+    .await
+    .ok()
+    .flatten();
     let estado = crate::licencia::veredicto(
         firmado.as_deref(),
         e.cfg.licencia_pubkey.as_deref(),

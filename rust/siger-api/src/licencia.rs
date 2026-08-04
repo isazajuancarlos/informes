@@ -386,7 +386,21 @@ pub fn veredicto(firmado: Option<&str>, vk_hex: Option<&str>, hoy: NaiveDate) ->
     // El día de gracia va AQUÍ y no en la fecha emitida: lo que se guarda
     // firmado sigue siendo la fecha del contrato, exacta. La tolerancia es de la
     // comparación, no del dato — ver `DIAS_DE_GRACIA`.
-    if hoy > hasta + chrono::Duration::days(DIAS_DE_GRACIA) {
+    //
+    // Y la suma va CHECKED, que no es paranoia de tipos: `NaiveDate + Duration`
+    // **entra en pánico** al desbordar, y `%Y-%m-%d` acepta años de más de cuatro
+    // cifras si llevan signo. `+262142-12-31` es `NaiveDate::MAX`, pasa la
+    // validación de `emitir` —usa el mismo parseo— y se firma sin queja; al sumarle
+    // el día de gracia, el handler moría y la conexión se cerraba sin respuesta. El
+    // cliente no puede provocarlo (haría falta la firma del licenciante), pero el
+    // efecto era que **el aviso desaparecía en silencio**, que es exactamente lo
+    // único que este módulo existe para hacer.
+    //
+    // Al desbordar se toma «no vencido»: es la dirección segura de las dos —una
+    // fecha en el año 262142 no está vencida— y sigue la invariante de que esto
+    // nunca puede empeorar la situación del cliente.
+    let limite = hasta.checked_add_signed(chrono::Duration::days(DIAS_DE_GRACIA));
+    if limite.is_some_and(|l| hoy > l) {
         // NO se dice «la licencia venció»: LA LICENCIA NO VENCE.
         return Estado::de(
             Situacion::MantenimientoVencido,
@@ -465,6 +479,43 @@ mod tests {
         let e = veredicto(Some(&firmado), Some(&vk), dia("2026-08-01"));
         assert_eq!(e.situacion, Situacion::Valida, "{}", e.mensaje);
         assert_eq!(e.datos.unwrap(), ejemplo());
+    }
+
+    /// Una fecha en el borde de lo representable no tumba el aviso.
+    ///
+    /// `%Y-%m-%d` acepta años de más de cuatro cifras si llevan signo, y
+    /// `+262142-12-31` es `NaiveDate::MAX`: pasa la validación de `emitir` —que usa
+    /// el mismo parseo— y se firma sin queja. Sumarle el día de gracia con `+`
+    /// **entra en pánico**, así que el handler moría y la conexión se cerraba sin
+    /// respuesta: la interfaz se quedaba sin aviso y **en silencio**, que es
+    /// exactamente lo único que este módulo existe para dar. No lo puede provocar
+    /// un cliente —hace falta la firma del licenciante—, pero es un pie en el que
+    /// dispararse al emitir una licencia «que no caduca».
+    ///
+    /// Al desbordar se toma «no vencido», que es la dirección que nunca empeora la
+    /// situación del cliente.
+    #[test]
+    fn una_fecha_en_el_limite_no_entra_en_panico_ni_apaga_el_aviso() {
+        let (vk, sk) = generar_claves();
+
+        // Que el montaje sea el caso de verdad: si `emitir` dejara de aceptarlo,
+        // esta prueba pasaría sin ejercer nada.
+        let mut l = ejemplo();
+        l.mantenimiento_hasta = "+262142-12-31".into();
+        assert_eq!(NaiveDate::parse_from_str(&l.mantenimiento_hasta, "%Y-%m-%d"), Ok(NaiveDate::MAX));
+        let firmado = emitir(&l, &sk).expect("emitir acepta esta fecha, y ahí está el problema");
+
+        let e = veredicto(Some(&firmado), Some(&vk), dia("2026-08-01"));
+        assert_eq!(e.situacion, Situacion::Valida, "{}", e.mensaje);
+        assert!(!e.es_grave(), "una fecha lejana no es una alarma");
+
+        // Y la pareja, para que la prueba no pase por «todo da Valida»: una fecha
+        // normal ya pasada sigue dando mantenimiento vencido.
+        let e = veredicto(Some(&firmado), Some(&vk), dia("2027-01-01"));
+        assert_eq!(e.situacion, Situacion::Valida);
+        let normal = emitir(&ejemplo(), &sk).unwrap();
+        let e = veredicto(Some(&normal), Some(&vk), dia("2028-01-01"));
+        assert_eq!(e.situacion, Situacion::MantenimientoVencido);
     }
 
     /// El invariante que manda sobre todos los demás: NADA de esto bloquea. La

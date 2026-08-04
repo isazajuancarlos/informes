@@ -584,10 +584,20 @@ Tres detalles que parecen descuidos y no lo son:
 - **El veredicto NO valida contra las listas del Anexo A; la emisión sí.** Un
   binario viejo que rechazara una edición nueva pintaría de rojo una licencia
   legítima y bien firmada. Quien dice si el documento es auténtico es la firma.
-- **El reloj es LOCAL, no UTC**, en las dos mitades (`licencia::hoy`), a
-  diferencia del resto de la aplicación. `mantenimiento_hasta` no es un
-  instante: es una fecha de un contrato firmado en Colombia, y comparar con UTC
-  le quitaba al cliente las últimas cinco horas del día que pagó.
+- **El reloj es UTC, y la zona horaria del cliente vive en `DIAS_DE_GRACIA`.**
+  `mantenimiento_hasta` no es un instante: es una fecha de un contrato firmado en
+  Colombia, y comparar con UTC a secas le quitaba al cliente las últimas cinco
+  horas del día que pagó. La primera solución fue `chrono::Local`, y era peor:
+  cuando el sistema no puede resolver su zona, `Local` **degrada a UTC en
+  silencio** — la directiva 20 al revés. Así que `licencia::hoy` es
+  `Utc::now().date_naive()` y la tolerancia es un día de gracia en la
+  comparación, con dos aserciones en tiempo de compilación que lo acotan (cubre
+  las 14 horas de desfase máximo y no pasa de dos días). Lo que se guarda firmado
+  sigue siendo la fecha exacta del contrato.
+  **Y la suma va `checked`**: `NaiveDate + Duration` entra en pánico al desbordar,
+  y `%Y-%m-%d` acepta `+262142-12-31` —que `emitir` firma sin queja—, con lo que
+  el handler moría y el aviso desaparecía en silencio. Al desbordar se toma «no
+  vencido», que es la dirección que nunca empeora la situación del cliente.
 
 El par de claves del licenciante es DISTINTO del de las entregas
 (`generar-claves-licencia`), y `INFORMES_LICENCIA_SK` no se acepta por argumento

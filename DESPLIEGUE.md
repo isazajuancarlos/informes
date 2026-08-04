@@ -339,12 +339,25 @@ lo comprobaría él: lee lo anunciado y **entra con eso**.
 
   ```bash
   siger-api generar-claves-licencia     # una vez; la SK no viaja al cliente
-  INFORMES_LICENCIA_SK=<hex> siger-api emitir-licencia \
+
+  # La clave se TECLEA, no se escribe en la línea de órdenes.
+  read -rs -p 'SK del licenciante: ' INFORMES_LICENCIA_SK && export INFORMES_LICENCIA_SK
+  siger-api emitir-licencia \
       --licenciatario "ACME S.A.S." --nit 900123456-1 \
       --edicion profesional --perfil onprem --modalidad asistida \
       --version 4.0 --usuarios 25 --sedes 3 \
       --mantenimiento-hasta 2027-07-31 --salida licencia.quipu
+  unset INFORMES_LICENCIA_SK
   ```
+
+  **Por qué `read -rs` y no `INFORMES_LICENCIA_SK=<hex> siger-api …`**, que es lo
+  que decía aquí hasta el 2026-08-03: el binario se niega a aceptar la clave como
+  argumento precisamente para que no acabe en el historial del intérprete ni a la
+  vista de `ps`. El prefijo de entorno la saca de `ps`, pero **la deja escrita en
+  el historial igual**, así que la mitad del control se perdía en la propia
+  documentación que lo explicaba. Con `read -rs` no se teclea en pantalla ni se
+  guarda, y el `unset` cierra el rato en que está en el entorno. Lo señaló la
+  revisión de seguridad de la rama.
 
   `--mantenimiento-hasta` es el fin del **Período de Mantenimiento**, no de la
   licencia: el derecho de uso es perpetuo (Cláusulas 3.1, 3.2 y 7.6 del EULA).
