@@ -192,14 +192,45 @@ echo "==> 5/5  comprobar que responde"
 # que no dice nada sobre el despliegue.
 ssh "$DESTINO" 'sleep 2; curl -sS -o /dev/null -w "http=%{http_code} bytes=%{size_download}\n" --max-time 10 http://127.0.0.1:8003/'
 
-cat <<FIN
+# ¿Está publicado ya? Se MIDE, no se supone.
+#
+# Hasta el 2026-08-04 lo de abajo se imprimía siempre, y decía dos cosas que
+# llevaban horas siendo falsas: que nada era alcanzable desde fuera, y que
+# faltaba crear el registro DNS. Mandaba al panel de OVH a crear un registro que
+# ya existía, y —peor— ocultaba que la demostración ESTABA en internet, que es
+# justo lo que hay que saber: lo que se publica anuncia sus credenciales.
+#
+# El sitio habilitado no basta como señal: puede estar y no resolver el nombre.
+# La verdad es la respuesta por el dominio, que es lo que ve el mundo.
+DOMINIO=informes.xiliux.com
+# El `|| true` no es descuido: con `set -e`, un `curl` que no conecta abortaría el
+# guion DESPUÉS de haber desplegado bien, y el despliegue se leería como fallido.
+# Aquí el fallo del curl ES el dato. Sale `000`, que es lo que dice curl cuando no
+# hubo respuesta, y así se imprime.
+PUBLICADO=$(ssh "$DESTINO" "curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://$DOMINIO/" 2>/dev/null || true)
+[ -n "$PUBLICADO" ] || PUBLICADO="sin respuesta"
 
-Desplegado, y escuchando solo en el bucle local: hasta que se publique, nada de
-esto es alcanzable desde fuera.
+if [ "$PUBLICADO" = "200" ]; then
+    cat <<FIN
 
-Falta UNA cosa que no depende de aquí:
+Desplegado y PUBLICADO: https://$DOMINIO/ responde 200.
 
-  Registro DNS   A   informes.xiliux.com  ->  192.99.42.108     (panel de OVH)
+Es una demostración pública a propósito, así que **las credenciales que anuncia
+son alcanzables desde internet**. Lo que se sirve ahí, medido como lo mide el
+mundo y no con un \`is-active\`:
+
+  curl -s https://$DOMINIO/api/demostracion
+  curl -s -o /dev/null -w '%{http_code}\\n' https://$DOMINIO/
+FIN
+else
+    cat <<FIN
+
+Desplegado, y escuchando solo en el bucle local: https://$DOMINIO/ contestó
+«$PUBLICADO», así que todavía no es alcanzable desde fuera.
+
+Puede faltar el registro DNS, que no depende de aquí:
+
+  Registro DNS   A   $DOMINIO  ->  192.99.42.108     (panel de OVH)
 
 Y cuando resuelva, publicar es un solo comando que además lo comprueba:
 
@@ -211,3 +242,4 @@ necesita que alguien conteste por ese nombre en el puerto 80, cosa que el sitio
 por defecto de este servidor no hace: responde 444. \`publicar-demo.sh\` rompe ese
 círculo con un sitio temporal de solo-HTTP.)
 FIN
+fi
