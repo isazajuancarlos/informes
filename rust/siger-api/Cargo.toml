@@ -38,7 +38,7 @@ hmac = "0.12"
 sha2 = "0.10"
 # Firma post-cuántica de las entregas (Ed25519 + ML-DSA-87). Xiliux es titular de
 # Quipu (doble licencia), así que su AGPL no obliga a nada aquí.
-quipu = "0.10"
+quipu = "0.11"
 # Cifrado EN REPOSO de las entregas (A1): guaca::reposo envuelve el contenedor
 # cifrado de Quipu (Argon2 → AEAD → padding Padmé). Repo público (AGPL, de casa),
 # fijado por commit inmutable, no por el tag —un tag es mutable y moverlo traería
@@ -57,7 +57,15 @@ quipu = "0.10"
 # `licenses ok` con las dos revisiones. Lo que discrimina es mirar lo que cargo
 # se bajó — `ls ~/.cargo/git/checkouts/guaca-*/<rev>/`: en `2ffe134/` no hay
 # `LICENSE` y en `d786d1c/` sí. Al salir el tag que lo incluya, volver a fijarlo.
-guaca = { git = "https://github.com/isazajuancarlos/guaca", rev = "d786d1c394ddc816f6959c12696ec2c6742acb28", version = "0.4" }
+#
+# 2026-08-05: sube de `d786d1c` a `23395f3` (9 commits), que es el mismo rev que
+# fija tunjo — un solo árbol de guaca en todo el universo. Ese salto trae los
+# cinco vectores fijos de compatibilidad y, sobre todo, **guaca pasa a pedir
+# quipu 0.11**. Por eso el `quipu = "0.11"` de arriba va en ESTE MISMO commit: con
+# uno solo de los dos, el `Cargo.lock` tendría DOS entradas de quipu (0.10 y 0.11)
+# y el binario de SIGER acabaría con dos pilas de criptografía dentro. El control
+# es `grep -c '^name = "quipu"$' Cargo.lock`, y tiene que dar 1.
+guaca = { git = "https://github.com/isazajuancarlos/guaca", rev = "23395f3587e0cb6a88b123a732dfdf9ecbe1bc0f", version = "0.4" }
 base64 = "0.22"
 rand = "0.8"
 

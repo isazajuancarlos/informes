@@ -785,7 +785,7 @@ dependencies = [
 [[package]]
 name = "guaca"
 version = "0.4.0"
-source = "git+https://github.com/isazajuancarlos/guaca?rev=d786d1c394ddc816f6959c12696ec2c6742acb28#d786d1c394ddc816f6959c12696ec2c6742acb28"
+source = "git+https://github.com/isazajuancarlos/guaca?rev=23395f3587e0cb6a88b123a732dfdf9ecbe1bc0f#23395f3587e0cb6a88b123a732dfdf9ecbe1bc0f"
 dependencies = [
  "argon2",
  "base64 0.22.1",
@@ -1480,6 +1480,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
+name = "padme-frame"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16fee60d228668db0dfcbe08a435c9e2bc1f0f1cbf6877137e6750aec846e3ff"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1622,9 +1628,9 @@ dependencies = [
 
 [[package]]
 name = "quipu"
-version = "0.10.0"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "301512cfc6c1be5c2d35de91c1f020aef8894426be9105268a642c3df1af33df"
+checksum = "72b9bde50550f8b27c5e41236fd90b763e07c96c47fc105421da9a92586699f0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1647,12 +1653,14 @@ dependencies = [
 
 [[package]]
 name = "quipu-nucleo"
-version = "0.1.0"
+version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ef5b3139beed2fc68c98973ed3cc3986bff7041c5ae1ee36a760612a02126cc"
+checksum = "9ef62d81a6f8a95cbf7dda08357727c0838aa3b5b09731f74afd84129f6b9c1d"
 dependencies = [
  "num-bigint",
+ "num-integer",
  "num-traits",
+ "padme-frame",
  "reed-solomon",
 ]
 
