@@ -25,8 +25,12 @@
 //! Así que la administración tiene su propio nombre y su propio recurso. La tabla
 //! es una; lo que cada extremo promete, no.
 
-use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
+// De `argon2` aquí solo se LEE: `PasswordHash` analiza el PHC guardado para
+// decidir si se quedó por debajo de la política. Quien CALCULA es
+// `guaca::claves` — ver [`hashear`]. Las pruebas sí importan el hasher completo,
+// porque necesitan fabricar hashes con parámetros elegidos, y eso es lo que
+// `guaca::claves` no ofrece ni debe ofrecer.
+use argon2::PasswordHash;
 use axum::extract::{Path, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -228,28 +232,50 @@ where
 
 /// El hash sale del MISMO Argon2 que después verifica el acceso.
 ///
-/// No es una preferencia: un hash producido por otra herramienta con otros
-/// parámetros deja a esa persona fuera del sistema, y el fallo aparece lejos de
-/// su causa —el alta termina bien, anuncia unas credenciales, y no se puede
-/// entrar con ellas—. Ya pasó una vez en la versión de Python; por eso el
-/// subcomando `hashear` existe y por eso esto no lo reimplementa.
+/// No es una preferencia, y falla de **dos** maneras que conviene no confundir
+/// —lo estaban en este comentario hasta el 2026-08-04—:
+///
+/// - Con otro **algoritmo o formato**, esa persona se queda fuera del sistema y
+///   el fallo aparece lejos de su causa: el alta termina bien, anuncia unas
+///   credenciales y no se puede entrar con ellas. Ya pasó en la versión de
+///   Python, y es ruidoso — alguien llama el primer día.
+/// - Con los mismos y **otros parámetros**, no se queda fuera nadie: el PHC de
+///   Argon2 lleva su `m`, su `t` y su `p` dentro, y el verificador los lee de
+///   ahí. Entra igual, con un hash que puede costar 2400 veces menos, y **no hay
+///   ningún síntoma**. Es el caso peligroso, precisamente por callado, y es el
+///   que se le escapaba al banco: medido por mutación, hashear con `m=8 t=1`
+///   dejaba todas las pruebas en verde.
+///
+/// Con `guaca::claves` los dos dejan de poder ocurrir por construcción, que es
+/// mejor que cazarlos.
+///
+/// **Quien calcula es `guaca::claves`, no este módulo**, y lo que aporta SIGER es
+/// solo lo que guaca no puede saber: el turno del semáforo y el `spawn_blocking`.
+/// Hasta el 2026-08-04 estas dos líneas estaban copiadas aquí, otra vez en
+/// [`renovar_hash_si_hace_falta`] y una tercera en el subcomando `hashear` de
+/// `main.rs` — tres copias que hoy coinciden por casualidad de tres literales
+/// iguales, no porque nada lo obligue. Es justo el modo de fallo del que nació
+/// guaca: «medico e informes copiaban la misma sesión y el mismo endurecimiento
+/// de secreto, y las copias YA habían divergido». Cuatro sitios que afirman ser
+/// el mismo Argon2 son cuatro sitios donde subir `Params::DEFAULT` puede
+/// olvidarse en uno.
 pub(crate) async fn hashear(e: &Estado, clave: String) -> Result<String, Error> {
-    let hecho = con_turno(e, "hashear", move || {
-        let sal = SaltString::generate(&mut OsRng);
-        Argon2::default().hash_password(clave.as_bytes(), &sal).map(|h| h.to_string())
-    })
-    .await?;
-    hecho.map_err(|err| {
-        tracing::error!("no se pudo cifrar la clave: {err}");
+    let hecho = con_turno(e, "hashear", move || guaca::claves::hashear(&clave)).await?;
+    hecho.ok_or_else(|| {
+        // `guaca::claves::hashear` devuelve `Option`, no el error del hasher: la
+        // única rama que lo produce es que la sal aleatoria falle, y no ocurre.
+        tracing::error!("no se pudo cifrar la clave");
         Error(StatusCode::INTERNAL_SERVER_ERROR, "error interno".into())
     })
 }
 
+/// Verifica contra el hash guardado. Un hash ilegible cuenta como «no coincide»,
+/// que es lo que hace `guaca::claves::verificar`: a quien intenta entrar no se le
+/// dice en qué se equivocó. Los hashes ilegibles se cuentan aparte, en
+/// `revisar-hashes`, porque ahí sí son una avería y no un fallo de quien teclea.
 pub(crate) async fn clave_correcta(e: &Estado, hash_texto: String, clave: String) -> Result<bool, Error> {
     con_turno(e, "verificar clave", move || {
-        PasswordHash::new(&hash_texto)
-            .map(|h| Argon2::default().verify_password(clave.as_bytes(), &h).is_ok())
-            .unwrap_or(false)
+        guaca::claves::verificar(&clave, &hash_texto)
     })
     .await
 }
@@ -552,13 +578,12 @@ pub(crate) async fn renovar_hash_si_hace_falta(
         return;
     };
     let hecho = tokio::task::spawn_blocking(move || {
-        let sal = SaltString::generate(&mut OsRng);
-        let r = Argon2::default().hash_password(clave.as_bytes(), &sal).map(|h| h.to_string());
+        let r = guaca::claves::hashear(&clave);
         drop(permiso); // el turno se libera con la memoria, no antes
         r
     })
     .await;
-    let Ok(Ok(nuevo)) = hecho else {
+    let Ok(Some(nuevo)) = hecho else {
         tracing::warn!("no se pudo renovar el hash del usuario {id}; entra igual");
         return;
     };
@@ -930,6 +955,14 @@ pub async fn cambiar_mi_clave(
 #[cfg(test)]
 mod pruebas {
     use super::*;
+    // El hasher completo vive aquí y no arriba: la producción calcula por
+    // `guaca::claves`, y estas pruebas necesitan además FABRICAR hashes con
+    // parámetros y sales elegidos —flojos, ajenos, de otra variante— que
+    // `guaca::claves` no puede producir. Y verificar con `argon2` directamente,
+    // en vez de con `guaca::claves::verificar`, es a propósito: así el que
+    // comprueba no es el mismo que calculó (directiva 33).
+    use argon2::password_hash::{PasswordHasher, SaltString};
+    use argon2::{Argon2, PasswordVerifier};
     use axum::body::Body;
     use axum::http::Request;
     use serde_json::Value;

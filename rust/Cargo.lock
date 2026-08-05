@@ -785,7 +785,7 @@ dependencies = [
 [[package]]
 name = "guaca"
 version = "0.4.0"
-source = "git+https://github.com/isazajuancarlos/guaca?rev=2ffe1346b706f5fbb8f5eaaea1c37375682c807d#2ffe1346b706f5fbb8f5eaaea1c37375682c807d"
+source = "git+https://github.com/isazajuancarlos/guaca?rev=d786d1c394ddc816f6959c12696ec2c6742acb28#d786d1c394ddc816f6959c12696ec2c6742acb28"
 dependencies = [
  "argon2",
  "base64 0.22.1",

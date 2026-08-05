@@ -298,7 +298,47 @@ por un banco de mutación, ver abajo):
    después.
 
 El hash sale del **mismo** Argon2 que verifica el acceso, con turno del semáforo
-de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo.
+de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo. Desde el
+2026-08-04 «el mismo» es literal: quien calcula y quien verifica es
+**`guaca::claves`** —una función, no cuatro copias—, y lo que pone SIGER encima
+es solo lo que guaca no puede saber, el turno y el `spawn_blocking`. Antes eran
+cuatro sitios con las mismas tres líneas (`cuentas::hashear`,
+`clave_correcta`, `renovar_hash_si_hace_falta` y el subcomando `hashear` de
+`main.rs`); coincidían por casualidad de cuatro literales iguales, que es el modo
+de fallo del que nació guaca. De `argon2` aquí solo se LEE: `PasswordHash`, para
+decidir si un hash guardado se quedó por debajo de la política.
+
+**Y el porqué que este archivo y tres comentarios daban estaba al revés.** Decían
+que un hash con otros parámetros «deja a alguien fuera del sistema». No deja a
+nadie fuera: un PHC de Argon2 lleva su `m`, su `t` y su `p` dentro, y el
+verificador los lee de ahí, así que un hash `m=8 t=1` **entra igual de bien**.
+Medido por mutación el 2026-08-04 en el subcomando `hashear`: las 11 pruebas del
+CLI siguieron verdes, la de «sale un `$argon2`» incluida. El daño es el
+contrario y no tiene síntoma —el primer administrador del cliente protegido por
+un hash 2400 veces más barato, y nada lo delata—, y lo caza ahora
+`el_hash_del_cli_abre_la_puerta_y_cuesta_lo_que_debe` (`tests/cli.rs`), que
+compara los parámetros del hash impreso contra `Params::DEFAULT`. Lo que sí deja
+a alguien fuera, y es ruidoso, es cambiar de **algoritmo o de formato**: eso lo
+sujeta la otra mitad de la misma prueba.
+
+**`sesion.rs` NO se dedujo, y no es un olvido**: `guaca::sesion` emite
+`id|caducidad` sin `token_version`, así que llamarla quitaría la revocación
+selectiva (#194) —la regla 2 de aquí arriba y `/api/salir-todo` enteros— y la
+separación de dominio del token pendiente del 2FA. La copia débil es la de la
+librería, y medico le añadió `token_version` a la suya por separado: hay tres
+versiones. La deduplicación va al revés —subir `version` a `guaca::sesion`— y es
+trabajo del repositorio de guaca; está registrada como tarea y explicada con
+tabla comparativa en el doc-comment de `sesion.rs`.
+
+**guaca se fija por `rev`, y el `rev` NO es el del tag `v0.4.0`.** Lo que se
+vendoriza al construir es un ÁRBOL, no un número de versión, y el árbol de ese
+tag no lleva `LICENSE` en la raíz: el binario acababa incorporando una copia de
+guaca que no declara bajo qué licencia se puede usar (la declaración del
+`Cargo.toml` y el NOTICE no sustituyen al archivo). Desde el 2026-08-04 el pin es
+`d786d1c`, un commit después del tag, que solo añade el LICENSE y toca el CI de
+guaca —ni una línea de `src/`, comprobado con `diff -r` sobre los dos árboles
+descargados—. Es el mismo commit que fija medico. Al salir un tag que lo
+incluya, volver a fijar el tag.
 
 **Cuidado con las dos cifras de memoria, que no son la misma** (corregido el
 2026-08-03, y estaba mal en siete comentarios): el Argon2 de **contraseñas**

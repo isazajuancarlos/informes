@@ -1,5 +1,39 @@
 //! La sesión vive en una cookie firmada, no en un token que el JavaScript lea.
 //!
+//! # Y sí, esto duplica `guaca::sesion` — pero al revés de como parece
+//!
+//! `guaca::sesion` existe justo para que esto no estuviera copiado, y el propio
+//! `guaca` lo dice: «medico e informes copiaban la misma sesión […] y las copias
+//! YA habían divergido». Así que la tentación correcta —borrar este módulo y
+//! llamar a guaca— hay que resistirla, porque **la copia débil es la de guaca**:
+//!
+//! | | `guaca::sesion` | este módulo |
+//! |---|---|---|
+//! | carga | `id\|caducidad` | `id\|version\|caducidad` |
+//! | revocación selectiva (#194) | **no la tiene** | `version`, ver abajo |
+//! | campos exigidos | los que salgan | exactamente tres |
+//! | dominio de firma | uno solo | dos, y separa el 2FA (#212) |
+//! | cabeceras `Set-Cookie` | no (no depende de axum) | sí |
+//!
+//! Cambiar este módulo por el de guaca hoy no simplificaría nada: quitaría la
+//! revocación —o sea la regla 2 de `cuentas.rs` («cambiar la contraseña echa a
+//! quien entró con la vieja») y `POST /api/salir-todo` enteros— y dejaría el
+//! token pendiente del segundo factor sin la separación de dominio que es toda
+//! su seguridad. Sería un cambio que se ve como limpieza y es una regresión.
+//!
+//! Medido el 2026-08-04: **medico también le añadió `token_version` a SU copia**
+//! (`crates/medico-api/src/sesion.rs`), por su cuenta y con otro parser. O sea
+//! que hay tres versiones de esto y la que vive en la librería común es la única
+//! que no sirve para lo que las dos aplicaciones necesitan. La deduplicación va
+//! en la dirección contraria a la obvia: **subir `version` (y el dominio de
+//! firma) a `guaca::sesion` y que los dos consuman de ahí**. Eso es trabajo en el
+//! repositorio de guaca —otra propiedad, otra instancia, y aquí se consume por
+//! `rev` fijado—, así que queda registrado como tarea y no se hace desde aquí.
+//! Lo que NO se hace mientras tanto es fingir que no está duplicado.
+//!
+//! Lo que sí se dedujo el 2026-08-04, porque ahí guaca sí es la buena: el hash de
+//! contraseñas, que era otra copia y hoy es `guaca::claves` (ver `cuentas.rs`).
+//!
 //! # La decisión, y por qué es esta
 //!
 //! Al separar interfaz y servidor aparece la pregunta de dónde guardar la

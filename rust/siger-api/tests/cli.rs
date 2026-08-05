@@ -123,6 +123,59 @@ fn hashear_sin_clave_falla_y_con_clave_sale_un_argon2() {
     );
 }
 
+/// **El hash del CLI abre la puerta Y cuesta lo que la política dice.**
+///
+/// Son dos afirmaciones y hacen falta las dos, porque **la primera no implica la
+/// segunda y eso es contraintuitivo**: un hash Argon2 lleva sus parámetros dentro
+/// del propio PHC y el verificador los lee de ahí, así que un subcomando que
+/// hasheara con `m=8 t=1` produciría una credencial que **entra perfectamente**.
+/// No hay ningún síntoma: el alta funciona, el login funciona, y el primer
+/// administrador del cliente queda protegido por un hash 2400 veces más barato
+/// que el de todos los demás.
+///
+/// Medido por mutación el 2026-08-04: con `m=8 t=1 p=1` en `main.rs`, la
+/// comprobación de `verificar` sigue verde y solo cae la de los parámetros. Por
+/// eso el comentario que este subcomando llevaba —«otros parámetros dejan a
+/// alguien fuera del sistema»— estaba al revés: el peligro no es que no entre, es
+/// que entre.
+///
+/// Se verifica con `guaca::claves::verificar`, que es **la función que el login
+/// llama de verdad** (`cuentas::clave_correcta`), no con una reimplementación:
+/// una prueba que verificara con su propio Argon2 mediría el códec, no la puerta.
+/// Y va con su pareja negativa —una contraseña distinta NO abre—: sin ella
+/// pasaría igual un verificador que diga que sí a todo.
+#[test]
+fn el_hash_del_cli_abre_la_puerta_y_cuesta_lo_que_debe() {
+    let tmp = tempfile::tempdir().unwrap();
+    let salida = correr(&["hashear", "clave-de-prueba"], tmp.path(), &[]);
+    assert_eq!(codigo(&salida), 0, "{}", texto(&salida));
+    let hash = String::from_utf8_lossy(&salida.stdout).trim().to_string();
+
+    assert!(
+        guaca::claves::verificar("clave-de-prueba", &hash),
+        "el hash que imprime el CLI no lo acepta el login: {hash}"
+    );
+    assert!(
+        !guaca::claves::verificar("otra-clave", &hash),
+        "el login aceptó una contraseña distinta contra ese hash"
+    );
+
+    // La mitad que la mutación obligó a escribir. `Params::DEFAULT` es la
+    // política de contraseñas de SIGER (m=19456, t=2, p=1) — la misma que
+    // `cuentas::por_debajo_de_la_politica` usa como vara, y la que aplica
+    // `guaca::claves::hashear` por dentro.
+    let phc = argon2::PasswordHash::new(&hash).expect("el hash del CLI se lee como PHC");
+    assert_eq!(phc.algorithm.as_str(), "argon2id", "el CLI no emitió Argon2id");
+    let params = argon2::Params::try_from(&phc).expect("el PHC trae parámetros de Argon2");
+    let politica = argon2::Params::DEFAULT;
+    assert_eq!(
+        (params.m_cost(), params.t_cost(), params.p_cost()),
+        (politica.m_cost(), politica.t_cost(), politica.p_cost()),
+        "el CLI hashea con otros parámetros que el resto del sistema: \
+         la credencial ENTRA igual, y por eso no se ve"
+    );
+}
+
 #[test]
 fn generar_secreto_sale_bien_y_es_largo() {
     let tmp = tempfile::tempdir().unwrap();
