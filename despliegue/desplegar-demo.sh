@@ -192,14 +192,83 @@ echo "==> 5/5  comprobar que responde"
 # que no dice nada sobre el despliegue.
 ssh "$DESTINO" 'sleep 2; curl -sS -o /dev/null -w "http=%{http_code} bytes=%{size_download}\n" --max-time 10 http://127.0.0.1:8003/'
 
-cat <<FIN
+# ¿Está publicado ya? Se MIDE, no se supone.
+#
+# Hasta el 2026-08-04 lo de abajo se imprimía siempre, y decía dos cosas que
+# llevaban horas siendo falsas: que nada era alcanzable desde fuera, y que
+# faltaba crear el registro DNS. Mandaba al panel de OVH a crear un registro que
+# ya existía, y —peor— ocultaba que la demostración ESTABA en internet, que es
+# justo lo que hay que saber: lo que se publica anuncia sus credenciales.
+#
+# El sitio habilitado no basta como señal: puede estar y no resolver el nombre.
+# La verdad es la respuesta por el dominio, que es lo que ve el mundo.
+DOMINIO=informes.xiliux.com
+# SE MIDE DESDE AQUÍ, NO POR SSH, y es la corrección del hallazgo de la revisión
+# de este PR. La primera versión preguntaba con `ssh "$DESTINO" "curl …"`, o sea
+# desde DENTRO del servidor — justo lo contrario de lo que dice el comentario de
+# arriba—. El guion hermano ya lo hacía bien y explicaba por qué
+# (`publicar-demo.sh`): «desde FUERA del servidor es lo único que prueba que el
+# DNS, el certificado, el proxy y el binario funcionan a la vez». Un curl desde
+# el propio VPS pasa con el sitio sin publicar, y encima añade el `ssh` como un
+# modo de fallo más.
+#
+# El `|| true` no es descuido: con `set -e`, un `curl` que no conecta abortaría
+# el guion DESPUÉS de haber desplegado bien, y el despliegue se leería como
+# fallido. Pero el fallo del curl NO es el mismo dato que un código HTTP, y ésa
+# era la otra mitad del defecto: `000` —lo que curl imprime cuando no hubo
+# respuesta— caía en la rama que afirma «todavía no es alcanzable desde fuera».
+# Eso es concluir sobre una medición que no ocurrió.
+PUBLICADO=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMINIO/" 2>/dev/null || true)
+[ -n "$PUBLICADO" ] || PUBLICADO="000"
 
-Desplegado, y escuchando solo en el bucle local: hasta que se publique, nada de
-esto es alcanzable desde fuera.
+if [ "$PUBLICADO" = "200" ]; then
+    cat <<FIN
 
-Falta UNA cosa que no depende de aquí:
+Desplegado y PUBLICADO: https://$DOMINIO/ responde 200.
 
-  Registro DNS   A   informes.xiliux.com  ->  192.99.42.108     (panel de OVH)
+Es una demostración pública a propósito, así que **las credenciales que anuncia
+son alcanzables desde internet**. Lo que se sirve ahí, medido como lo mide el
+mundo y no con un \`is-active\`:
+
+  curl -s https://$DOMINIO/api/demostracion
+  curl -s -o /dev/null -w '%{http_code}\\n' https://$DOMINIO/
+FIN
+elif [ "$PUBLICADO" = "000" ]; then
+    # TERCER ESTADO, y es la razón de que exista este `elif`: la medición no se
+    # pudo hacer. `000` es lo que curl imprime cuando no hubo respuesta, y
+    # también lo que queda si el propio curl falló. NO se dice «no es alcanzable»
+    # —eso sería concluir sobre algo que no se midió, y es como la versión
+    # anterior de este guion ocultó durante horas que la demostración estaba en
+    # internet anunciando sus credenciales—. Se dice que no se pudo comprobar y
+    # se da el comando para comprobarlo a mano.
+    cat <<FIN
+
+Desplegado. **NO se pudo comprobar si está publicado**: la petición a
+https://$DOMINIO/ no obtuvo respuesta desde esta máquina.
+
+Eso NO significa que no sea alcanzable — significa que no se midió. Puede ser la
+red de aquí, el resolutor, o que de verdad no esté publicado. Compruébalo antes
+de dar nada por hecho, porque si SÍ está publicado, sus credenciales son
+alcanzables desde internet:
+
+  curl -s -o /dev/null -w '%{http_code}\\n' --max-time 15 https://$DOMINIO/
+  dig +short $DOMINIO
+
+FIN
+else
+    cat <<FIN
+
+Desplegado. https://$DOMINIO/ contestó «$PUBLICADO», no 200.
+
+El nombre RESUELVE y algo contesta, así que el sitio existe: no es el caso de
+«falta el DNS». Un 502 o un 503 justo después del reinicio suele ser la ventana
+en la que el servicio todavía está levantando — vuelve a medir en unos segundos:
+
+  curl -s -o /dev/null -w '%{http_code}\\n' --max-time 15 https://$DOMINIO/
+
+Si persiste, puede faltar el registro DNS o el sitio de nginx:
+
+  Registro DNS   A   $DOMINIO  ->  192.99.42.108     (panel de OVH)
 
 Y cuando resuelva, publicar es un solo comando que además lo comprueba:
 
@@ -211,3 +280,4 @@ necesita que alguien conteste por ese nombre en el puerto 80, cosa que el sitio
 por defecto de este servidor no hace: responde 444. \`publicar-demo.sh\` rompe ese
 círculo con un sitio temporal de solo-HTTP.)
 FIN
+fi
