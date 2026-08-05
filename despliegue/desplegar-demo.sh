@@ -203,12 +203,23 @@ ssh "$DESTINO" 'sleep 2; curl -sS -o /dev/null -w "http=%{http_code} bytes=%{siz
 # El sitio habilitado no basta como señal: puede estar y no resolver el nombre.
 # La verdad es la respuesta por el dominio, que es lo que ve el mundo.
 DOMINIO=informes.xiliux.com
-# El `|| true` no es descuido: con `set -e`, un `curl` que no conecta abortaría el
-# guion DESPUÉS de haber desplegado bien, y el despliegue se leería como fallido.
-# Aquí el fallo del curl ES el dato. Sale `000`, que es lo que dice curl cuando no
-# hubo respuesta, y así se imprime.
-PUBLICADO=$(ssh "$DESTINO" "curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://$DOMINIO/" 2>/dev/null || true)
-[ -n "$PUBLICADO" ] || PUBLICADO="sin respuesta"
+# SE MIDE DESDE AQUÍ, NO POR SSH, y es la corrección del hallazgo de la revisión
+# de este PR. La primera versión preguntaba con `ssh "$DESTINO" "curl …"`, o sea
+# desde DENTRO del servidor — justo lo contrario de lo que dice el comentario de
+# arriba—. El guion hermano ya lo hacía bien y explicaba por qué
+# (`publicar-demo.sh`): «desde FUERA del servidor es lo único que prueba que el
+# DNS, el certificado, el proxy y el binario funcionan a la vez». Un curl desde
+# el propio VPS pasa con el sitio sin publicar, y encima añade el `ssh` como un
+# modo de fallo más.
+#
+# El `|| true` no es descuido: con `set -e`, un `curl` que no conecta abortaría
+# el guion DESPUÉS de haber desplegado bien, y el despliegue se leería como
+# fallido. Pero el fallo del curl NO es el mismo dato que un código HTTP, y ésa
+# era la otra mitad del defecto: `000` —lo que curl imprime cuando no hubo
+# respuesta— caía en la rama que afirma «todavía no es alcanzable desde fuera».
+# Eso es concluir sobre una medición que no ocurrió.
+PUBLICADO=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMINIO/" 2>/dev/null || true)
+[ -n "$PUBLICADO" ] || PUBLICADO="000"
 
 if [ "$PUBLICADO" = "200" ]; then
     cat <<FIN
@@ -222,13 +233,40 @@ mundo y no con un \`is-active\`:
   curl -s https://$DOMINIO/api/demostracion
   curl -s -o /dev/null -w '%{http_code}\\n' https://$DOMINIO/
 FIN
+elif [ "$PUBLICADO" = "000" ]; then
+    # TERCER ESTADO, y es la razón de que exista este `elif`: la medición no se
+    # pudo hacer. `000` es lo que curl imprime cuando no hubo respuesta, y
+    # también lo que queda si el propio curl falló. NO se dice «no es alcanzable»
+    # —eso sería concluir sobre algo que no se midió, y es como la versión
+    # anterior de este guion ocultó durante horas que la demostración estaba en
+    # internet anunciando sus credenciales—. Se dice que no se pudo comprobar y
+    # se da el comando para comprobarlo a mano.
+    cat <<FIN
+
+Desplegado. **NO se pudo comprobar si está publicado**: la petición a
+https://$DOMINIO/ no obtuvo respuesta desde esta máquina.
+
+Eso NO significa que no sea alcanzable — significa que no se midió. Puede ser la
+red de aquí, el resolutor, o que de verdad no esté publicado. Compruébalo antes
+de dar nada por hecho, porque si SÍ está publicado, sus credenciales son
+alcanzables desde internet:
+
+  curl -s -o /dev/null -w '%{http_code}\\n' --max-time 15 https://$DOMINIO/
+  dig +short $DOMINIO
+
+FIN
 else
     cat <<FIN
 
-Desplegado, y escuchando solo en el bucle local: https://$DOMINIO/ contestó
-«$PUBLICADO», así que todavía no es alcanzable desde fuera.
+Desplegado. https://$DOMINIO/ contestó «$PUBLICADO», no 200.
 
-Puede faltar el registro DNS, que no depende de aquí:
+El nombre RESUELVE y algo contesta, así que el sitio existe: no es el caso de
+«falta el DNS». Un 502 o un 503 justo después del reinicio suele ser la ventana
+en la que el servicio todavía está levantando — vuelve a medir en unos segundos:
+
+  curl -s -o /dev/null -w '%{http_code}\\n' --max-time 15 https://$DOMINIO/
+
+Si persiste, puede faltar el registro DNS o el sitio de nginx:
 
   Registro DNS   A   $DOMINIO  ->  192.99.42.108     (panel de OVH)
 

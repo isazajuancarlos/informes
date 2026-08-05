@@ -248,14 +248,33 @@ apagado), y descubrirlo tras medio minuto de compilación hace pensar que falló
 despliegue cuando lo que falla es la puerta. Si su clave no está autorizada aún:
 `ssh-copy-id -i ~/.ssh/id_ed25519.pub debian@192.99.42.108`, una sola vez.
 
-El binario queda **escuchando solo en el bucle local**: hasta publicarlo, nada es
-alcanzable desde fuera. Falta una sola cosa que no depende del guion:
+**La demostración YA ESTÁ PUBLICADA** — `https://informes.xiliux.com/` responde
+200 y el registro DNS existe (medido el 2026-08-05). Hasta ese día este documento
+decía lo contrario: *«el binario queda escuchando solo en el bucle local: hasta
+publicarlo, nada es alcanzable desde fuera. Falta el registro DNS»*. Era la misma
+frase falsa que el guion imprimía y que se corrigió ahí; vivía aquí también, y un
+documento que dice «no es alcanzable» sobre un sitio que anuncia sus credenciales
+en internet es peor que uno que no dice nada.
+
+Consecuencia que hay que tener presente al desplegar: **lo que se sirve ahí es
+público, credenciales incluidas**, y eso es a propósito. Se mide como lo mide el
+mundo, nunca con un `is-active`:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' --max-time 15 https://informes.xiliux.com/
+curl -s https://informes.xiliux.com/api/demostracion
+dig +short informes.xiliux.com
+```
+
+Para una instalación NUEVA que todavía no resuelva, el registro es:
 
 ```
-Registro DNS   A   informes.xiliux.com  ->  192.99.42.108     (panel de OVH)
+Registro DNS   A   <dominio>  ->  192.99.42.108     (panel de OVH)
 ```
 
-Cuando resuelva, publicar es un comando que además lo comprueba desde fuera:
+y cuando resuelva, publicar es un comando que además lo comprueba **desde fuera
+del servidor**, que es lo único que prueba el DNS, el certificado, el proxy y el
+binario a la vez:
 
 ```bash
 ./despliegue/publicar-demo.sh debian@192.99.42.108
