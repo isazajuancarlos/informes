@@ -41,9 +41,23 @@ sha2 = "0.10"
 quipu = "0.10"
 # Cifrado EN REPOSO de las entregas (A1): guaca::reposo envuelve el contenedor
 # cifrado de Quipu (Argon2 → AEAD → padding Padmé). Repo público (AGPL, de casa),
-# fijado por commit inmutable (= tag v0.3.0), no por el tag —un tag es mutable y
-# moverlo traería un commit malicioso al construir (lección Atomic Arch)—.
-guaca = { git = "https://github.com/isazajuancarlos/guaca", rev = "2ffe1346b706f5fbb8f5eaaea1c37375682c807d", version = "0.4" }
+# fijado por commit inmutable, no por el tag —un tag es mutable y moverlo traería
+# un commit malicioso al construir (lección Atomic Arch)—.
+#
+# El commit NO es el de `v0.4.0` (2ffe134) sino uno posterior, y a propósito: el
+# árbol de ese tag no lleva `LICENSE` en la raíz. Es el mismo código —entre los
+# dos solo hay el LICENSE y el CI de guaca, ni una línea de `src/`—, pero lo que
+# se vendoriza al construir es un ÁRBOL, no un número de versión: fijar el tag
+# metía en el binario una copia de guaca cuya raíz no declara bajo qué licencia
+# se puede usar. La declaración en `Cargo.toml` y el NOTICE de guaca no sustituyen
+# al archivo.
+#
+# Y NO LO CAZA NINGUNA MÁQUINA: `cargo deny check licenses` lee el campo
+# `license = "…"` del `Cargo.toml` de la dependencia, no el árbol, así que daba
+# `licenses ok` con las dos revisiones. Lo que discrimina es mirar lo que cargo
+# se bajó — `ls ~/.cargo/git/checkouts/guaca-*/<rev>/`: en `2ffe134/` no hay
+# `LICENSE` y en `d786d1c/` sí. Al salir el tag que lo incluya, volver a fijarlo.
+guaca = { git = "https://github.com/isazajuancarlos/guaca", rev = "d786d1c394ddc816f6959c12696ec2c6742acb28", version = "0.4" }
 base64 = "0.22"
 rand = "0.8"
 

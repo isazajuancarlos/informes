@@ -81,23 +81,36 @@ async fn main() -> std::process::ExitCode {
 /// Las órdenes que no levantan el servidor. `None` significa «arranca».
 fn subcomando() -> Option<std::process::ExitCode> {
     if std::env::args().nth(1).as_deref() == Some("hashear") {
-        // Lo necesita el instalador para crear el primer administrador, y hace
-        // falta que salga del MISMO código que después verifica: un hash
-        // generado por otra herramienta con otros parámetros deja a alguien
-        // fuera del sistema, y el fallo aparece lejos de su causa.
+        // Lo necesita el instalador para crear el primer administrador, y tiene
+        // que salir del MISMO código que después verifica.
+        //
+        // El porqué que este comentario daba hasta el 2026-08-04 estaba AL REVÉS,
+        // y medido: decía que un hash con otros parámetros «deja a alguien fuera
+        // del sistema». No deja a nadie fuera. Un PHC de Argon2 lleva sus propios
+        // parámetros dentro y el verificador los lee de ahí, así que un hash
+        // `m=8 t=1` entra igual de bien que el bueno — se comprobó mutando justo
+        // esto: `verificar` siguió en verde. El daño es el contrario y no tiene
+        // síntoma: la cuenta del administrador, que es la que más vale, queda
+        // protegida por un hash 2400 veces más barato y nada lo delata. Ni
+        // siquiera `renovar_hash_si_hace_falta` lo arregla solo: lo arregla, sí,
+        // pero la primera vez que esa persona entre, y entretanto el archivo de
+        // la base ya salió a un respaldo.
         let Some(clave) = std::env::args().nth(2) else {
             eprintln!("uso: siger-api hashear <clave>");
             return Some(std::process::ExitCode::FAILURE);
         };
-        use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
-        let sal = SaltString::generate(&mut OsRng);
-        return Some(match argon2::Argon2::default().hash_password(clave.as_bytes(), &sal) {
-            Ok(h) => {
+        // «El mismo código» es literalmente el mismo: `guaca::claves::hashear`, el
+        // que llama `cuentas::hashear` al dar de alta y cuya pareja verifica el
+        // login. Antes esto eran tres líneas copiadas de `cuentas.rs`: coincidían,
+        // pero nada lo obligaba. Lo sujeta, ahora sí por los parámetros,
+        // `el_hash_del_cli_abre_la_puerta_y_cuesta_lo_que_debe` en `tests/cli.rs`.
+        return Some(match guaca::claves::hashear(&clave) {
+            Some(h) => {
                 println!("{h}");
                 std::process::ExitCode::SUCCESS
             }
-            Err(e) => {
-                eprintln!("no se pudo cifrar la clave: {e}");
+            None => {
+                eprintln!("no se pudo cifrar la clave");
                 std::process::ExitCode::FAILURE
             }
         });
