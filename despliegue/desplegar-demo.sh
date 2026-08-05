@@ -218,13 +218,66 @@ DOMINIO=informes.xiliux.com
 # era la otra mitad del defecto: `000` —lo que curl imprime cuando no hubo
 # respuesta— caía en la rama que afirma «todavía no es alcanzable desde fuera».
 # Eso es concluir sobre una medición que no ocurrió.
-PUBLICADO=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 "https://$DOMINIO/" 2>/dev/null || true)
+#
+# Y SE GUARDA EL CUERPO, no solo el código. Un 200 dice que ALGO contestó por ese
+# nombre; no dice que sea SIGER. Un vhost por defecto, un comodín de DNS o una
+# página de aparcamiento devuelven 200 igual de bien, y con solo el código este
+# guion anunciaba «PUBLICADO, las credenciales son alcanzables» sobre cualquiera
+# de los tres. El hermano `publicar-demo.sh` ya exigía además un `<title>` no
+# vacío (l.130 y 134); esto es traer aquí esa misma comprobación.
+CUERPO=$(mktemp)
+trap 'rm -f "$CUERPO"' EXIT
+# El `|| true` sigue haciendo falta por `set -e`, pero ahora se conserva ADEMÁS
+# el código de salida de curl, que es lo que separa dos cosas que `000` mezclaba:
+# «no hubo red» y «el certificado no vale». Un certificado caducado deja el sitio
+# ROTO PARA TODO VISITANTE, y decir de eso «puede ser la red de aquí» es el mismo
+# error que este guion vino a arreglar, un escalón más abajo.
+PUBLICADO=$(curl -s -o "$CUERPO" -w '%{http_code}' --max-time 15 "https://$DOMINIO/" 2>/dev/null) || CURL_ESTADO=$?
+CURL_ESTADO=${CURL_ESTADO:-0}
 [ -n "$PUBLICADO" ] || PUBLICADO="000"
+TITULO=$(grep -oE '<title>[^<]*</title>' "$CUERPO" 2>/dev/null | head -1 || true)
 
-if [ "$PUBLICADO" = "200" ]; then
+if [ "$CURL_ESTADO" = "60" ]; then
+    # 60 es el código de curl para «no pude verificar el certificado». Va ANTES
+    # que el resto porque es un diagnóstico, no una incógnita: el sitio está roto
+    # para cualquiera que lo visite, y merece decirse con su nombre en vez de
+    # caer en «no se pudo comprobar».
     cat <<FIN
 
-Desplegado y PUBLICADO: https://$DOMINIO/ responde 200.
+Desplegado. **El CERTIFICADO de https://$DOMINIO/ no valida** (curl 60).
+
+Esto NO es «no se pudo medir»: la medición SÍ ocurrió y el resultado es que el
+sitio está roto para todo el que lo visite con un navegador. Suele ser el
+certificado vencido o emitido para otro nombre.
+
+  echo | openssl s_client -connect $DOMINIO:443 -servername $DOMINIO 2>/dev/null \\
+    | openssl x509 -noout -dates -subject
+  ssh $DESTINO 'sudo certbot certificates'
+FIN
+elif [ "$PUBLICADO" = "200" ] && [ -z "$TITULO" ]; then
+    # 200 SIN título: contesta algo que no es la aplicación. Se dice tal cual en
+    # vez de anunciar que las credenciales están publicadas, que es lo que haría
+    # falso el aviso justo cuando más importa acertarlo.
+    cat <<FIN
+
+Desplegado. https://$DOMINIO/ responde 200 **pero lo que contesta no parece
+SIGER**: la respuesta no trae ni un \`<title>\`.
+
+Un 200 dice que algo contesta por ese nombre, no que sea esta aplicación. Suele
+ser el vhost por defecto de nginx, un comodín de DNS apuntando a otro sitio, o
+una página de aparcamiento. NO se da por publicada: mira qué está contestando.
+
+  curl -s https://$DOMINIO/ | head -40
+  ssh $DESTINO 'sudo nginx -T | grep -n "server_name"'
+FIN
+elif [ "$PUBLICADO" = "200" ]; then
+    cat <<FIN
+
+Desplegado y PUBLICADO: https://$DOMINIO/ responde 200 y sirve $TITULO.
+
+El título va ahí como EVIDENCIA, no como adorno: es lo que separa «algo contesta
+por ese nombre» de «contesta esta aplicación», y sin él este mensaje se emitía
+igual ante un vhost por defecto o un comodín de DNS.
 
 Es una demostración pública a propósito, así que **las credenciales que anuncia
 son alcanzables desde internet**. Lo que se sirve ahí, medido como lo mide el
@@ -260,9 +313,14 @@ else
 
 Desplegado. https://$DOMINIO/ contestó «$PUBLICADO», no 200.
 
-El nombre RESUELVE y algo contesta, así que el sitio existe: no es el caso de
-«falta el DNS». Un 502 o un 503 justo después del reinicio suele ser la ventana
-en la que el servicio todavía está levantando — vuelve a medir en unos segundos:
+Lo único que eso demuestra es que ALGO contestó por ese nombre. No demuestra que
+sea este sitio: un 404 de un comodín de DNS entra por aquí igual que un 502 de
+nuestro nginx, y decir «el sitio existe, no es el caso de falta el DNS» —como
+decía este guion hasta el 2026-08-05— es concluir de más sobre lo medido, que es
+el mismo defecto que arriba, un escalón más abajo.
+
+Un 502 o un 503 justo después del reinicio suele ser la ventana en la que el
+servicio todavía está levantando — vuelve a medir en unos segundos:
 
   curl -s -o /dev/null -w '%{http_code}\\n' --max-time 15 https://$DOMINIO/
 
@@ -281,3 +339,24 @@ por defecto de este servidor no hace: responde 444. \`publicar-demo.sh\` rompe e
 círculo con un sitio temporal de solo-HTTP.)
 FIN
 fi
+
+# LOS CINCO CAMINOS SALEN CON 0, Y ES DELIBERADO.
+#
+# La revisión de seguridad del PR #28 lo señaló: para un envoltorio o un CI,
+# «medido y publicado» y «no se pudo medir» son indistinguibles desde el código
+# de salida. Es cierto, y aun así no se cambia. La razón:
+#
+#   el código de salida de este guion responde «¿se DESPLEGÓ bien?»,
+#   no «¿está publicado?».
+#
+# Son dos preguntas distintas y la segunda ocurre DESPUÉS de la primera. Hacer
+# que «no se pudo comprobar» saliera con un código de error convertiría un
+# despliegue correcto en un fallo aparente, y la reacción natural ante eso es
+# volver a lanzar el despliegue. Sobre un VPS con SWAP = 0 —el nuestro—, dos
+# despliegues encadenados son un OOM-kill, o sea que la «mejora» tendría un modo
+# de fallo peor que el defecto que arregla.
+#
+# Lo que sí hace falta si algún día esto se automatiza: sacar la MEDICIÓN a su
+# propio guion, que entonces sí puede tener un código de salida por estado, y
+# dejar aquí solo el despliegue. Mientras lo lea una persona, el mensaje es el
+# canal y por eso los cinco dicen exactamente qué se midió y qué no.
