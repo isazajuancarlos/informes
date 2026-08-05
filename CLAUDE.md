@@ -300,13 +300,21 @@ por un banco de mutación, ver abajo):
 El hash sale del **mismo** Argon2 que verifica el acceso, con turno del semáforo
 de cripto (`ESPERA_CRIPTO`), como el login y el descifrado en reposo. Desde el
 2026-08-04 «el mismo» es literal: quien calcula y quien verifica es
-**`guaca::claves`** —una función, no cuatro copias—, y lo que pone SIGER encima
-es solo lo que guaca no puede saber, el turno y el `spawn_blocking`. Antes eran
-cuatro sitios con las mismas tres líneas (`cuentas::hashear`,
-`clave_correcta`, `renovar_hash_si_hace_falta` y el subcomando `hashear` de
-`main.rs`); coincidían por casualidad de cuatro literales iguales, que es el modo
-de fallo del que nació guaca. De `argon2` aquí solo se LEE: `PasswordHash`, para
-decidir si un hash guardado se quedó por debajo de la política.
+**`guaca::claves`** —una función, no seis copias—, y lo que pone SIGER encima es
+solo lo que guaca no puede saber, el turno y el `spawn_blocking`. Antes eran
+**seis** sitios con las mismas tres líneas: `cuentas::{hashear, clave_correcta,
+renovar_hash_si_hace_falta}`, el subcomando `hashear` de `main.rs`, **la
+verificación del login en `rutas.rs`** y **el hash señuelo** — coincidían por
+casualidad de seis literales iguales, que es el modo de fallo del que nació
+guaca. De `argon2` aquí solo se LEE: `PasswordHash`, para analizar el PHC
+guardado (la política, y el paso previo del login).
+
+Los dos últimos no los vio quien escribió el cambio, los cazó `security-review`
+al auditarlo: el grep que dio por completa la lista salió truncado por un
+`head -40` y el negativo pareció una medición (directiva 30). El señuelo importa
+especialmente porque su único trabajo es **costar lo mismo** que un hash real, y
+la alineación estaba escrita como «los dos llaman a `Argon2::default()`» — dos
+literales, no un mecanismo.
 
 **Y el porqué que este archivo y tres comentarios daban estaba al revés.** Decían
 que un hash con otros parámetros «deja a alguien fuera del sistema». No deja a
@@ -320,6 +328,12 @@ un hash 2400 veces más barato, y nada lo delata—, y lo caza ahora
 compara los parámetros del hash impreso contra `Params::DEFAULT`. Lo que sí deja
 a alguien fuera, y es ruidoso, es cambiar de **algoritmo o de formato**: eso lo
 sujeta la otra mitad de la misma prueba.
+
+Los otros dos sitios sí tenían quien los cazara, comprobado por mutación:
+invertir los argumentos de `verificar` en el login pone **10** pruebas de
+`pruebas_acceso` en rojo, y abaratar el señuelo a `m=8 t=1` cae
+`un_correo_inexistente_cuesta_lo_mismo_que_uno_existente` —y solo ella—, que es
+exactamente lo que ese hash existe para impedir.
 
 **`sesion.rs` NO se dedujo, y no es un olvido**: `guaca::sesion` emite
 `id|caducidad` sin `token_version`, así que llamarla quitaría la revocación

@@ -463,16 +463,16 @@ mod tests {
     /// el cliente legítimo, no contra el atacante).
     #[test]
     fn el_hash_argon2_del_origen_pasa_verbatim() {
-        // El que emite HOY el propio sistema (`hashear`), generado aquí y no
-        // copiado a mano: si algún día cambian sus parámetros, esta prueba se
-        // entera. Los otros dos son literales porque el origen es passlib, que
-        // no siempre eligió argon2id — rechazar argon2i dejaría fuera cuentas
-        // legítimas, que es el error contrario y peor.
-        use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
-        let propio = argon2::Argon2::default()
-            .hash_password(b"cualquiera", &SaltString::generate(&mut OsRng))
-            .expect("el hasher del sistema produce un PHC válido")
-            .to_string();
+        // El que emite HOY el propio sistema, generado aquí y no copiado a mano:
+        // si algún día cambian sus parámetros, esta prueba se entera. Y sale de
+        // `guaca::claves::hashear`, que es de donde salen los reales — llamar a
+        // `Argon2::default()` aquí, como se hacía hasta el 2026-08-04, dejaba la
+        // prueba mirando a otro sitio que el sistema el día que guaca cambiara.
+        // Los otros dos son literales porque el origen es passlib, que no siempre
+        // eligió argon2id — rechazar argon2i dejaría fuera cuentas legítimas, que
+        // es el error contrario y peor.
+        let propio = guaca::claves::hashear("cualquiera")
+            .expect("el hasher del sistema produce un PHC válido");
 
         for h in [
             propio.as_str(),
