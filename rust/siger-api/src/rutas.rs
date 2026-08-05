@@ -10,7 +10,10 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use argon2::{Argon2, PasswordHash, PasswordVerifier};
+// De `argon2` aquí solo se LEE: `PasswordHash` analiza el PHC guardado antes de
+// pasarlo a `guaca::claves::verificar`, que es quien calcula. Los módulos de
+// prueba que fabrican hashes a medida importan el hasher por su cuenta.
+use argon2::PasswordHash;
 use axum::{
     extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path as RutaParam, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
@@ -264,21 +267,23 @@ pub struct Credenciales {
 ///
 /// Se deriva en caliente, una vez, y no se incrusta como constante a propósito:
 /// una constante se calculó con los parámetros de Argon2 de su día, y el día que
-/// `Argon2::default()` cambie —o que se endurezcan a mano— el señuelo costaría
+/// esos parámetros cambien —o que se endurezcan a mano— el señuelo costaría
 /// distinto que los hashes reales y la diferencia de tiempo volvería, en
-/// silencio. Derivándolo del mismo `default()` que verifica, no puede desalinearse.
+/// silencio.
+///
+/// Y de quién se deriva importa tanto como que se derive: sale de
+/// **`guaca::claves::hashear`**, que es exactamente la función que produce los
+/// hashes reales (`cuentas::hashear`). Hasta el 2026-08-04 esto llamaba a
+/// `Argon2::default()` por su cuenta, y la alineación descansaba en que dos
+/// literales distintos dijeran lo mismo — que es como se desalinean las cosas.
+/// La sal ya no se elige aquí: era fija y pública y no protegía nada, porque
+/// nadie tiene esta «contraseña» y lo único que se le pide al señuelo es costar
+/// lo mismo.
 fn hash_senuelo() -> &'static PasswordHash<'static> {
     static SENUELO: std::sync::OnceLock<PasswordHash<'static>> = std::sync::OnceLock::new();
     SENUELO.get_or_init(|| {
-        use argon2::password_hash::{PasswordHasher, SaltString};
-        // La sal es fija y pública, y no protege nada: nadie tiene esta
-        // «contraseña», y lo único que se le pide al señuelo es costar lo mismo.
-        let sal = SaltString::from_b64("c2VudWVsb2Rlc2lnZXIxMg")
-            .expect("la sal del señuelo es base64 válido");
-        let phc = Argon2::default()
-            .hash_password(b"ninguna cuenta tiene esta clave", &sal)
-            .expect("hashear con los parámetros por defecto no falla")
-            .to_string();
+        let phc = guaca::claves::hashear("ninguna cuenta tiene esta clave")
+            .expect("hashear con los parámetros por defecto no falla");
         // `PasswordHash` presta de la cadena que lo contiene, así que la cadena
         // se filtra a propósito: es UNA, para todo el proceso.
         let prestada: &'static str = Box::leak(phc.into_boxed_str());
@@ -405,9 +410,11 @@ async fn abrir_sesion(
         }
     };
     let clave_correcta = tokio::task::spawn_blocking(move || {
-        let r = PasswordHash::new(&hash_texto)
-            .map(|h| Argon2::default().verify_password(clave.as_bytes(), &h).is_ok())
-            .unwrap_or(false);
+        // La MISMA función que verifica en `cuentas::clave_correcta` y la pareja
+        // de la que hashea al dar de alta. Un hash ilegible cuenta como «no
+        // coincide» —igual que antes—, y aquí ni siquiera puede darse: `hash_texto`
+        // sale de un `PasswordHash` que ya se analizó bien, o del señuelo.
+        let r = guaca::claves::verificar(&clave, &hash_texto);
         drop(permiso); // el turno se libera con la memoria, no antes
         r
     })
@@ -1491,6 +1498,7 @@ pub async fn auditar(bd: &SqlitePool, evento: &str, email: Option<&str>, detalle
 /// verdad para entrar.
 #[cfg(test)]
 mod pruebas_demostracion {
+    use argon2::Argon2;
     use super::*;
     use axum::body::Body;
     use axum::http::Request;
@@ -1806,6 +1814,7 @@ mod pruebas_licencia {
 
 #[cfg(test)]
 mod pruebas_acceso {
+    use argon2::Argon2;
     use super::*;
 
     const CLAVE: &str = "la-clave-de-la-prueba";
