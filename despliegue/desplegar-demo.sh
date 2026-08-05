@@ -232,10 +232,34 @@ trap 'rm -f "$CUERPO"' EXIT
 # «no hubo red» y «el certificado no vale». Un certificado caducado deja el sitio
 # ROTO PARA TODO VISITANTE, y decir de eso «puede ser la red de aquí» es el mismo
 # error que este guion vino a arreglar, un escalón más abajo.
+# Se pone a cero ANTES: si no, un `CURL_ESTADO` exportado en el entorno
+# sobreviviría a `${CURL_ESTADO:-0}` y se tomaría la rama del certificado sobre
+# un sitio sano.
+CURL_ESTADO=0
 PUBLICADO=$(curl -s -o "$CUERPO" -w '%{http_code}' --max-time 15 "https://$DOMINIO/" 2>/dev/null) || CURL_ESTADO=$?
 CURL_ESTADO=${CURL_ESTADO:-0}
 [ -n "$PUBLICADO" ] || PUBLICADO="000"
-TITULO=$(grep -oE '<title>[^<]*</title>' "$CUERPO" 2>/dev/null | head -1 || true)
+# El TEXTO del título, no la etiqueta, y saneado. Tres cosas que la primera
+# versión de esto hacía mal y que cazó la revisión de seguridad de este mismo
+# cambio — o sea, el arreglo repetía el defecto que venía a arreglar:
+#
+#   1. `[ -z "$TITULO" ]` sobre `<title></title>` es FALSO: la cadena con las
+#      etiquetas nunca está vacía. Un título vacío pasaba por SIGER.
+#   2. Cualquier título pasaba. `<title>Welcome to nginx!</title>` y
+#      `<title>This domain is parked</title>` —los dos ejemplos que el comentario
+#      de arriba nombra como aquello de lo que protege— entraban por la rama de
+#      éxito. Se medía «hay etiqueta title», no «contesta SIGER».
+#   3. El cuerpo lo escribe un SERVIDOR REMOTO y salía crudo al terminal. Con
+#      `\033[5A\033[2K\033[J` dentro, quien conteste por ese nombre BORRA las
+#      líneas anteriores del informe y escribe lo que quiera en su lugar: la
+#      inversión exacta de lo que este guion existe para decir. Y con OSC 52
+#      (`\033]52;c;`) se escribe en el portapapeles, justo cuando el mensaje
+#      termina con comandos para copiar.
+#
+# `tr -d '\000-\037'` quita los caracteres de control; `cut -c1-80` acota lo que
+# se imprime; `sed` saca el texto de dentro de las etiquetas.
+TITULO=$(grep -oE '<title>[^<]*</title>' "$CUERPO" 2>/dev/null | head -1 \
+         | sed -E 's|</?title>||g' | LC_ALL=C tr -d '\000-\037' | cut -c1-80 || true)
 
 if [ "$CURL_ESTADO" = "60" ]; then
     # 60 es el código de curl para «no pude verificar el certificado». Va ANTES
@@ -246,22 +270,25 @@ if [ "$CURL_ESTADO" = "60" ]; then
 
 Desplegado. **El CERTIFICADO de https://$DOMINIO/ no valida** (curl 60).
 
-Esto NO es «no se pudo medir»: la medición SÍ ocurrió y el resultado es que el
-sitio está roto para todo el que lo visite con un navegador. Suele ser el
-certificado vencido o emitido para otro nombre.
+Esto NO es «no se pudo medir»: la medición ocurrió y su resultado es que **desde
+esta máquina** el certificado no valida. Suele ser el certificado vencido o
+emitido para otro nombre —y entonces está roto para todo el mundo—, pero también
+lo produce un problema de ESTE lado: un almacén de CA incompleto, un proxy que
+inspecciona TLS o el reloj desfasado. Los dos comandos de abajo lo separan antes
+de tocar nada en producción.
 
   echo | openssl s_client -connect $DOMINIO:443 -servername $DOMINIO 2>/dev/null \\
     | openssl x509 -noout -dates -subject
   ssh $DESTINO 'sudo certbot certificates'
 FIN
-elif [ "$PUBLICADO" = "200" ] && [ -z "$TITULO" ]; then
+elif [ "$PUBLICADO" = "200" ] && ! printf '%s' "$TITULO" | grep -q 'SIGER'; then
     # 200 SIN título: contesta algo que no es la aplicación. Se dice tal cual en
     # vez de anunciar que las credenciales están publicadas, que es lo que haría
     # falso el aviso justo cuando más importa acertarlo.
     cat <<FIN
 
-Desplegado. https://$DOMINIO/ responde 200 **pero lo que contesta no parece
-SIGER**: la respuesta no trae ni un \`<title>\`.
+Desplegado. https://$DOMINIO/ responde 200 **pero lo que contesta no es
+SIGER**: su título es «$TITULO» y debería decir SIGER.
 
 Un 200 dice que algo contesta por ese nombre, no que sea esta aplicación. Suele
 ser el vhost por defecto de nginx, un comodín de DNS apuntando a otro sitio, o
