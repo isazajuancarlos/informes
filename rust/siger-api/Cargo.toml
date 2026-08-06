@@ -12,6 +12,10 @@ publish.workspace = true
 siger-core = { path = "../siger-core" }
 
 axum = { version = "0.8", features = ["multipart"] }
+# El panel se teje EN EL SERVIDOR (directiva 26): el HTML lo compila `rustc` con
+# los tipos del dominio dentro. htmx y `boi` van vendorizados en `estaticos/`,
+# con la MISMA versión que nexus, chasqui e inventario — comprobado con md5sum.
+maud = { version = "0.27", features = ["axum"] }
 # `sync` (semáforo) y `time` (el plazo de espera) acotan cuántos descifrados
 # corren a la vez: cada uno reserva 64 MiB de Argon2id, así que el tope es de
 # memoria, no de gusto. Ver `permisos_de_descifrado` en config.rs.
