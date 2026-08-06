@@ -181,6 +181,18 @@ pub fn router(estado: Estado) -> Router {
         )
         .route("/api/entregas/{id}/justificacion", post(crate::flujo::justificar))
         .route("/api/entregas/{id}/revision", post(crate::flujo::revisar))
+        // ── El panel, tejido en el servidor con maud (directiva 26) ──
+        // Va DESPUÉS de `/api`: una ruta comodín arriba taparía la API. Lo
+        // estático se sirve desde el binario, nunca de un CDN.
+        .route("/htmx.min.js", get(crate::vista::htmx_js))
+        .route("/boi.js", get(crate::vista::boi_js))
+        .route("/panel.css", get(crate::vista::panel_css))
+        .route("/entrar", get(crate::vista::acceso_pagina).post(crate::vista::acceso_enviar))
+        .route(
+            "/entrar/codigo",
+            get(crate::vista::codigo_pagina).post(crate::vista::codigo_enviar),
+        )
+        .route("/salir", post(crate::vista::salir))
         .with_state(estado)
 }
 
@@ -253,6 +265,15 @@ impl FromRequestParts<Estado> for Actor {
 pub struct Credenciales {
     email: String,
     clave: String,
+}
+
+impl Credenciales {
+    /// Para el panel, que las recibe de un formulario y no de JSON. Los campos
+    /// siguen siendo privados: son la entrada de un camino de autenticación, y
+    /// abrirlos invitaría a construirlas a trozos desde cualquier sitio.
+    pub(crate) fn nuevas(email: String, clave: String) -> Self {
+        Self { email, clave }
+    }
 }
 
 /// El hash contra el que se comprueba la contraseña cuando **no hay usuario**.

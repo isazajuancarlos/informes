@@ -446,15 +446,28 @@ pub async fn desactivar(
 /// Admite el código de seis dígitos **o** uno de recuperación. No se le pregunta
 /// al cliente cuál manda: el formato los distingue y preguntarlo solo añadiría un
 /// campo que se puede mentir.
-pub async fn verificar(
-    State(e): State<Estado>,
-    cabeceras: HeaderMap,
-    crate::origen::OrigenCliente(origen): crate::origen::OrigenCliente,
-    Json(p): Json<SoloCodigo>,
-) -> Result<Response, Error> {
+/// Cómo terminó el SEGUNDO paso. Igual que `rutas::Acceso`, y por lo mismo: la
+/// lógica vive en un sitio y la usan sus dos consumidores —`/api/2fa/verificar`,
+/// que responde JSON, y el formulario del panel, que responde HTML—. Copiarla
+/// sería copiar el antirreplay del contador, el rescate por códigos de papel y
+/// el criterio de cuándo un fallo se le cobra al usuario y cuándo no.
+pub(crate) enum SegundoPaso {
+    /// Sesión abierta. Las cabeceras traen la cookie nueva Y el cierre del
+    /// pendiente, que se quema al usarse.
+    Abierta(HeaderMap),
+    /// Hay que esperar.
+    Frenado { segundos: u64, cabeceras: HeaderMap },
+}
+
+pub(crate) async fn intentar_segundo_paso(
+    e: &Estado,
+    cabeceras: &HeaderMap,
+    origen: Option<String>,
+    codigo: &str,
+) -> Result<SegundoPaso, Error> {
     let rechazo = || Error(StatusCode::UNAUTHORIZED, "código incorrecto".into());
 
-    let Some(cookie) = sesion::pendiente_de_cabeceras(&cabeceras) else {
+    let Some(cookie) = sesion::pendiente_de_cabeceras(cabeceras) else {
         return Err(rechazo());
     };
     let Some(pendiente) = sesion::verificar_pendiente(&e.cfg.secreto_sesion, &cookie) else {
@@ -494,12 +507,13 @@ pub async fn verificar(
     let freno = crate::acceso::estado(&e.bd, &email, &origen, ahora).await?;
     if freno.frenado() {
         auditar(&e.bd, "2fa_frenado", Some(&email), None).await;
-        let mut cabeceras = HeaderMap::new();
-        cabeceras.insert(
+        let segundos = freno.segundos_restantes();
+        let mut salida = HeaderMap::new();
+        salida.insert(
             header::RETRY_AFTER,
-            freno.segundos_restantes().to_string().parse().expect("un número es ASCII"),
+            segundos.to_string().parse().expect("un número es ASCII"),
         );
-        return Ok((StatusCode::TOO_MANY_REQUESTS, cabeceras, "demasiados intentos").into_response());
+        return Ok(SegundoPaso::Frenado { segundos, cabeceras: salida });
     }
 
     // EL SECRETO ES OPCIONAL PARA ESTE PASO, y eso es lo que rescata a quien
@@ -518,11 +532,11 @@ pub async fn verificar(
     // frase de reposo o el blob no descifra, y el secreto descifrado no es base32.
     let ultimo = ultimo.map(|v| v as u64);
     let secreto = match blob {
-        Some(b) => descifrar_secreto(&e, b).await?,
+        Some(b) => descifrar_secreto(e, b).await?,
         None => None,
     };
     let veredicto = match &secreto {
-        Some(s) => dosfactores::verificar(s, &p.codigo, ahora.timestamp() as u64, ultimo),
+        Some(s) => dosfactores::verificar(s, codigo, ahora.timestamp() as u64, ultimo),
         None => Veredicto::SecretoIlegible,
     };
 
@@ -537,7 +551,7 @@ pub async fn verificar(
             // PERO LOS CÓDIGOS DE RECUPERACIÓN SIGUEN VALIENDO. Son hashes en otra
             // tabla y no dependen del secreto, así que esta es exactamente la
             // situación para la que existen: el segundo factor no está disponible.
-            if !dosfactores::parece_codigo_de_recuperacion(&p.codigo) {
+            if !dosfactores::parece_codigo_de_recuperacion(codigo) {
                 // Un TOTP de seis dígitos no se puede comprobar sin el secreto, y
                 // una avería del servidor no se le cobra al usuario: ni cuenta como
                 // fallo para el freno ni se le dice que su código está mal.
@@ -548,7 +562,7 @@ pub async fn verificar(
                         .into(),
                 ));
             }
-            if !gastar_codigo_recuperacion(&e, pendiente.usuario_id, &p.codigo).await? {
+            if !gastar_codigo_recuperacion(e, pendiente.usuario_id, codigo).await? {
                 // Aquí SÍ se cobra el fallo, y es la diferencia que impide que la
                 // avería sea un carril libre: un código de recuperación se pudo
                 // comprobar de verdad contra la tabla, así que fallar es fallar.
@@ -565,7 +579,7 @@ pub async fn verificar(
         Veredicto::Reutilizado | Veredicto::Incorrecto => {
             // Un código de recuperación es la otra puerta legítima, y se prueba
             // aquí y no antes: el camino normal es el de seis dígitos.
-            if !gastar_codigo_recuperacion(&e, pendiente.usuario_id, &p.codigo).await? {
+            if !gastar_codigo_recuperacion(e, pendiente.usuario_id, codigo).await? {
                 crate::acceso::anotar(&e.bd, &email, &origen, false, ahora).await?;
                 auditar(
                     &e.bd,
@@ -632,7 +646,24 @@ pub async fn verificar(
         header::SET_COOKIE,
         sesion::cabecera_pendiente_cerrar().parse().expect("ASCII"),
     );
-    Ok((salida, Json(serde_json::json!({ "ok": true }))).into_response())
+    Ok(SegundoPaso::Abierta(salida))
+}
+
+/// `POST /api/2fa/verificar` — el mismo segundo paso, en JSON. No decide nada.
+pub async fn verificar(
+    State(e): State<Estado>,
+    cabeceras: HeaderMap,
+    crate::origen::OrigenCliente(origen): crate::origen::OrigenCliente,
+    Json(p): Json<SoloCodigo>,
+) -> Result<Response, Error> {
+    match intentar_segundo_paso(&e, &cabeceras, origen, &p.codigo).await? {
+        SegundoPaso::Frenado { cabeceras, .. } => {
+            Ok((StatusCode::TOO_MANY_REQUESTS, cabeceras, "demasiados intentos").into_response())
+        }
+        SegundoPaso::Abierta(salida) => {
+            Ok((salida, Json(serde_json::json!({ "ok": true }))).into_response())
+        }
+    }
 }
 
 /// Consume un código de recuperación si alguno casa. `true` = se gastó uno.

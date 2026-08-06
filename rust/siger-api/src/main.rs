@@ -32,6 +32,8 @@ mod respaldo;
 mod rutas;
 mod segundofactor;
 mod sesion;
+/// El panel, tejido en el servidor con maud (directiva 26).
+mod vista;
 
 use axum::{routing::get, Router};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
