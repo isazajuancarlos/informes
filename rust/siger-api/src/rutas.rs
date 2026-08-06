@@ -194,6 +194,12 @@ pub fn router(estado: Estado) -> Router {
         )
         .route("/salir", post(crate::vista::salir))
         .route("/entregas", get(crate::vista::entregas_pagina))
+        .route("/estadisticas", get(crate::vista::estadisticas_pagina))
+        .route("/notificaciones", get(crate::vista::notificaciones_pagina))
+        .route(
+            "/notificaciones/{id}/leida",
+            post(crate::vista::notificacion_leida),
+        )
         .with_state(estado)
 }
 

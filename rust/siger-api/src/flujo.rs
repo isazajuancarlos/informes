@@ -25,13 +25,13 @@ use crate::rutas::{Error, Estado};
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Notificacion {
-    id: i64,
-    tipo: String,
-    titulo: String,
-    mensaje: String,
-    entrega_id: Option<i64>,
-    leida: bool,
-    momento: String,
+    pub(crate) id: i64,
+    pub(crate) tipo: String,
+    pub(crate) titulo: String,
+    pub(crate) mensaje: String,
+    pub(crate) entrega_id: Option<i64>,
+    pub(crate) leida: bool,
+    pub(crate) momento: String,
 }
 
 /// Crea una notificación interna para un usuario y, si el correo está activo, le
@@ -89,10 +89,10 @@ async fn supervisores(bd: &sqlx::SqlitePool) -> Vec<i64> {
     .collect()
 }
 
-pub async fn listar_notificaciones(
-    State(e): State<Estado>,
-    actor: Actor,
-) -> Result<Json<Vec<Notificacion>>, Error> {
+/// Las notificaciones de este actor, y solo las suyas: el filtro es su id, no un
+/// parámetro que alguien pueda cambiar. Aparte del manejador porque la usan la
+/// API y el panel.
+pub(crate) async fn notificaciones_de(e: &Estado, actor: &Actor) -> Result<Vec<Notificacion>, Error> {
     // Cada quien ve las SUYAS: el filtro es el id del actor, no un parámetro.
     let filas = sqlx::query_as::<_, Notificacion>(
         "SELECT id, tipo, titulo, mensaje, entrega_id, leida, momento \
@@ -101,7 +101,27 @@ pub async fn listar_notificaciones(
     .bind(actor.id)
     .fetch_all(&e.bd)
     .await?;
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn listar_notificaciones(
+    State(e): State<Estado>,
+    actor: Actor,
+) -> Result<Json<Vec<Notificacion>>, Error> {
+    Ok(Json(notificaciones_de(&e, &actor).await?))
+}
+
+/// Marca una notificación como leída. **El `AND usuario_id` es la guardia**, y
+/// va dentro del `UPDATE`: comprobar la pertenencia antes, en otra consulta,
+/// deja un hueco entre las dos. Aparte del manejador porque la usan la API y el
+/// panel.
+pub(crate) async fn marcar_leida_de(e: &Estado, actor: &Actor, id: i64) -> Result<(), Error> {
+    sqlx::query("UPDATE notificaciones SET leida = 1 WHERE id = ? AND usuario_id = ?")
+        .bind(id)
+        .bind(actor.id)
+        .execute(&e.bd)
+        .await?;
+    Ok(())
 }
 
 pub async fn marcar_leida(
@@ -109,12 +129,7 @@ pub async fn marcar_leida(
     actor: Actor,
     RutaParam(id): RutaParam<i64>,
 ) -> Result<Json<serde_json::Value>, Error> {
-    // El `AND usuario_id` impide marcar como leída la notificación de otro.
-    sqlx::query("UPDATE notificaciones SET leida = 1 WHERE id = ? AND usuario_id = ?")
-        .bind(id)
-        .bind(actor.id)
-        .execute(&e.bd)
-        .await?;
+    marcar_leida_de(&e, &actor, id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

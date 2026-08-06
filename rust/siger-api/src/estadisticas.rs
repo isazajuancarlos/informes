@@ -30,23 +30,26 @@ fn alcance_sql(a: &Alcance) -> (&'static str, Option<i64>) {
 
 #[derive(Serialize, Default)]
 pub struct Estadisticas {
-    total: i64,
-    pendientes: i64,
-    cumplidas: i64,
-    extemporaneas: i64,
-    incumplidas: i64,
+    pub(crate) total: i64,
+    pub(crate) pendientes: i64,
+    pub(crate) cumplidas: i64,
+    pub(crate) extemporaneas: i64,
+    pub(crate) incumplidas: i64,
     /// Pendientes cuyo límite cae dentro de los próximos 7 días.
-    proximas_7d: i64,
+    pub(crate) proximas_7d: i64,
     /// Pendientes cuyo límite ya pasó (vencidas sin registrar).
-    vencidas: i64,
+    pub(crate) vencidas: i64,
     /// Cumplidas / (total menos las que aún están pendientes), en 0..=100. Se
     /// mide sobre lo que YA venció y debía estar entregado, no sobre el total
     /// —incluir lo que todavía no vence castigaría un número que no es culpa de
     /// nadie—. `None` si no hay nada vencido todavía: no se inventa un 100%.
-    tasa_cumplimiento: Option<i64>,
+    pub(crate) tasa_cumplimiento: Option<i64>,
 }
 
-pub async fn resumen(State(e): State<Estado>, actor: Actor) -> Result<Json<Estadisticas>, Error> {
+/// El resumen que le corresponde a este actor. Aparte del manejador porque lo
+/// usan `GET /api/estadisticas` y la pantalla del panel, y el `alcance_sql` es
+/// justo lo que no puede tener dos versiones.
+pub(crate) async fn resumen_de(e: &Estado, actor: &Actor) -> Result<Estadisticas, Error> {
     let (scope, param) = alcance_sql(&actor.alcance());
     let hoy = chrono::Utc::now().date_naive().to_string();
     let tope = (chrono::Utc::now().date_naive() + chrono::Duration::days(7)).to_string();
@@ -103,7 +106,11 @@ pub async fn resumen(State(e): State<Estado>, actor: Actor) -> Result<Json<Estad
         None
     };
 
-    Ok(Json(st))
+    Ok(st)
+}
+
+pub async fn resumen(State(e): State<Estado>, actor: Actor) -> Result<Json<Estadisticas>, Error> {
+    Ok(Json(resumen_de(&e, &actor).await?))
 }
 
 #[cfg(test)]

@@ -385,6 +385,122 @@ fn error_en_pantalla(titulo: &str, activa: &str, err: crate::rutas::Error) -> Re
         .into_response()
 }
 
+// ── Estadísticas ──────────────────────────────────────────────────────────────
+
+pub async fn estadisticas_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    let st = match crate::estadisticas::resumen_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Estadísticas", "/estadisticas", err),
+    };
+
+    envoltura("Estadísticas", Some("/estadisticas"), html! {
+        h2 { "Estadísticas" }
+        div.resumen {
+            div { span { (st.total) } " entregas" }
+            div { span { (st.pendientes) } " pendientes" }
+            div { span { (st.cumplidas) } " cumplidas" }
+            div { span { (st.extemporaneas) } " extemporáneas" }
+            div { span { (st.incumplidas) } " incumplidas" }
+        }
+        h3 { "Lo que urge" }
+        div.resumen {
+            div { span class=(if st.vencidas > 0 { "alerta" } else { "" }) { (st.vencidas) } " vencidas" }
+            div { span { (st.proximas_7d) } " vencen en 7 días" }
+        }
+        h3 { "Cumplimiento" }
+        // `None` NO se dibuja como 100 %: se mide sobre lo que YA venció, y si
+        // no ha vencido nada todavía no hay tasa que dar. Inventar un 100 %
+        // sería el relleno que la directiva 20 prohíbe, y encima el más
+        // halagador — nadie lo cuestionaría.
+        @match st.tasa_cumplimiento {
+            Some(t) => {
+                p.tasa { span.numero { (t) "%" } " de lo que ya venció se cumplió a tiempo." }
+            }
+            None => {
+                p.vacio { "Todavía no ha vencido ninguna entrega, así que no hay tasa que medir." }
+            }
+        }
+    })
+    .into_response()
+}
+
+// ── Notificaciones ────────────────────────────────────────────────────────────
+
+pub async fn notificaciones_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    let ns = match crate::flujo::notificaciones_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Notificaciones", "", err),
+    };
+    let sin_leer = ns.iter().filter(|n| !n.leida).count();
+
+    envoltura("Notificaciones", Some(""), html! {
+        h2 { "Notificaciones" }
+        p.nota { (sin_leer) " sin leer, de " (ns.len()) " (se muestran las 100 más recientes)." }
+        @if ns.is_empty() {
+            p.vacio { "No tiene notificaciones." }
+        } @else {
+            // La carga inicial y lo que devuelve htmx usan EL MISMO fragmento.
+            // Tejerlo dos veces es como la fila de después acaba distinta de la
+            // de antes, y el usuario ve saltar la pantalla.
+            ul.notificaciones {
+                @for n in &ns { (fila_de_notificacion(n)) }
+            }
+        }
+    })
+    .into_response()
+}
+
+/// Una fila. Se usa en la carga inicial y en la respuesta de htmx.
+fn fila_de_notificacion(n: &crate::flujo::Notificacion) -> Markup {
+    html! {
+        li class=(if n.leida { "leida" } else { "" }) {
+            div.cabeza { b { (n.titulo) } span.momento { (n.momento) } }
+            p { (n.mensaje) }
+            div.acciones {
+                @if n.entrega_id.is_some() { a href="/entregas" { "Ver entregas" } }
+                @if !n.leida {
+                    // htmx cambia SOLO esta fila, sin recargar la página. Es
+                    // exactamente lo que htmx cubre, y por eso aquí no hace
+                    // falta JavaScript propio (directiva 26).
+                    button.secundario
+                           hx-post={ "/notificaciones/" (n.id) "/leida" }
+                           hx-target="closest li"
+                           hx-swap="outerHTML" { "Marcar leída" }
+                }
+            }
+        }
+    }
+}
+
+/// `POST /notificaciones/{id}/leida` — devuelve **solo la fila**, ya marcada.
+///
+/// La guardia es `flujo::marcar_leida_de`, la MISMA que usa la API: el
+/// `AND usuario_id` vive DENTRO del `UPDATE`, porque comprobar la pertenencia
+/// antes, en otra consulta, deja un hueco entre las dos.
+///
+/// Y la fila que se devuelve se RELEE de la base en vez de fabricarse a mano: si
+/// el `UPDATE` no afectó a ninguna fila —la notificación era de otro— lo que
+/// vuelve es la fila sin marcar, y se ve. Fabricarla marcada sería enseñar un
+/// resultado que no ocurrió.
+pub async fn notificacion_leida(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    if let Err(crate::rutas::Error(codigo, mensaje)) =
+        crate::flujo::marcar_leida_de(&e, &actor, id).await
+    {
+        return (codigo, html! { li.error { (mensaje) } }).into_response();
+    }
+    let ns = crate::flujo::notificaciones_de(&e, &actor).await.unwrap_or_default();
+    match ns.iter().find(|n| n.id == id) {
+        Some(n) => fila_de_notificacion(n).into_response(),
+        // Ya no está en su lista: se retira de la pantalla en vez de dejar una
+        // fila que miente.
+        None => html! {}.into_response(),
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
