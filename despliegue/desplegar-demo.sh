@@ -256,10 +256,23 @@ CURL_ESTADO=${CURL_ESTADO:-0}
 #      (`\033]52;c;`) se escribe en el portapapeles, justo cuando el mensaje
 #      termina con comandos para copiar.
 #
-# `tr -d '\000-\037'` quita los caracteres de control; `cut -c1-80` acota lo que
-# se imprime; `sed` saca el texto de dentro de las etiquetas.
+# EL SANEADO ES UNA LISTA BLANCA, y la primera versión no lo era: `tr -d` quitaba
+# los controles de 7 bits (C0) y dejaba pasar los **C1** —U+0080..U+009F—, que en
+# UTF-8 son dos bytes y que un terminal interpreta igual. `\u009b` ES el CSI de 8
+# bits: `\u009b4A\u009b2K` borra líneas exactamente como `\033[4A\033[2K`.
+# Comprobado en GNU screen y en pyte, con control negativo. También pasaban OSC 52
+# de 8 bits (portapapeles), DCS y DEL (0x7f).
+#
+# Enumerar lo que se PROHÍBE deja fuera lo que no se te ocurrió; enumerar lo
+# permitido manda el resto a quitarse, que es la dirección segura (directiva 23).
+# El título real es ASCII imprimible puro, así que `\040-\176` no pierde nada.
+#
+# Y la comprobación va ANCLADA (`^SIGER$`), no por subcadena: está atada a
+# `angular/src/index.html:5`. Si alguien cambia el título de la aplicación, este
+# guion dirá «no es SIGER» — falla CERRADO y se ve en el primer despliegue, que es
+# mejor que dar por publicado lo que no se reconoce.
 TITULO=$(grep -oE '<title>[^<]*</title>' "$CUERPO" 2>/dev/null | head -1 \
-         | sed -E 's|</?title>||g' | LC_ALL=C tr -d '\000-\037' | cut -c1-80 || true)
+         | sed -E 's|</?title>||g' | LC_ALL=C tr -cd '\040-\176' | cut -c1-80 || true)
 
 if [ "$CURL_ESTADO" = "60" ]; then
     # 60 es el código de curl para «no pude verificar el certificado». Va ANTES
@@ -281,7 +294,7 @@ de tocar nada en producción.
     | openssl x509 -noout -dates -subject
   ssh $DESTINO 'sudo certbot certificates'
 FIN
-elif [ "$PUBLICADO" = "200" ] && ! printf '%s' "$TITULO" | grep -q 'SIGER'; then
+elif [ "$PUBLICADO" = "200" ] && ! printf '%s' "$TITULO" | grep -q '^SIGER$'; then
     # 200 SIN título: contesta algo que no es la aplicación. Se dice tal cual en
     # vez de anunciar que las credenciales están publicadas, que es lo que haría
     # falso el aviso justo cuando más importa acertarlo.
