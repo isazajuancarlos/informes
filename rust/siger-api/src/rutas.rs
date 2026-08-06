@@ -291,11 +291,37 @@ fn hash_senuelo() -> &'static PasswordHash<'static> {
     })
 }
 
-async fn abrir_sesion(
-    State(e): State<Estado>,
-    crate::origen::OrigenCliente(origen): crate::origen::OrigenCliente,
-    Json(cred): Json<Credenciales>,
-) -> Result<Response, Error> {
+/// Cómo terminó un intento de acceso. Existe para que la LÓGICA del acceso viva
+/// en un solo sitio y la usen sus dos consumidores —`POST /api/sesion`, que
+/// responde JSON, y el formulario del panel, que responde HTML—, en vez de
+/// copiarla (directiva 1).
+///
+/// Copiarla no era una opción: este camino lleva dentro razonamiento que no se
+/// replica de oído —por qué con segundo factor NO se anota el éxito en
+/// `intento_acceso`, por qué el corte de 320 octetos va antes de escribir nada,
+/// por qué el señuelo paga un Argon2 completo aunque el correo no exista—, y una
+/// segunda copia se queda atrás en el primer arreglo.
+///
+/// Cada variante trae ya sus cabeceras: la cookie —de sesión o pendiente— y el
+/// `Retry-After`. Quien llama decide el CUERPO, no la seguridad.
+pub(crate) enum Acceso {
+    /// Sesión abierta. La cabecera lleva la cookie.
+    Abierta(HeaderMap),
+    /// Contraseña correcta, pero la cuenta tiene segundo factor: la cabecera
+    /// lleva el token PENDIENTE, que solo sirve para `/api/2fa/verificar` y
+    /// dura cinco minutos. **No es una sesión.**
+    SegundoFactor(HeaderMap),
+    /// Hay que esperar. No es un 401: decir «credenciales incorrectas» cuando lo
+    /// que pasa es que hay que esperar manda al usuario legítimo a cambiar una
+    /// contraseña que estaba bien.
+    Frenado { segundos: u64, cabeceras: HeaderMap },
+}
+
+pub(crate) async fn intentar_acceso(
+    e: &Estado,
+    origen: Option<String>,
+    cred: &Credenciales,
+) -> Result<Acceso, Error> {
     let email = cred.email.trim().to_lowercase();
 
     // Una dirección de más de 320 octetos no existe: es el máximo de la RFC 5321
@@ -340,15 +366,7 @@ async fn abrir_sesion(
             header::RETRY_AFTER,
             segundos.to_string().parse().expect("un número es ASCII"),
         );
-        return Ok((
-            StatusCode::TOO_MANY_REQUESTS,
-            cabeceras,
-            Json(serde_json::json!({
-                "error": format!("demasiados intentos. Vuelva a probar en {segundos} s."),
-                "segundos": segundos,
-            })),
-        )
-            .into_response());
+        return Ok(Acceso::Frenado { segundos, cabeceras });
     }
 
     // `totp_confirmado_en` viaja en la MISMA consulta que ya se hacía. Traerlo
@@ -444,7 +462,7 @@ async fn abrir_sesion(
     // aunque cueste un Argon2 más: solo ocurre tras un ACIERTO, y un acierto ya
     // dice que la cuenta existe — el que entra lo sabe porque entra.
     let hash_guardado = fila.expect("`entra` exige que haya usuario").1;
-    crate::cuentas::renovar_hash_si_hace_falta(&e, id, cred.clave.clone(), &hash_guardado).await;
+    crate::cuentas::renovar_hash_si_hace_falta(e, id, cred.clave.clone(), &hash_guardado).await;
 
     // Con segundo factor, la contraseña correcta **no abre nada**: emite el token
     // pendiente, que solo sirve para `/api/2fa/verificar` y dura cinco minutos.
@@ -477,11 +495,7 @@ async fn abrir_sesion(
             header::SET_COOKIE,
             sesion::cabecera_pendiente(&valor).parse().expect("la cabecera es ASCII"),
         );
-        return Ok((
-            cabeceras,
-            Json(serde_json::json!({ "ok": false, "segundo_factor": true })),
-        )
-            .into_response());
+        return Ok(Acceso::SegundoFactor(cabeceras));
     }
 
     // Sin segundo factor, ESTA es la puerta: aquí sí se anota el éxito, que es lo
@@ -496,7 +510,37 @@ async fn abrir_sesion(
             .parse()
             .expect("la cabecera es ASCII"),
     );
-    Ok((cabeceras, Json(serde_json::json!({ "ok": true, "segundo_factor": false }))).into_response())
+    Ok(Acceso::Abierta(cabeceras))
+}
+
+/// `POST /api/sesion` — el mismo acceso, en JSON. No decide nada: da forma a lo
+/// que decidió `intentar_acceso`.
+async fn abrir_sesion(
+    State(e): State<Estado>,
+    crate::origen::OrigenCliente(origen): crate::origen::OrigenCliente,
+    Json(cred): Json<Credenciales>,
+) -> Result<Response, Error> {
+    match intentar_acceso(&e, origen, &cred).await? {
+        Acceso::Frenado { segundos, cabeceras } => Ok((
+            StatusCode::TOO_MANY_REQUESTS,
+            cabeceras,
+            Json(serde_json::json!({
+                "error": format!("demasiados intentos. Vuelva a probar en {segundos} s."),
+                "segundos": segundos,
+            })),
+        )
+            .into_response()),
+        Acceso::SegundoFactor(cabeceras) => Ok((
+            cabeceras,
+            Json(serde_json::json!({ "ok": false, "segundo_factor": true })),
+        )
+            .into_response()),
+        Acceso::Abierta(cabeceras) => Ok((
+            cabeceras,
+            Json(serde_json::json!({ "ok": true, "segundo_factor": false })),
+        )
+            .into_response()),
+    }
 }
 
 async fn cerrar_sesion(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
