@@ -599,6 +599,115 @@ fn lista_de_partes(partes: &[crate::participacion::OpcionParte], vacio: &str) ->
     }
 }
 
+// ── Cuentas (administración) ──────────────────────────────────────────────────
+
+/// El padrón. `cuentas::listar_de` lleva DENTRO `solo_admin` **y** la línea de
+/// bitácora, y las dos cosas importan aquí:
+///
+///   - es SOLO `Admin`. `Supervisor` NO, aunque su alcance también sea `Todas`:
+///     eso es para LEER entregas. Si administrar colgara del alcance, un rol de
+///     consulta podría fabricarse un administrador.
+///   - un panel que leyera el padrón sin anotarlo sería la vía para leerlo sin
+///     dejar rastro. Es la única lectura del sistema que devuelve dato personal
+///     en bloque.
+pub async fn cuentas_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    let filas = match crate::cuentas::listar_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Cuentas", "/cuentas", err),
+    };
+
+    envoltura("Cuentas", Some("/cuentas"), html! {
+        h2 { "Cuentas" }
+        p.nota {
+            "El alta, la baja y el restablecimiento de contraseñas siguen en `/api`. "
+            "Esta pantalla es el padrón; las escrituras entran cuando tengan su formulario "
+            "y su prueba, no antes."
+        }
+        div.tabla-ancha {
+            table.datos {
+                thead { tr {
+                    th { "Nombre" } th { "Correo" } th { "Rol" }
+                    th { "Segundo factor" } th { "Estado" }
+                } }
+                tbody {
+                    @for c in &filas {
+                        tr.inactivo[!c.activo] {
+                            td { (c.nombre) }
+                            td { (c.email) }
+                            td { (c.rol) }
+                            // Booleano derivado, no la fecha de enrolamiento: la
+                            // administración solo necesita saber si hay algo que
+                            // retirar, y cuándo se enroló alguien no es asunto
+                            // de nadie más.
+                            td { @if c.segundo_factor { "Sí" } @else { "No" } }
+                            td { @if c.activo { "Activa" } @else { "Desactivada" } }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .into_response()
+}
+
+// ── Mi contraseña ─────────────────────────────────────────────────────────────
+
+fn pantalla_mi_clave(aviso: Option<&str>, es_error: bool) -> Markup {
+    envoltura("Mi contraseña", Some(""), html! {
+        h2 { "Cambiar mi contraseña" }
+        @if let Some(a) = aviso {
+            @if es_error {
+                div.error role="alert" { (a) }
+            } @else {
+                div.aviso-resultado role="status" { (a) }
+            }
+        }
+        form.ficha method="post" action="/mi-clave" {
+            div.rejilla {
+                // La ACTUAL se pide siempre: sin ella, una sesión robada —una
+                // cookie prestada, un navegador abierto— cambiaría la contraseña
+                // y se quedaría con la cuenta para siempre.
+                label { "Contraseña actual"
+                    input type="password" name="clave_actual" autocomplete="current-password" required; }
+                label { "Contraseña nueva"
+                    input type="password" name="clave_nueva" autocomplete="new-password" required; }
+            }
+            button.primario type="submit" { "Cambiar" }
+        }
+        p.nota {
+            "Al cambiarla se cierran sus sesiones en los demás dispositivos, y esta sigue "
+            "abierta. Es lo que uno espera de cambiar una contraseña: que eche a quien "
+            "hubiera entrado con la vieja, y no a uno mismo."
+        }
+    })
+}
+
+pub async fn mi_clave_pagina() -> Markup {
+    pantalla_mi_clave(None, false)
+}
+
+pub async fn mi_clave_enviar(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::Form(f): axum::Form<crate::cuentas::MiClave>,
+) -> Response {
+    match crate::cuentas::cambiar_mi_clave_de(&e, &actor, &f).await {
+        // Las cabeceras traen la cookie REEMITIDA con la versión nueva. Se
+        // devuelven tal cual: perderlas aquí expulsaría a quien acaba de cambiar
+        // su contraseña, que es el fallo que la reemisión existe para evitar.
+        Ok(cabeceras) => {
+            let mut cabeceras = cabeceras;
+            cabeceras.insert(
+                header::LOCATION,
+                "/mi-clave?cambiada=1".parse().expect("ruta válida"),
+            );
+            (StatusCode::SEE_OTHER, cabeceras).into_response()
+        }
+        Err(crate::rutas::Error(codigo, mensaje)) => {
+            (codigo, pantalla_mi_clave(Some(&mensaje), true)).into_response()
+        }
+    }
+}
 #[cfg(test)]
 mod pruebas {
     use super::*;

@@ -88,8 +88,8 @@ pub struct ClaveDeOtro {
 
 #[derive(Deserialize)]
 pub struct MiClave {
-    clave_actual: String,
-    clave_nueva: String,
+    pub(crate) clave_actual: String,
+    pub(crate) clave_nueva: String,
 }
 
 // --- Guardas ------------------------------------------------------------------
@@ -613,8 +613,17 @@ pub(crate) async fn renovar_hash_si_hace_falta(
 /// flujo no se le asigna alguien que ya no está. Aquí es al revés: si la
 /// administración no viera las desactivadas, reactivar a alguien exigiría el
 /// `sqlite3` que esta pantalla viene a quitar.
-pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<FichaCuenta>>, Error> {
-    solo_admin(&actor)?;
+/// El padrón de cuentas, para la administración.
+///
+/// Aparte del manejador porque lo usan `GET /api/cuentas` y la pantalla del
+/// panel. Se lleva DENTRO las dos cosas que no pueden quedarse fuera:
+/// `solo_admin` —y es SOLO `Admin`: `Supervisor` no, aunque su alcance sea
+/// `Todas`, porque eso es para LEER entregas; si administrar colgara del
+/// alcance, un rol de consulta podría fabricarse un administrador— y la línea de
+/// bitácora. Un panel que leyera el padrón sin anotarlo sería la vía para
+/// leerlo sin dejar rastro, que es justo lo que esa línea existe para impedir.
+pub(crate) async fn listar_de(e: &Estado, actor: &Actor) -> Result<Vec<FichaCuenta>, Error> {
+    solo_admin(actor)?;
     let filas = sqlx::query_as::<_, FichaCuenta>(&format!(
         "SELECT {COLUMNAS} FROM usuarios ORDER BY activo DESC, nombre"
     ))
@@ -638,7 +647,11 @@ pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<Fi
     )
     .await;
 
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<FichaCuenta>>, Error> {
+    Ok(Json(listar_de(&e, &actor).await?))
 }
 
 /// `POST /api/cuentas` — alta.
@@ -899,11 +912,16 @@ pub async fn retirar_segundo_factor(
 /// inalcanzable. Sin el bump, cambiar la contraseña no echaría a quien entró con
 /// la vieja, que es justo de lo que uno se quiere proteger al cambiarla; sin la
 /// reemisión, cambiarla te expulsaría a ti, y nadie usa un botón que le echa.
-pub async fn cambiar_mi_clave(
-    State(e): State<Estado>,
-    actor: Actor,
-    Json(cuerpo): Json<MiClave>,
-) -> Result<Response, Error> {
+/// Devuelve las cabeceras con la cookie REEMITIDA. Aparte del manejador porque
+/// la usan `POST /api/mi-clave` y el formulario del panel, y aquí no puede haber
+/// dos versiones: el salto de `token_version` y la reemisión de la cookie son
+/// una pareja —sin el salto, cambiar la contraseña no echa a quien entró con la
+/// vieja; sin la reemisión, te echa a ti y nadie usa el botón—.
+pub(crate) async fn cambiar_mi_clave_de(
+    e: &Estado,
+    actor: &Actor,
+    cuerpo: &MiClave,
+) -> Result<HeaderMap, Error> {
     let nueva = clave_valida(&cuerpo.clave_nueva)?;
 
     let hash_actual: String = sqlx::query_scalar("SELECT clave_hash FROM usuarios WHERE id = ?")
@@ -916,12 +934,12 @@ pub async fn cambiar_mi_clave(
     // —una cookie prestada, un navegador abierto— podría cambiar la contraseña y
     // quedarse con la cuenta para siempre, que es la escalada que este extremo
     // no puede permitir por muy autenticado que esté quien pide.
-    if !clave_correcta(&e, hash_actual, cuerpo.clave_actual.clone()).await? {
+    if !clave_correcta(e, hash_actual, cuerpo.clave_actual.clone()).await? {
         auditar(&e.bd, "clave_propia_rechazada", Some(&actor.email), None).await;
         return Err(Error(StatusCode::UNAUTHORIZED, "la contraseña actual no es correcta".into()));
     }
 
-    let hash = hashear(&e, nueva).await?;
+    let hash = hashear(e, nueva).await?;
 
     // La escritura del hash y el salto de versión, en la misma sentencia: si
     // fueran dos, entre ellas habría un instante con la contraseña nueva puesta y
@@ -949,6 +967,15 @@ pub async fn cambiar_mi_clave(
             .parse()
             .expect("la cabecera es ASCII"),
     );
+    Ok(cabeceras)
+}
+
+pub async fn cambiar_mi_clave(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(cuerpo): Json<MiClave>,
+) -> Result<Response, Error> {
+    let cabeceras = cambiar_mi_clave_de(&e, &actor, &cuerpo).await?;
     Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
 }
 
