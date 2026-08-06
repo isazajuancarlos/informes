@@ -127,11 +127,18 @@ echo "==> 6/6  comprobar contra el dominio real, desde aquí"
 # proxy y el binario funcionan a la vez. Un `curl` a 127.0.0.1 en el servidor
 # habría pasado con el sitio sin publicar.
 CODIGO="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "https://$DOMINIO/")"
-TITULO="$(curl -s --max-time 20 "https://$DOMINIO/" | grep -oE '<title>[^<]*</title>' || true)"
+# Mismo saneado y misma exigencia que `desplegar-demo.sh`, y por el mismo
+# hallazgo: `[ -z "$TITULO" ]` sobre `<title></title>` es falso —la cadena con
+# etiquetas nunca está vacía— y cualquier título pasaba, incluido el de la
+# página por defecto de nginx. Además el cuerpo lo escribe un servidor remoto:
+# sin quitar los caracteres de control, puede reescribir lo que este guion
+# parece haber dicho en el terminal.
+TITULO="$(curl -s --max-time 20 "https://$DOMINIO/" | grep -oE '<title>[^<]*</title>' \
+          | head -1 | sed -E 's|</?title>||g' | LC_ALL=C tr -cd '\040-\176' | cut -c1-80 || true)"
 REDIR="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "http://$DOMINIO/")"
 echo "    https://$DOMINIO/  ->  $CODIGO  $TITULO"
 echo "    http (debe redirigir) ->  $REDIR"
-if [ "$CODIGO" != "200" ] || [ -z "$TITULO" ]; then
+if [ "$CODIGO" != "200" ] || ! printf '%s' "$TITULO" | grep -q '^SIGER$'; then
     echo "La demostración NO está respondiendo como debe. Mire:" >&2
     echo "    ssh $DESTINO 'sudo journalctl -u siger-demo -n 40 --no-pager'" >&2
     exit 6
