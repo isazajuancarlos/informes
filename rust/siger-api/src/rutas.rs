@@ -193,6 +193,7 @@ pub fn router(estado: Estado) -> Router {
             get(crate::vista::codigo_pagina).post(crate::vista::codigo_enviar),
         )
         .route("/salir", post(crate::vista::salir))
+        .route("/entregas", get(crate::vista::entregas_pagina))
         .with_state(estado)
 }
 
@@ -740,20 +741,20 @@ async fn salud(State(e): State<Estado>) -> Response {
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct EntregaVista {
-    id: i64,
-    informe: String,
-    fecha_nominal: String,
-    fecha_limite: String,
-    tipo_ajuste: String,
-    estado: String,
+    pub(crate) id: i64,
+    pub(crate) informe: String,
+    pub(crate) fecha_nominal: String,
+    pub(crate) fecha_limite: String,
+    pub(crate) tipo_ajuste: String,
+    pub(crate) estado: String,
     /// Solo el nombre. La ruta no sale nunca de aquí: al navegador no le hace
     /// falta y dársela fue exactamente el fallo anterior.
-    archivo_nombre: Option<String>,
-    tiene_firma: bool,
+    pub(crate) archivo_nombre: Option<String>,
+    pub(crate) tiene_firma: bool,
     /// Factor de calificación por contenido (#165): `Some(true)` el contenido
     /// concuerda con la extensión, `Some(false)` NO concuerda —marcado para
     /// revisión—, `None` sin archivo o tipo no determinable.
-    archivo_valido: Option<bool>,
+    pub(crate) archivo_valido: Option<bool>,
 }
 
 /// El `WHERE` sale del alcance del actor, no de la petición. No hay parámetro
@@ -783,17 +784,26 @@ fn consulta_por_alcance(alcance: &Alcance) -> (String, Option<i64>) {
     }
 }
 
+/// Las entregas que le corresponden a este actor, y NADA más.
+///
+/// Vive aparte del manejador porque la usan dos consumidores —`GET /api/entregas`
+/// y la pantalla del panel—, y el filtrado por alcance es justo lo que no puede
+/// tener dos versiones: una re-derivación que se quede corta enseña entregas de
+/// otro cliente. El alcance entra en la MISMA consulta, no se filtra después.
+pub(crate) async fn entregas_de(e: &Estado, actor: &Actor) -> Result<Vec<EntregaVista>, Error> {
+    let (sql, param) = consulta_por_alcance(&actor.alcance());
+    let mut q = sqlx::query_as::<_, EntregaVista>(sql.as_str());
+    if let Some(p) = param {
+        q = q.bind(p);
+    }
+    Ok(q.fetch_all(&e.bd).await?)
+}
+
 async fn listar_entregas(
     State(e): State<Estado>,
     actor: Actor,
 ) -> Result<Json<Vec<EntregaVista>>, Error> {
-    let (sql, param) = consulta_por_alcance(&actor.alcance());
-    let sql = sql.as_str();
-    let mut q = sqlx::query_as::<_, EntregaVista>(sql);
-    if let Some(p) = param {
-        q = q.bind(p);
-    }
-    Ok(Json(q.fetch_all(&e.bd).await?))
+    Ok(Json(entregas_de(&e, &actor).await?))
 }
 
 /// Descarga del archivo de una entrega.

@@ -264,6 +264,127 @@ pub async fn salir(State(e): State<Estado>) -> Response {
     a_donde(cabeceras, "/entrar")
 }
 
+// ── Entregas ──────────────────────────────────────────────────────────────────
+
+/// La pantalla central: qué hay que entregar, cuándo vence y cómo va.
+///
+/// **El alcance no se re-deriva aquí.** Se llama a `rutas::entregas_de`, que es
+/// la MISMA función que sirve `GET /api/entregas` y mete el alcance dentro de la
+/// consulta. Filtrar después de leer, o escribir aquí un segundo `WHERE`, es
+/// como se acaba enseñando la entrega de otro cliente.
+///
+/// Y `actor: Actor` en la firma no es adorno: es un extractor, así que un
+/// manejador que no lo pida **no tiene sesión** y uno que lo pida ya la exigió.
+pub async fn entregas_pagina(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+) -> Response {
+    let entregas = match crate::rutas::entregas_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Entregas", "/entregas", err),
+    };
+
+    // Los contadores salen de la MISMA lista que se dibuja, no de otra consulta:
+    // dos consultas distintas pueden discrepar y entonces el resumen miente
+    // sobre la tabla que hay justo debajo.
+    let vencidas = entregas.iter().filter(|x| x.estado == "vencida").count();
+    let pendientes = entregas.iter().filter(|x| x.estado == "pendiente").count();
+
+    envoltura("Entregas", Some("/entregas"), html! {
+        h2 { "Entregas" }
+        div.resumen {
+            div { span { (entregas.len()) } " en total" }
+            div { span { (pendientes) } " pendientes" }
+            div { span { (vencidas) } " vencidas" }
+        }
+        @if entregas.is_empty() {
+            // «No le corresponde ninguna» y «no hay ninguna» son cosas distintas
+            // para quien mira: un tercero sin entidad vinculada tiene alcance
+            // vacío por diseño, y decírselo evita que crea que el sistema falla.
+            p.vacio {
+                @if matches!(actor.alcance(), crate::autz::Alcance::Ninguna) {
+                    "Su cuenta no tiene ninguna entidad vinculada, así que no le corresponde \
+                     ninguna entrega. Pídale a un administrador que la vincule."
+                } @else {
+                    "No hay entregas que le correspondan."
+                }
+            }
+        } @else {
+            div.tabla-ancha {
+                table.datos {
+                    thead { tr {
+                        th { "Informe" } th { "Nominal" } th { "Límite" }
+                        th { "Ajuste" } th { "Estado" } th { "Archivo" }
+                    } }
+                    tbody {
+                        @for x in &entregas {
+                            tr {
+                                td { (x.informe) }
+                                // La fecha NOMINAL da identidad y mide la
+                                // vigencia; la LÍMITE mide el cumplimiento. Son
+                                // dos campos porque significan dos cosas
+                                // (directiva 32), y por eso se enseñan las dos.
+                                td { (x.fecha_nominal) }
+                                td { (x.fecha_limite) }
+                                td { (x.tipo_ajuste) }
+                                td { span.estado class=(clase_estado(&x.estado)) { (x.estado) } }
+                                td {
+                                    @match &x.archivo_nombre {
+                                        None => span.vacio { "—" }
+                                        Some(nombre) => {
+                                            // El nombre y NUNCA la ruta: dar la
+                                            // ruta fue exactamente el agujero
+                                            // del portal anterior.
+                                            a href={ "/api/entregas/" (x.id) "/archivo" } { (nombre) }
+                                            @if x.tiene_firma { span.marca-firma title="Firmada" { " ✓" } }
+                                            // Un archivo cuyo contenido no
+                                            // concuerda con su extensión se
+                                            // MARCA, no se esconde: quien revisa
+                                            // tiene que enterarse.
+                                            @if x.archivo_valido == Some(false) {
+                                                span.alerta title="El contenido no concuerda con la extensión" {
+                                                    " ⚠ revisar"
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .into_response()
+}
+
+fn clase_estado(estado: &str) -> &'static str {
+    // Enumera lo que SÍ significa algo y manda el resto a «sin clase»
+    // (directiva 23): un estado nuevo no debe heredar el color de otro.
+    match estado {
+        "vencida" => "mal",
+        "entregada" | "aprobada" => "bien",
+        "pendiente" => "espera",
+        _ => "",
+    }
+}
+
+/// Un error del dominio, vuelto pantalla CON la envoltura puesta, para que se
+/// pueda navegar a otra parte. El texto y el código son los que ya escribió el
+/// dominio; aquí no se reescriben.
+fn error_en_pantalla(titulo: &str, activa: &str, err: crate::rutas::Error) -> Response {
+    let crate::rutas::Error(codigo, mensaje) = err;
+    (
+        codigo,
+        envoltura(titulo, Some(activa), html! {
+            h2 { (titulo) }
+            div.error role="alert" { (mensaje) }
+        }),
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
