@@ -708,6 +708,75 @@ pub async fn mi_clave_enviar(
         }
     }
 }
+
+// ── Cronograma ────────────────────────────────────────────────────────────────
+
+/// Lo que hace esta pantalla: **generar las entregas que faltan y decir qué
+/// pasó**, incluidas las reglas que no se pudieron leer.
+///
+/// Lo que NO trae, y se dice aquí en vez de dejarlo implícito: el
+/// previsualizador interactivo de reglas de la pantalla de Angular, que arma un
+/// `ReglaJson` completo y pide `POST /api/periodicidad/previsualizar`. Ese
+/// formulario tiene su propio dominio —modos, ajustes, calendario de festivos— y
+/// meterlo a medias sería peor que no traerlo: una previsualización que no sale
+/// del MISMO motor que genera es una promesa que después no se cumple, y por eso
+/// el motor va en el estado del servidor. Entra con su formulario y su prueba.
+fn pantalla_cronograma(resultado: Option<&crate::planificador::Resumen>, error: Option<&str>) -> Markup {
+    envoltura("Cronograma", Some("/cronograma"), html! {
+        h2 { "Cronograma" }
+        @if let Some(e) = error {
+            div.error role="alert" { (e) }
+        }
+        @if let Some(r) = resultado {
+            div.aviso-resultado role="status" {
+                b { (r.entregas_creadas) " entregas creadas" }
+                " de " (r.informes_revisados) " informes revisados."
+            }
+            // LAS REGLAS ILEGIBLES SE ENSEÑAN, y es la mitad que importa. Un
+            // informe activo cuya regla no se entiende NUNCA generará una tarea;
+            // que el resumen diga «0 creadas» sin decir que tres reglas están
+            // rotas es exactamente el silencio que este sistema persigue.
+            @if !r.reglas_ilegibles.is_empty() {
+                h3.alerta { (r.reglas_ilegibles.len()) " reglas no se pudieron leer" }
+                p.nota {
+                    "Estos informes están activos y no generarán ninguna entrega hasta que "
+                    "se arregle su regla."
+                }
+                ul.problemas {
+                    @for (id, motivo) in &r.reglas_ilegibles {
+                        li { b { "Informe " (id) } ": " (motivo) }
+                    }
+                }
+            }
+        }
+        form.ficha method="post" action="/cronograma/generar" {
+            p {
+                "Genera las entregas que falten según la regla de cada informe activo. "
+                "Es idempotente: lo que ya existe no se duplica."
+            }
+            button.primario type="submit" { "Generar ahora" }
+        }
+        p.nota {
+            "La previsualización de una regla sigue en "
+            code { "POST /api/periodicidad/previsualizar" }
+            ": su formulario entra con su propia prueba."
+        }
+    })
+}
+
+pub async fn cronograma_pagina() -> Markup {
+    pantalla_cronograma(None, None)
+}
+
+pub async fn cronograma_generar(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    match crate::rutas::generar_de(&e, &actor).await {
+        Ok(r) => pantalla_cronograma(Some(&r), None).into_response(),
+        Err(crate::rutas::Error(codigo, mensaje)) => {
+            (codigo, pantalla_cronograma(None, Some(&mensaje))).into_response()
+        }
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
@@ -764,6 +833,8 @@ mod pruebas {
         for html in [
             pantalla_acceso(Some("x")).into_string(),
             pantalla_codigo(Some("x")).into_string(),
+            pantalla_mi_clave(Some("x"), true).into_string(),
+            pantalla_cronograma(None, Some("x")).into_string(),
             envoltura("t", Some("/entregas"), html! { p { "x" } }).into_string(),
         ] {
             let bajo = html.to_ascii_lowercase();

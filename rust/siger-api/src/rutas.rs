@@ -198,6 +198,8 @@ pub fn router(estado: Estado) -> Router {
         .route("/informes", get(crate::vista::informes_pagina))
         .route("/partes", get(crate::vista::partes_pagina))
         .route("/cuentas", get(crate::vista::cuentas_pagina))
+        .route("/cronograma", get(crate::vista::cronograma_pagina))
+        .route("/cronograma/generar", post(crate::vista::cronograma_generar))
         .route(
             "/mi-clave",
             get(crate::vista::mi_clave_pagina).post(crate::vista::mi_clave_enviar),
@@ -1438,14 +1440,24 @@ async fn subir_archivo(
 ///
 /// Solo administración: es la orden que se da tras crear o corregir una regla, y
 /// no tendría sentido que quien no puede tocar reglas pudiera dispararla.
-async fn generar_ahora(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+/// Genera las entregas que faltan. Aparte del manejador porque la usan
+/// `POST /api/planificador/generar` y la pantalla del panel, con la guardia
+/// DENTRO: generar entregas escribe en el cronograma de todo el mundo.
+pub(crate) async fn generar_de(
+    e: &Estado,
+    actor: &Actor,
+) -> Result<crate::planificador::Resumen, Error> {
     if !matches!(actor.rol, Rol::Admin) {
         return Err(Error(StatusCode::FORBIDDEN, "solo administración".into()));
     }
     let calendario = siger_core::Calendario::de_pais(&e.cfg.pais_iso, 2000, 2100)
         .map_err(|err| Error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let motor = siger_core::Motor::nuevo(calendario);
-    let r = crate::planificador::generar(&e.bd, &motor, Utc::now().date_naive()).await?;
+    Ok(crate::planificador::generar(&e.bd, &motor, Utc::now().date_naive()).await?)
+}
+
+async fn generar_ahora(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+    let r = generar_de(&e, &actor).await?;
     Ok(Json(serde_json::json!({
         "informes_revisados": r.informes_revisados,
         "entregas_creadas": r.entregas_creadas,
