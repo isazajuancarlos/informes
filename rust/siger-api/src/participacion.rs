@@ -24,7 +24,7 @@ const ROLES: &[&str] = &["ORIGEN", "DESTINO", "USUARIO", "SUPERVISA", "EJECUTA"]
 /// Una parte, con el nombre ya resuelto para pintarla.
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ParteVista {
-    id: i64,
+    pub(crate) id: i64,
     usuario_id: Option<i64>,
     stakeholder_id: Option<i64>,
     nombre: String,
@@ -54,9 +54,9 @@ fn verdadero() -> bool {
 /// Un usuario o un stakeholder, para poblar los selectores del editor.
 #[derive(Serialize, sqlx::FromRow)]
 pub struct OpcionParte {
-    id: i64,
-    nombre: String,
-    detalle: Option<String>,
+    pub(crate) id: i64,
+    pub(crate) nombre: String,
+    pub(crate) detalle: Option<String>,
 }
 
 fn solo_admin(actor: &Actor) -> Result<(), Error> {
@@ -181,25 +181,37 @@ pub async fn reemplazar(
 }
 
 /// Usuarios internos activos, para el selector del editor.
-pub async fn usuarios(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<OpcionParte>>, Error> {
-    puede_leer(&actor)?;
+/// Quién puede ser parte interna de un flujo: SOLO los activos, porque lo
+/// consume el selector de partes. La administración de cuentas necesita también
+/// los desactivados y por eso es otro recurso — dos vocabularios sobre la misma
+/// tabla, y el valor lo fija quien lee.
+pub(crate) async fn usuarios_de(e: &Estado, actor: &Actor) -> Result<Vec<OpcionParte>, Error> {
+    puede_leer(actor)?;
     let filas = sqlx::query_as::<_, OpcionParte>(
         "SELECT id, nombre, email AS detalle FROM usuarios WHERE activo = 1 ORDER BY nombre",
     )
     .fetch_all(&e.bd)
     .await?;
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn usuarios(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<OpcionParte>>, Error> {
+    Ok(Json(usuarios_de(&e, &actor).await?))
 }
 
 /// Stakeholders, para el selector del editor (el destino externo sale de aquí).
-pub async fn stakeholders(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<OpcionParte>>, Error> {
-    puede_leer(&actor)?;
+pub(crate) async fn stakeholders_de(e: &Estado, actor: &Actor) -> Result<Vec<OpcionParte>, Error> {
+    puede_leer(actor)?;
     let filas = sqlx::query_as::<_, OpcionParte>(
         "SELECT id, nombre, email AS detalle FROM stakeholders ORDER BY nombre",
     )
     .fetch_all(&e.bd)
     .await?;
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn stakeholders(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<OpcionParte>>, Error> {
+    Ok(Json(stakeholders_de(&e, &actor).await?))
 }
 
 #[cfg(test)]

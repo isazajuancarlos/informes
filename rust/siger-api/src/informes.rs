@@ -23,13 +23,13 @@ use crate::rutas::{Error, Estado};
 /// La fila de la lista: lo justo para pintar la tabla sin traer la regla entera.
 #[derive(Serialize, sqlx::FromRow)]
 pub struct InformeFila {
-    id: i64,
-    nombre: String,
-    descripcion: Option<String>,
-    activo: bool,
+    pub(crate) id: i64,
+    pub(crate) nombre: String,
+    pub(crate) descripcion: Option<String>,
+    pub(crate) activo: bool,
     /// El modo de la regla, ya extraído, para que la lista lo muestre sin que el
     /// navegador tenga que parsear el JSON.
-    modo: Option<String>,
+    pub(crate) modo: Option<String>,
 }
 
 /// El detalle: incluye la regla cruda, tal como está guardada, para que el editor
@@ -107,8 +107,11 @@ fn nombre_valido(nombre: &str) -> Result<String, Error> {
     Ok(n.to_string())
 }
 
-pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<InformeFila>>, Error> {
-    puede_leer(&actor)?;
+/// El catálogo de informes. Aparte del manejador porque lo usan `GET
+/// /api/informes` y la pantalla del panel — y `puede_leer` va DENTRO, para que
+/// el permiso no dependa de que el llamante se acuerde.
+pub(crate) async fn listar_de(e: &Estado, actor: &Actor) -> Result<Vec<InformeFila>, Error> {
+    puede_leer(actor)?;
     // El modo se extrae en SQL con json_extract: es una lectura, no vale la pena
     // traer la regla entera a Rust para sacarle un campo.
     let filas = sqlx::query_as::<_, InformeFila>(
@@ -118,7 +121,11 @@ pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<In
     )
     .fetch_all(&e.bd)
     .await?;
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<InformeFila>>, Error> {
+    Ok(Json(listar_de(&e, &actor).await?))
 }
 
 pub async fn detalle(

@@ -501,6 +501,104 @@ pub async fn notificacion_leida(
     }
 }
 
+// ── Informes (el catálogo de obligaciones) ────────────────────────────────────
+
+pub async fn informes_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    // `listar_de` lleva `puede_leer` DENTRO, así que el permiso no depende de que
+    // yo me acuerde de comprobarlo aquí. Es la forma que evita el fallo que
+    // cometí en inventario: catorce rutas con la guardia olvidada.
+    let filas = match crate::informes::listar_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Informes", "/informes", err),
+    };
+
+    envoltura("Informes", Some("/informes"), html! {
+        h2 { "Informes" }
+        p.nota { "Las obligaciones definidas: quién las produce, cada cuánto y si están activas." }
+        @if filas.is_empty() {
+            p.vacio { "No hay informes definidos todavía." }
+        } @else {
+            div.tabla-ancha {
+                table.datos {
+                    thead { tr { th { "Nombre" } th { "Descripción" } th { "Periodicidad" } th { "Estado" } } }
+                    tbody {
+                        @for f in &filas {
+                            tr.inactivo[!f.activo] {
+                                td { (f.nombre) }
+                                td { (f.descripcion.clone().unwrap_or_default()) }
+                                // El modo viene ya extraído del JSON por SQL. Si
+                                // falta, se DICE que falta en vez de dejar la
+                                // celda vacía: una celda en blanco se lee como
+                                // «sin periodicidad», que es otra cosa.
+                                td { (f.modo.clone().unwrap_or_else(|| "sin regla".into())) }
+                                td { @if f.activo { "Activo" } @else { "Inactivo" } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    })
+    .into_response()
+}
+
+// ── Partes ────────────────────────────────────────────────────────────────────
+
+pub async fn partes_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    let usuarios = match crate::participacion::usuarios_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Partes", "/partes", err),
+    };
+    let externos = match crate::participacion::stakeholders_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Partes", "/partes", err),
+    };
+
+    envoltura("Partes", Some("/partes"), html! {
+        h2 { "Partes" }
+        p.nota {
+            "Una parte es interna —una persona del sistema— o externa —una entidad—, "
+            "nunca las dos cosas. Por eso van en dos listas y no en un desplegable mezclado."
+        }
+        div.dos-columnas {
+            section {
+                h3 { "Internas (" (usuarios.len()) ")" }
+                // Solo las ACTIVAS: esta lista alimenta el selector de partes, y
+                // ofrecer a alguien desactivado sería proponer un flujo que no
+                // puede funcionar. La administración ve también los desactivados,
+                // y por eso es otra pantalla.
+                p.nota { "Solo las cuentas activas." }
+                (lista_de_partes(&usuarios, "No hay cuentas activas."))
+            }
+            section {
+                h3 { "Externas (" (externos.len()) ")" }
+                (lista_de_partes(&externos, "No hay entidades externas registradas."))
+            }
+        }
+    })
+    .into_response()
+}
+
+fn lista_de_partes(partes: &[crate::participacion::OpcionParte], vacio: &str) -> Markup {
+    html! {
+        @if partes.is_empty() {
+            p.vacio { (vacio) }
+        } @else {
+            table.datos {
+                thead { tr { th { "Nombre" } th { "Detalle" } } }
+                tbody {
+                    @for p in partes {
+                        tr {
+                            td { (p.nombre) }
+                            td { (p.detalle.clone().unwrap_or_default()) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod pruebas {
     use super::*;
