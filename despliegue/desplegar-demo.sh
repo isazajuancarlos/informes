@@ -307,7 +307,7 @@ Un 200 dice que algo contesta por ese nombre, no que sea esta aplicación. Suele
 ser el vhost por defecto de nginx, un comodín de DNS apuntando a otro sitio, o
 una página de aparcamiento. NO se da por publicada: mira qué está contestando.
 
-  curl -s https://$DOMINIO/ | head -40
+  curl -s https://$DOMINIO/ | head -40 | LC_ALL=C tr -cd '\\040-\\176\\n'
   ssh $DESTINO 'sudo nginx -T | grep -n "server_name"'
 FIN
 elif [ "$PUBLICADO" = "200" ]; then
