@@ -323,7 +323,7 @@ Es una demostración pública a propósito, así que **las credenciales que anun
 son alcanzables desde internet**. Lo que se sirve ahí, medido como lo mide el
 mundo y no con un \`is-active\`:
 
-  curl -s https://$DOMINIO/api/demostracion
+  curl -s https://$DOMINIO/api/demostracion | LC_ALL=C tr -cd '\\040-\\176\\n'
   curl -s -o /dev/null -w '%{http_code}\\n' https://$DOMINIO/
 FIN
 elif [ "$PUBLICADO" = "000" ]; then
