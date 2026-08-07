@@ -1,8 +1,8 @@
-# Despliegue — un binario, SQLite, la interfaz embebida
+# Despliegue — un binario, SQLite, y el panel dentro
 
 Tras el cutover a Rust, `informes` (SIGER) es **un solo binario** (`siger-api`,
-axum) con la interfaz **Angular embebida** dentro del ejecutable y **SQLite**
-como base. No hay contenedor obligatorio, ni PostgreSQL, ni dependencias del
+axum) con **el panel compilado dentro** —`maud` + htmx, que `rustc` compila junto
+al resto del programa— y **SQLite** como base. No hay contenedor obligatorio, ni PostgreSQL, ni dependencias del
 sistema salvo SQLite. Se copia el binario, se le da su configuración y corre.
 
 La configuración vive en variables de entorno; el binario **no arranca si falta
@@ -16,17 +16,22 @@ un secreto** (a propósito). La plantilla está en `.env.example`.
 ./rust/construir.sh              # produce rust/target/release/siger-api
 ```
 
-**Un solo comando, y es el único correcto.** `cargo build --release` a secas NO
-construye la interfaz: `rust-embed` empotra lo que haya en
-`rust/siger-api/estaticos/`, cuyo contenido está en `.gitignore`. En un clon
-limpio esa carpeta está vacía, y el binario saldría sirviendo la API con un 404
-en la raíz. `construir.sh` compila Angular primero y lo copia; el orden importa,
-porque al revés el binario viaja con la interfaz de la vez anterior.
+**`cargo build --release` a secas YA BASTA para el binario** (2026-08-06). El
+panel es código: el HTML lo compilan las macros de `maud` y los cuatro activos
+que se sirven tal cual —htmx, `boi.js`, `comportamientos.js` y `panel.css`—
+entran por `include_str!` desde `rust/siger-api/estaticos/`, que está
+versionado. Si un activo cambia, `rustc` recompila; si falta, no compila. El
+binario **no puede** salir desincronizado de su interfaz.
 
-Ya no se puede equivocar uno en silencio: `rust/siger-api/build.rs` **rompe la
-compilación de release** si falta `estaticos/index.html`. Si de verdad se quiere
-un binario sin interfaz, hay que pedirlo:
-`SIGER_SIN_INTERFAZ=1 cargo build --release`.
+Desapareció por tanto todo el aparato que existía para impedirlo: el paso de
+`npm ci && ng build`, la copia a `estaticos/`, y `build.rs`, que rompía el
+release cuando esa carpeta estaba vacía. Con él se fue `SIGER_SIN_INTERFAZ`, que
+ya no significa nada.
+
+Lo que `construir.sh` sigue añadiendo, y por lo que se usa igual, es el paso 2:
+**dibujar la pantalla en un navegador**. Que el HTML compile no dice si se abre
+—los `hx-swap` los ejecuta JavaScript, y un fragmento correcto insertado en el
+sitio equivocado devuelve el mismo 200 con el mismo cuerpo—.
 
 ## Configurar y arrancar
 

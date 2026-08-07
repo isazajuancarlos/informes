@@ -59,25 +59,6 @@ jobs:
         working-directory: rust
         run: cargo test --workspace --all-targets
 
-  frontend:
-    name: frontend (ng build)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
-        with:
-          # Angular CLI exige >= 22.22.3; el node del sistema de desarrollo se
-          # quedó un parche por debajo (ver tarea #80).
-          node-version: "22.22.3"
-          cache: npm
-          cache-dependency-path: angular/package-lock.json
-      - name: Instalar (limpio, desde el lockfile)
-        working-directory: angular
-        run: npm ci
-      - name: Construir la interfaz
-        working-directory: angular
-        run: npx ng build
-
   auditoria-deps:
     name: cargo-audit (RustSec)
     runs-on: ubuntu-latest

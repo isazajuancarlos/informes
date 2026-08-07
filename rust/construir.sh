@@ -3,71 +3,54 @@
 #
 #   ./rust/construir.sh
 #
-# Orden obligatorio y por qué: la interfaz se compila primero porque el binario
-# la lleva DENTRO (`rust-embed`). Si se invierte, el binario sale con la interfaz
-# de la vez anterior y nadie lo nota hasta que alguien pregunta por qué su
-# arreglo no aparece — el mismo patrón de fallo silencioso que el orden
-# esquema/migración ya costó una vez.
+# # Ya no hay paso de interfaz, y ese es el cambio (2026-08-06)
+#
+# Este guion tenía cuatro pasos y el primero era `npm ci && ng build`, porque la
+# pantalla era un SPA de Angular que había que compilar y COPIAR dentro del
+# binario antes de compilarlo. El orden era obligatorio y su inversión producía
+# el fallo silencioso clásico: un binario con la interfaz de la vez anterior.
+#
+# Con el panel en `maud`, el HTML lo compila `rustc` junto al resto del programa
+# —es código, no un artefacto que haya que fabricar aparte— y los cuatro activos
+# que se sirven tal cual (htmx, `boi.js`, `comportamientos.js` y `panel.css`)
+# viven versionados en `siger-api/estaticos/` y entran por `include_str!`.
+#
+# O sea que **el binario no puede quedar desincronizado de su interfaz**: si el
+# activo cambia, `rustc` recompila; si falta, no compila. Desaparecen de un tirón
+# el paso de npm, el de copia, `build.rs` —que existía para romper el release
+# cuando `estaticos/` estaba vacío— y la comprobación del index empotrado, que
+# vigilaba justo lo que ya no puede pasar.
 set -euo pipefail
 
 RAIZ="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$RAIZ"
 
-echo "==> 1/4  interfaz (Angular)"
-cd angular
-npm ci --silent || npm install --silent
-npx ng build --configuration production
-cd "$RAIZ"
-
-echo "==> 2/4  empotrar la interfaz en el binario"
-# Se vacía antes de copiar: si un archivo desaparece de la compilación nueva
-# —un fragmento que se dividió distinto— y aquí quedara el viejo, el binario
-# viajaría con código muerto que además podría servirse.
-rm -rf rust/siger-api/estaticos
-mkdir -p rust/siger-api/estaticos
-# El `.gitkeep` está versionado para que la carpeta exista en un clon limpio; el
-# `rm -rf` de arriba lo borraba, así que cada compilación dejaba el árbol sucio con
-# un archivo eliminado. Se repone aquí, junto al vaciado que lo quita, y no en un
-# «acuérdate de restaurarlo» en otro sitio.
-git -C "$RAIZ" checkout -- rust/siger-api/estaticos/.gitkeep 2>/dev/null \
-  || printf 'Aquí se empotra la interfaz compilada. Ver construir.sh\n' \
-       > rust/siger-api/estaticos/.gitkeep
-cp -r angular/dist/siger-web/browser/. rust/siger-api/estaticos/
-
-echo "==> 3/4  binario (Rust)"
+echo "==> 1/2  binario (Rust), con el panel dentro"
 cd rust
 cargo build --release
 
-echo "==> 4/4  comprobar la interfaz que quedó DENTRO"
-# Que la interfaz ESTÉ ya lo garantiza `build.rs`: sin `estaticos/index.html` la
-# compilación de release de arriba ni siquiera termina. Lo que falta comprobar
-# es otra cosa —que lo empotrado se pueda EJECUTAR bajo `script-src 'self'`, sin
-# manejadores en línea ni hosts externos—, y de eso se ocupa `estaticos::pruebas`.
-#
-# Esa prueba **se salta sola cuando no hay interfaz empaquetada**, y hace bien:
-# lo que no está no se puede comprobar. Pero la consecuencia es que en el CI se
-# salta SIEMPRE —allí nadie ejecuta este guion y `estaticos/` solo tiene el
-# `.gitkeep`—, así que su verde de allá no dice nada del artefacto. El único
-# punto del mundo donde llega a medir algo es este, con la interfaz ya copiada.
+echo "==> 2/2  la pantalla, DIBUJADA en un navegador"
+# Que el HTML compile no dice si la pantalla se abre: los `hx-swap` los ejecuta
+# JavaScript, y un fragmento correcto insertado en el sitio equivocado devuelve
+# el mismo 200 con el mismo cuerpo. Por eso esto arranca el binario real y lo
+# mira con Chromium, no con un `assert` sobre la cadena que devuelve axum.
 #
 # Se exigen las dos cosas por separado, porque cada una falla en silencio a su
-# manera: que la prueba se EJECUTE (un filtro que no casa con nada sale 0 con
-# «0 passed») y que NO se haya saltado. Verificado rompiéndola a propósito:
-# un `onload=` inyectado en el index la pone roja; el filtro equivocado, y el
-# target equivocado (`--lib`: este paquete no tiene biblioteca), la delatan.
-SALIDA="$(cargo test --release -p siger-api --bin siger-api estaticos:: -- --nocapture 2>&1)" || {
+# manera: que la prueba se EJECUTE —un filtro que no casa con nada sale 0 con
+# «0 passed»— y que no se haya saltado por falta de navegador.
+SALIDA="$(cargo test --release -p siger-api --test pantalla -- --nocapture 2>&1)" || {
   echo "$SALIDA"
-  echo "FALLÓ la comprobación del index empotrado: el binario NO se entrega." >&2
+  echo "FALLÓ el banco de navegador: el binario NO se entrega." >&2
   exit 1
 }
-echo "$SALIDA" | grep -E '^test (result|estaticos)' || true
+echo "$SALIDA" | grep -E '^test (result|pantalla)' || true
 if ! echo "$SALIDA" | grep -qE 'test result: ok\. [1-9][0-9]* passed'; then
   echo "$SALIDA"
-  echo "La prueba del index empotrado no llegó a ejecutarse (filtro sin coincidencias)." >&2
+  echo "El banco de navegador no llegó a ejecutarse (filtro sin coincidencias)." >&2
   exit 1
 fi
-if echo "$SALIDA" | grep -q 'sin interfaz empaquetada'; then
-  echo "La prueba se SALTÓ: la interfaz no quedó dentro del binario pese al paso 2." >&2
+if echo "$SALIDA" | grep -qi 'sin navegador'; then
+  echo "El banco se SALTÓ: no hay Chromium y la pantalla no se dibujó." >&2
   exit 1
 fi
 

@@ -1,0 +1,432 @@
+/* SPDX-License-Identifier: LicenseRef-Xiliux-Comercial
+ * Copyright (c) 2026 Juan Carlos Isaza Arenas
+ *
+ * CSS propio, con variables y sin framework (directiva 26). Sustituye a
+ * `@angular/material`, y lo que aquél daba gratis —tabla, formularios, foco
+ * visible— se hace aquí a mano: es el coste real del cambio de estándar y se
+ * mira de frente, no se descubre en la tercera pantalla.
+ *
+ * Theme-aware por `prefers-color-scheme`. Sin tipografías de fuera: esto corre
+ * en un negocio que puede quedarse sin internet, así que se usa la pila del
+ * sistema. Una @font-face a un CDN no cargaría y la pantalla saldría rara sin
+ * un solo error.
+ */
+
+:root {
+  --fondo: #ffffff;
+  --fondo-2: #f4f6f8;
+  --texto: #1a1d21;
+  --texto-2: #5b6572;
+  --borde: #d7dde4;
+  --acento: #0b5cab;
+  --acento-texto: #ffffff;
+  --alerta: #b3261e;
+  --alerta-fondo: #fdecea;
+  --aviso-fondo: #e5f6fd;
+  --aviso-borde: #0288d1;
+  --radio: 6px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fondo: #14171a;
+    --fondo-2: #1d2126;
+    --texto: #e7ebef;
+    --texto-2: #9aa5b1;
+    --borde: #2f353c;
+    --acento: #5aa2f0;
+    --acento-texto: #10131a;
+    --alerta: #f2837c;
+    --alerta-fondo: #3a1f1d;
+    --aviso-fondo: #102b38;
+    --aviso-borde: #3ba3d6;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--texto);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* ── La barra ─────────────────────────────────────────────────────────────── */
+
+.barra {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+  padding: 0 12px;
+  min-height: 52px;
+  background: var(--acento);
+  color: var(--acento-texto);
+}
+
+.barra .empresa { font-weight: 600; margin-right: 8px; }
+.barra .espacio { flex: 1; }
+
+.barra a {
+  color: inherit;
+  text-decoration: none;
+  padding: 8px 10px;
+  border-radius: var(--radio);
+  white-space: nowrap;
+}
+
+.barra a:hover { background: rgba(255, 255, 255, .14); }
+
+/* La sección actual se subraya Y se marca en negrita: solo con color no lo
+   distingue quien no ve bien los contrastes. */
+.barra a.activo { text-decoration: underline; font-weight: 600; }
+
+.barra .salir { margin: 0 0 0 8px; }
+
+.barra .salir button {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, .5);
+  color: inherit;
+  padding: 7px 12px;
+  border-radius: var(--radio);
+  cursor: pointer;
+  font: inherit;
+}
+
+.barra .salir button:hover { background: rgba(255, 255, 255, .14); }
+
+.contenido { padding: 20px; max-width: 1200px; margin: 0 auto; }
+
+/* ── Entrada ──────────────────────────────────────────────────────────────── */
+
+.centro {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 16px;
+}
+
+.caja {
+  width: 100%;
+  max-width: 380px;
+  background: var(--fondo-2);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 24px;
+}
+
+.caja h1 { margin: 0 0 16px; font-size: 1.3rem; }
+
+.caja label { display: block; margin: 12px 0 4px; color: var(--texto-2); font-size: .9rem; }
+
+.caja input {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+}
+
+.primario {
+  margin-top: 18px;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--radio);
+  background: var(--acento);
+  color: var(--acento-texto);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.error {
+  background: var(--alerta-fondo);
+  color: var(--alerta);
+  border-left: 4px solid var(--alerta);
+  padding: 10px 12px;
+  border-radius: var(--radio);
+  margin-bottom: 12px;
+}
+
+.demo {
+  background: var(--aviso-fondo);
+  border-left: 4px solid var(--aviso-borde);
+  padding: 12px;
+  border-radius: var(--radio);
+  margin-bottom: 16px;
+}
+
+.demo p { margin: 6px 0 0; }
+
+code {
+  background: var(--fondo);
+  border: 1px solid var(--borde);
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* ── Buscador y tablas ────────────────────────────────────────────────────── */
+
+.buscador { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 12px 0 16px; }
+
+.buscador input[type="search"] {
+  flex: 1;
+  min-width: 240px;
+  padding: 9px 10px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+}
+
+.casilla { color: var(--texto-2); white-space: nowrap; }
+
+/* La tabla se desborda SOLA en su contenedor: en un portátil de mostrador el
+   ancho no sobra, y el cuerpo de la página nunca debe moverse en horizontal. */
+#tabla { overflow-x: auto; }
+
+table.datos { border-collapse: collapse; width: 100%; }
+
+table.datos th,
+table.datos td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--borde);
+  white-space: nowrap;
+}
+
+table.datos th { background: var(--fondo-2); font-weight: 600; }
+table.datos td.num, table.datos th.num { text-align: right; font-variant-numeric: tabular-nums; }
+table.datos tr.inactivo td { color: var(--texto-2); font-style: italic; }
+
+/* Bajo el punto mínimo. Va en negrita además de en color, por lo mismo que la
+   sección activa de la barra. */
+table.datos td.alerta { color: var(--alerta); font-weight: 700; }
+
+.vacio { color: var(--texto-2); padding: 16px 0; }
+
+/* El foco SIEMPRE visible. Material lo traía puesto; aquí hay que ponerlo, y
+   sin él la pantalla deja de poder usarse con el teclado. */
+:focus-visible { outline: 2px solid var(--acento); outline-offset: 2px; }
+
+/* ── Fichas y formularios ─────────────────────────────────────────────────── */
+
+.ficha {
+  background: var(--fondo-2);
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  padding: 16px;
+  margin: 12px 0 24px;
+}
+
+/* Rejilla que se adapta sola. Sin media queries: `auto-fit` + `minmax` hace que
+   en un portátil de mostrador salgan dos columnas y en un móvil, una. */
+.rejilla {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px 16px;
+}
+
+.rejilla label { display: flex; flex-direction: column; gap: 4px; color: var(--texto-2); font-size: .9rem; }
+.rejilla label.casilla { flex-direction: row; align-items: center; gap: 8px; }
+
+.rejilla input,
+.rejilla select,
+.ficha input,
+.ficha select {
+  padding: 8px 10px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+}
+
+.rejilla input:disabled { background: var(--fondo-2); color: var(--texto-2); }
+
+.secundario {
+  margin: 8px 0;
+  padding: 8px 14px;
+  border: 1px solid var(--acento);
+  border-radius: var(--radio);
+  background: transparent;
+  color: var(--acento);
+  font: inherit;
+  cursor: pointer;
+}
+
+.ficha .primario { width: auto; min-width: 200px; }
+
+/* Lo que el servidor contesta tras enviar. `role="status"` para que un lector
+   de pantalla lo anuncie: si solo se ve, quien no mira ahí no se entera. */
+.aviso-resultado {
+  background: var(--aviso-fondo);
+  border-left: 4px solid var(--aviso-borde);
+  padding: 10px 12px;
+  border-radius: var(--radio);
+  margin: 12px 0;
+}
+
+.nota { color: var(--texto-2); font-size: .9rem; }
+
+/* ── Alistamiento ─────────────────────────────────────────────────────────── */
+
+.semaforos { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px; }
+
+.semaforos .tarjeta {
+  flex: 1 1 280px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  padding: 16px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--fondo-2);
+}
+
+.semaforos .simbolo { font-size: 1.6rem; line-height: 1; }
+.semaforos .tarjeta.bien { border-left: 4px solid #2e7d32; }
+.semaforos .tarjeta.bien .simbolo { color: #2e7d32; }
+.semaforos .tarjeta.mal { border-left: 4px solid var(--alerta); }
+.semaforos .tarjeta.mal .simbolo { color: var(--alerta); }
+.semaforos p { margin: 4px 0 0; color: var(--texto-2); font-size: .9em; }
+
+.punto {
+  display: flex;
+  gap: 12px;
+  padding: 12px;
+  margin-bottom: 8px;
+  border-radius: var(--radio);
+  border-left: 4px solid var(--borde);
+  background: var(--fondo-2);
+  flex-wrap: wrap;
+}
+
+.punto.bloqueante { border-left-color: var(--alerta); background: var(--alerta-fondo); }
+.punto.fe { border-left-color: #ed6c02; }
+.punto.aviso { border-left-color: var(--aviso-borde); background: var(--aviso-fondo); }
+
+/* La etiqueta dice QUÉ bloquea, no un nivel abstracto. */
+.punto .etiqueta {
+  font-size: .75em;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  min-width: 130px;
+  padding-top: 3px;
+  color: var(--texto-2);
+}
+
+.punto .cuerpo p { margin: 4px 0 0; color: var(--texto-2); }
+.punto .cuantos { font-weight: 400; color: var(--texto-2); }
+
+.todo-bien { padding: 16px; background: var(--fondo-2); border-left: 4px solid #2e7d32; border-radius: var(--radio); }
+
+.resumen { display: flex; gap: 24px; flex-wrap: wrap; margin: 12px 0 24px; }
+.resumen div { color: var(--texto-2); }
+.resumen span { font-size: 1.4em; font-weight: 600; color: var(--texto); display: block; }
+
+/* Toda tabla que puede crecer a lo ancho se desborda DENTRO de su caja: el
+   cuerpo de la página no debe moverse nunca en horizontal. */
+.tabla-ancha { overflow-x: auto; }
+
+table.datos input,
+table.datos select {
+  padding: 6px 8px;
+  border: 1px solid var(--borde);
+  border-radius: var(--radio);
+  background: var(--fondo);
+  color: var(--texto);
+  font: inherit;
+  max-width: 100%;
+}
+
+table.datos td.num input { text-align: right; width: 8rem; }
+
+/* ── Propio de SIGER ──────────────────────────────────────────────────────── */
+
+.barra .marca { font-weight: 700; letter-spacing: .04em; margin-right: 8px; }
+.caja .lema { color: var(--texto-2); margin: 0 0 16px; font-size: .95rem; }
+.cancelar { margin-top: 12px; }
+.cancelar .secundario { width: 100%; }
+
+/* Estados de una entrega. El color va SIEMPRE con texto —la palabra del estado
+   está dentro—, nunca solo: un punto verde y uno rojo se ven igual para quien
+   no distingue los dos colores. */
+.estado { padding: 2px 8px; border-radius: 999px; font-size: .85em; border: 1px solid var(--borde); }
+.estado.mal { background: var(--alerta-fondo); color: var(--alerta); border-color: var(--alerta); }
+.estado.bien { background: var(--fondo-2); color: #2e7d32; border-color: #2e7d32; }
+.estado.espera { background: var(--aviso-fondo); color: var(--aviso-borde); border-color: var(--aviso-borde); }
+.marca-firma { color: #2e7d32; font-weight: 700; }
+.alerta { color: var(--alerta); font-weight: 700; }
+
+/* ── Notificaciones y tasas ───────────────────────────────────────────────── */
+
+.notificaciones { list-style: none; padding: 0; margin: 12px 0; }
+.notificaciones li { border: 1px solid var(--borde); border-left: 4px solid var(--acento);
+                     border-radius: var(--radio); padding: 12px; margin-bottom: 8px; background: var(--fondo-2); }
+/* Lo leído se apaga, pero NO se esconde: sigue siendo consultable. */
+.notificaciones li.leida { border-left-color: var(--borde); opacity: .7; }
+.notificaciones .cabeza { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.notificaciones .momento { color: var(--texto-2); font-size: .85em; }
+.notificaciones p { margin: 6px 0; }
+.notificaciones .acciones { display: flex; gap: 12px; align-items: center; }
+.notificaciones .acciones .secundario { margin: 0; padding: 4px 10px; font-size: .9em; }
+.tasa .numero { font-size: 1.8rem; font-weight: 700; }
+.resumen span.alerta { color: var(--alerta); }
+
+.dos-columnas { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 24px; }
+.dos-columnas section h3 { margin-top: 0; }
+
+.problemas { list-style: none; padding: 0; }
+.problemas li { border-left: 4px solid var(--alerta); background: var(--alerta-fondo);
+                padding: 10px 12px; border-radius: var(--radio); margin-bottom: 6px; }
+h3.alerta { color: var(--alerta); }
+
+.hilo { list-style: none; padding: 0; }
+.hilo li { border-left: 3px solid var(--borde); padding: 8px 12px; margin-bottom: 8px; background: var(--fondo-2); border-radius: var(--radio); }
+.hilo .cabeza { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.hilo .momento { color: var(--texto-2); font-size: .85em; }
+.hilo p { margin: 4px 0 0; }
+.ficha textarea { width: 100%; padding: 8px 10px; border: 1px solid var(--borde);
+                  border-radius: var(--radio); background: var(--fondo); color: var(--texto); font: inherit; }
+.enlace-accion { margin-right: 10px; white-space: nowrap; }
+.ficha .acciones { display: flex; gap: 12px; margin-top: 12px; }
+.ficha .acciones .primario, .ficha .acciones .secundario { width: auto; min-width: 140px; margin: 0; }
+
+.enlinea { display: inline-flex; gap: 6px; align-items: center; margin: 0; }
+.acciones-fila { white-space: normal; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.secundario.chico { padding: 4px 10px; font-size: .85em; margin: 0; }
+/* Lo que `boi` marca al armar la confirmación de doble pulsación. */
+.secundario.armado { border-color: var(--alerta); color: var(--alerta); font-weight: 700; }
+.desplegable summary { cursor: pointer; color: var(--acento); font-size: .9em; }
+.desplegable .enlinea { margin-top: 6px; }
+.desplegable input { padding: 4px 8px; }
+
+/* ── Segundo factor ───────────────────────────────────────────────────────── */
+
+.enrolamiento { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px; }
+.qr { width: 100%; max-width: 260px; background: #fff; padding: 12px; border-radius: var(--radio); }
+.secreto { display: inline-block; margin-top: 6px; letter-spacing: .12em; font-size: 1.05em; }
+/* Los códigos se enseñan UNA vez: la caja tiene que llamar la atención. */
+.codigos { border: 2px solid var(--aviso-borde); background: var(--aviso-fondo);
+           border-radius: var(--radio); padding: 16px; margin: 16px 0; }
+.codigos ul { list-style: none; padding: 0; display: grid;
+              grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; }
+.codigos li code { display: block; text-align: center; padding: 8px; font-size: 1.05em; letter-spacing: .06em; }
+.codigos .alerta { font-weight: 600; }
+
+label.chico { display: block; font-size: .8em; color: var(--texto-2); margin-bottom: 4px; }
+label.chico select { display: block; margin-top: 2px; }
+
+.lectura { border: 1px solid var(--borde); border-left: 4px solid var(--acento);
+           border-radius: var(--radio); padding: 12px; margin-bottom: 8px; background: var(--fondo-2); }
+.lectura p { margin: 6px 0; }
+pre.regla { background: var(--fondo); border: 1px solid var(--borde); border-radius: var(--radio);
+            padding: 8px; overflow-x: auto; font-size: .85em; margin: 6px 0 0; }

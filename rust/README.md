@@ -1,4 +1,4 @@
-# SIGER en Rust + Angular
+# SIGER en Rust
 
 **El producto, entero.** El cutover fue el 2026-07-28: la versión de Python se
 retiró a la historia de git una vez el diferencial pasó completo, y hoy SIGER es
@@ -11,13 +11,13 @@ sirve al cliente y no a la aplicación: `sembrar_demo.py`, y el
 | Pieza | Qué es |
 |---|---|
 | `siger-core` | El motor: calendario, periodicidad, vencimientos. Sin E/S, sin base de datos, sin red. |
-| `siger-api` | El servidor: axum + SQLx, migraciones embebidas, sesión en cookie, y la interfaz **dentro del binario**. |
-| `../angular` | La interfaz: Angular 22 + Material, sin una sola petición a un CDN. |
+| `siger-api` | El servidor: axum + SQLx, migraciones embebidas, sesión en cookie, y **el panel**: `maud` + htmx, compilado por `rustc` junto al resto. |
+| `siger-api/estaticos/` | Los cuatro activos que se sirven tal cual, VENDORIZADOS y versionados: htmx, `boi.js`, `comportamientos.js` y `panel.css`. Sin una sola petición a un CDN. |
 
 ## Construir
 
 ```bash
-./rust/construir.sh      # interfaz → empotrado → binario
+./rust/construir.sh      # binario, y la pantalla dibujada en un navegador
 ```
 
 Arrancar:

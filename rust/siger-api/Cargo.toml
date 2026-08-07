@@ -84,7 +84,6 @@ lettre = { version = "0.11", default-features = false, features = [
 # dependencias del sistema. Es un FACTOR de calificación, no una compuerta.
 infer = "0.16"
 
-rust-embed = { version = "8", features = ["mime-guess"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # Segundo factor TOTP (#212). `default-features = false` a propósito: sus

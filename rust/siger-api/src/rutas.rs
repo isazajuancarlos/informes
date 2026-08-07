@@ -17,7 +17,7 @@ use argon2::PasswordHash;
 use axum::{
     extract::{DefaultBodyLimit, FromRequestParts, Multipart, Path as RutaParam, State},
     http::{header, request::Parts, HeaderMap, StatusCode},
-    response::{IntoResponse, Response},
+    response::{IntoResponse, Redirect, Response},
     routing::{delete, get, post, put},
     Json, Router,
 };
@@ -184,6 +184,17 @@ pub fn router(estado: Estado) -> Router {
         // ── El panel, tejido en el servidor con maud (directiva 26) ──
         // Va DESPUÉS de `/api`: una ruta comodín arriba taparía la API. Lo
         // estático se sirve desde el binario, nunca de un CDN.
+        // LA RAÍZ, que hasta el 2026-08-06 la servía el `fallback` con el
+        // `index.html` de Angular. Con el SPA retirado, `/` es una redirección a
+        // la primera pantalla del panel — y basta UNA regla para los dos casos:
+        // quien no tiene sesión rebota de `/entregas` a `/entrar`, porque de eso
+        // ya se encarga el extractor `ActorDePanel`. Decidir aquí entre las dos
+        // sería una segunda copia de la regla de sesión.
+        //
+        // `/entregas` y no `/informes`: lo que se abre a diario es la bandeja de
+        // lo que hay que entregar; la definición de las obligaciones se toca
+        // pocas veces.
+        .route("/", get(|| async { Redirect::to("/entregas") }))
         .route("/htmx.min.js", get(crate::vista::htmx_js))
         .route("/boi.js", get(crate::vista::boi_js))
         .route("/panel.css", get(crate::vista::panel_css))

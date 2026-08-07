@@ -15,7 +15,6 @@ mod cuentas;
 mod db;
 mod dosfactores;
 mod estadisticas;
-mod estaticos;
 mod firma;
 mod hex;
 mod flujo;
@@ -35,7 +34,7 @@ mod sesion;
 /// El panel, tejido en el servidor con maud (directiva 26).
 mod vista;
 
-use axum::{routing::get, Router};
+use axum::Router;
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::RngCore;
 use tower_http::{compression::CompressionLayer, trace::TraceLayer};
@@ -563,11 +562,10 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
 
     let app = Router::new()
         .merge(rutas::router(estado))
-        // Lo que no es API es la interfaz, que viaja dentro del binario.
-        .fallback(get(estaticos::servir))
-        // DESPUÉS del `fallback`, para que las cabeceras cubran también la
-        // interfaz: la CSP no sirve de nada si va solo en las respuestas de la
-        // API y no en el HTML que el navegador interpreta.
+        // Ya no hay `fallback` que sirva un SPA: el panel son rutas de `maud`
+        // dentro de `rutas::router`, y lo que no case con ninguna es un 404 de
+        // verdad. El comodín anterior devolvía `index.html` con 200 a cualquier
+        // errata de URL.
         .layer(axum::middleware::from_fn(rutas::cabeceras_de_seguridad))
         .layer(CompressionLayer::new())
         .layer(TraceLayer::new_for_http());

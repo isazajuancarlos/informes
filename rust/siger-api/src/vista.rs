@@ -978,7 +978,10 @@ fn pantalla_mi_clave(aviso: Option<&str>, es_error: bool) -> Markup {
     })
 }
 
-pub async fn mi_clave_pagina() -> Markup {
+/// Misma regla que `cronograma_pagina`, y aquí importa un poco más: es la
+/// pantalla desde la que se cambia la contraseña propia, así que servirla a un
+/// anónimo no filtra nada pero invita a intentarlo.
+pub async fn mi_clave_pagina(_: ActorDePanel) -> Markup {
     pantalla_mi_clave(None, false)
 }
 
@@ -1223,7 +1226,13 @@ fn rango_por_defecto() -> (String, String) {
     (hoy.to_string(), (hoy + chrono::Duration::days(365)).to_string())
 }
 
-pub async fn cronograma_pagina() -> Markup {
+/// El actor va aquí aunque esta pantalla no lo USE para nada: su pintado por
+/// defecto es un formulario vacío, sin un solo dato del cliente. Exigirlo igual
+/// es la regla —**una pantalla del panel necesita sesión**— y no el caso, porque
+/// el día que este render traiga datos nadie se va a acordar de añadir la
+/// puerta, y no fallaría nada (directiva 23). Lo cazó `humo.sh` pidiendo
+/// `/cronograma` sin cookie: 200 donde debía haber un 303.
+pub async fn cronograma_pagina(_: ActorDePanel) -> Markup {
     let (d, h) = rango_por_defecto();
     pantalla_cronograma(VistaCronograma::default(), &d, &h)
 }
@@ -2245,6 +2254,107 @@ pub async fn partes_guardar(
 #[cfg(test)]
 mod pruebas {
     use super::*;
+
+    /// **Ninguna pantalla del panel se sirve sin sesión.**
+    ///
+    /// Existe porque ya pasó: `/cronograma` y `/mi-clave` respondían **200** a
+    /// un anónimo, y ninguna prueba lo veía. Lo cazó `humo.sh` —hablándole al
+    /// binario por socket— y no el banco, que es la directiva 28 en su forma
+    /// habitual: lo que no cruza la frontera del programa no se mide.
+    ///
+    /// Ninguna de las dos filtraba un dato: su pintado por defecto es un
+    /// formulario vacío, y por eso el autor —yo— no necesitó el actor y no lo
+    /// puso. Justo por eso hace falta un guardián y no dos arreglos: **la regla
+    /// es que una pantalla del panel exige sesión aunque hoy no enseñe nada**,
+    /// porque el día que ese render traiga datos no fallaría nada (directiva 23).
+    ///
+    /// Lee el FUENTE, que es donde está la respuesta, y compara los manejadores
+    /// que `rutas.rs` cablea fuera de `/api` contra la firma que declaran aquí.
+    #[test]
+    fn ninguna_pantalla_del_panel_se_sirve_sin_sesion() {
+        /// Lo que está abierto A PROPÓSITO, con su motivo. Cada línea es una
+        /// decisión escrita; quitar una de aquí sin ponerle actor pone la prueba
+        /// en rojo, que es lo que se quiere.
+        const ABIERTAS: &[(&str, &str)] = &[
+            ("acceso_pagina", "es la puerta: todavía no hay sesión"),
+            ("acceso_enviar", "idem, y es quien la crea"),
+            ("codigo_pagina", "segundo paso del login: hay token pendiente, no sesión"),
+            ("codigo_enviar", "idem"),
+            ("salir", "cerrar la sesión propia no necesita tenerla"),
+            ("htmx_js", "activo estático"),
+            ("boi_js", "activo estático"),
+            ("comportamientos_js", "activo estático"),
+            ("panel_css", "activo estático"),
+        ];
+
+        let rutas = include_str!("rutas.rs");
+        let vista = include_str!("vista.rs");
+
+        // SOLO la cadena del router, no el archivo entero: una mención en PROSA
+        // —y este archivo tiene varias— pondría la prueba roja sin motivo.
+        let inicio = rutas.find("Router::new()").expect("no se encontró el router");
+        let cadena = &rutas[inicio..];
+
+        let mut manejadores: Vec<&str> = Vec::new();
+        for (i, _) in cadena.match_indices("crate::vista::") {
+            let resto = &cadena[i + "crate::vista::".len()..];
+            let fin = resto
+                .find(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .unwrap_or(resto.len());
+            let nombre = &resto[..fin];
+            if !nombre.is_empty() && !manejadores.contains(&nombre) {
+                manejadores.push(nombre);
+            }
+        }
+        // Un umbral, no un número exacto: exacto se actualiza a ciegas con cada
+        // ruta nueva. 35 y no 10 — hay 41, así que la holgura es de seis
+        // (directiva 30).
+        assert!(
+            manejadores.len() >= 35,
+            "solo se encontraron {} manejadores de panel: ¿cambió la forma de \
+             registrar rutas y esta prueba dejó de mirar nada?",
+            manejadores.len()
+        );
+
+        let mut pelados = Vec::new();
+        for nombre in &manejadores {
+            if ABIERTAS.iter().any(|(n, _)| n == nombre) {
+                continue;
+            }
+            let firma = format!("pub async fn {nombre}(");
+            let Some(i) = vista.find(&firma) else { continue };
+            // La lista de parámetros, contando paréntesis: `State(e)` lleva los
+            // suyos, y cortar en el primer `)` decía que NINGÚN manejador pedía
+            // actor. Comprobado: con el corte ingenuo salían 41 pelados de 41.
+            let desde = i + firma.len() - 1;
+            let mut prof = 0usize;
+            let mut hasta = desde;
+            for (k, c) in vista[desde..].char_indices() {
+                match c {
+                    '(' => prof += 1,
+                    ')' => {
+                        prof -= 1;
+                        if prof == 0 {
+                            hasta = desde + k;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if !vista[desde..hasta].contains("Actor") {
+                pelados.push(*nombre);
+            }
+        }
+
+        assert!(
+            pelados.is_empty(),
+            "estas pantallas del panel se sirven SIN SESIÓN: {pelados:?}.\n\
+             Cualquiera con la URL las abre. Ponles `ActorDePanel` —o
+             `crate::autz::Actor` si además usan el actor— o añádelas a \
+             `ABIERTAS` con el motivo escrito si de verdad deben estarlo.",
+        );
+    }
 
     /// La envoltura sirve los tres archivos LOCALES y ninguno de fuera: los
     /// perfiles `onprem` y `standalone` son sin internet.

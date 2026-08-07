@@ -25,8 +25,8 @@ SUPERVISOR, TERCERO) con control de acceso por alcance.
 ## Rust puro (cutover 2026-07-28)
 
 SIGER **se migró entero a Rust** (estándar técnico de Xiliux) y el Python quedó
-en la historia de git. Hoy es **un solo binario** con la interfaz **Angular
-embebida** dentro del ejecutable y **SQLite** como base. No queda `app/`,
+en la historia de git. Hoy es **un solo binario** con **el panel compilado dentro**
+—`maud` + htmx desde el 2026-08-06, antes Angular— y **SQLite** como base. No queda `app/`,
 `main.py`, NiceGUI, Docker ni pytest: si lees documentación que los mencione,
 está desactualizada.
 
@@ -44,20 +44,20 @@ rust/
   siger-core/   # dominio puro: el motor, sin I/O
     calendario.rs recurrencia.rs fechas.rs inferencia.rs patrones.rs compat.rs
     tests/oraculo.rs, oraculo_inferencia.rs  # oráculos diferenciales (ver abajo)
-  siger-api/    # binario axum + Angular embebido (rust-embed) + SQLite (SQLx)
-    build.rs     # rompe el release si la interfaz NO quedó dentro (ver abajo)
+  siger-api/    # binario axum + panel en maud/htmx + SQLite (SQLx)
     main.rs rutas.rs db.rs config.rs sesion.rs autz.rs
     acceso.rs origen.rs  # freno del login: las dos consultas y de dónde viene quien pide
     dosfactores.rs segundofactor.rs  # 2FA: la REGLA y las columnas (#212)
     qr.rs        # el QR del enrolamiento, en SVG y sin dependencias
     cuentas.rs participacion.rs informes.rs flujo.rs estadisticas.rs
-    alertas.rs planificador.rs firma.rs importar.rs estaticos.rs respaldo.rs
+    alertas.rs planificador.rs firma.rs importar.rs respaldo.rs
+    vista.rs     # EL PANEL: 35 rutas de `maud`, ~2.200 líneas
     pruebas_cronograma.rs   # solo #[cfg(test)]: el cronograma de punta a punta
     tests/cli.rs            # los subcomandos ejercidos como proceso, no como función
     tests/oraculo_qr.json   # las 40 versiones de QR según libqrencode, congeladas
     migrations/  # 0001_inicial … 0007_segundo_factor (sqlx::migrate!)
-    estaticos/   # DONDE SE EMPOTRA la interfaz. En git solo va el .gitkeep
-angular/        # la interfaz; se construye e incrusta en el binario
+    estaticos/   # los 4 activos VENDORIZADOS y versionados: htmx.min.js,
+                 # boi.js, comportamientos.js y panel.css. Entran por include_str!
 despliegue/     # unidades systemd, nginx y los guiones de la demo (ver DESPLIEGUE.md)
 ```
 
@@ -74,13 +74,12 @@ devuelve ni uno— y no son la fuente de nada. No los edites ni los cites. (Las
 
 ```bash
 cd rust
-cargo build --release            # produce target/release/siger-api (Angular embebido)
+cargo build --release            # produce target/release/siger-api, panel incluido
 cargo test  --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings   # el CI usa -D warnings
 
-cd ../angular && npm ci && npx ng build                  # reconstruir la interfaz
 
-./rust/construir.sh              # el ARTEFACTO: interfaz dentro del binario
+./rust/construir.sh              # el ARTEFACTO: binario + la pantalla DIBUJADA
 ./rust/humo.sh                   # y probarlo por HTTP, como lo prueba el mundo
 python rust/sembrar_demo.py      # base de demostración en rust/demo/siger.db
 ```
@@ -91,7 +90,7 @@ python rust/sembrar_demo.py      # base de demostración en rust/demo/siger.db
 cd rust
 cargo test -p siger-api --bin siger-api -- --list        # los 98 nombres, para elegir
 cargo test -p siger-api rutas::pruebas_acceso           # el freno del login entero
-cargo test -p siger-api --bin siger-api estaticos::     # un módulo
+cargo test -p siger-api --bin siger-api vista::         # un módulo
 cargo test -p siger-core --test oraculo -- --nocapture  # solo el oráculo del motor
 cargo test -p siger-api --test cli                      # los subcomandos, como proceso
 cargo test --workspace --all-targets --no-fail-fast     # ver TODOS los rojos
@@ -113,20 +112,23 @@ struct y `FromRow` ignora las columnas que no declara. La mutación inofensiva
 acusa al banco, no a la prueba.
 
 MSRV 1.85 (evitar API que exija más; p. ej. `% 2 != 0`, no `is_multiple_of`).
-El CI (`.github/workflows/ci.yml`) tiene cuatro trabajos: `rust` (test +
-clippy), `frontend` (ng build), `cargo-audit (RustSec)` y `cargo-deny (supply
-chain)`. Se dispara en los PR contra `main` y en los empujes a `main`; **una
+El CI (`.github/workflows/ci.yml`) tiene **tres** trabajos desde el
+2026-08-06: `rust` (test + clippy), `cargo-audit (RustSec)` y `cargo-deny
+(supply chain)`. El cuarto, `frontend (ng build)`, se fue con Angular — y con él
+**Node desaparece del build entero**.
+
+Se dispara en los PR contra `main` y en los empujes a `main`; **una
 rama sin PR abierto no lanza CI**, y es deliberado: este repositorio es privado
 y sus minutos salen del cupo de la cuenta.
 
 **Lo que el CI NO comprueba, y por eso existen los dos guiones de arriba:** no
-construye el artefacto ni empotra la interfaz, así que la prueba
-`estaticos::pruebas` —la que exige que el index empotrado se pueda ejecutar bajo
-`script-src 'self'`— **se salta siempre allí**. Su verde en el CI no dice nada
-del binario. `construir.sh` la corre con la interfaz ya dentro (paso 4/4, y
-exige que se haya EJECUTADO, no solo que salga 0), y `humo.sh` arranca el
-binario de release contra una base temporal y le habla por socket: interfaz
-servida de verdad, el `.js` que el index pide viviendo DENTRO, las cabeceras en
+DIBUJA la pantalla. Que el HTML compile no dice si se abre — los `hx-swap` los
+ejecuta JavaScript en el navegador, y un fragmento correcto insertado en el sitio
+equivocado devuelve el mismo 200 con el mismo cuerpo. `construir.sh` corre el
+banco de navegador sobre el binario de release (paso 2/2, y exige que se haya
+EJECUTADO, no solo que salga 0), y `humo.sh` arranca ese binario contra una base
+temporal y le habla por socket: la raíz redirigiendo al panel, los tres activos
+—htmx, `boi.js`, `panel.css`— viajando DENTRO, las cabeceras en
 la respuesta real, el freno del login frenando al sexto intento y el **login de
 dos pasos completo** —enrolar, activar con el código que daría el teléfono, y
 entrar tecleándolo—, más el cartel de la demostración: que el binario anuncie las
@@ -140,12 +142,24 @@ sola no entrega cookie), y con eso un `verificar` que no emitiera el `Set-Cookie
 sirva** para entrar a otra ruta. Comprobado por mutación: quitando ese
 `Set-Cookie` caen las dos comprobaciones nuevas y solo esas.
 
-**`cargo build --release` a secas falla si `estaticos/` está vacío**, y lo hace
-`build.rs` a propósito: `rust-embed` lee del disco en *debug* y empotra en
-*release*, así que un clon limpio producía —sin avisar— un binario que arranca,
-sirve la API y devuelve 404 en la raíz. El camino permisivo existe pero **hay
-que pedirlo**: `SIGER_SIN_INTERFAZ=1 cargo build --release`. En *debug* no
-aplica, por eso `cargo test` funciona sin haber construido la interfaz.
+**`cargo build --release` a secas YA BASTA** (2026-08-06). El panel es código:
+el HTML lo compilan las macros de `maud` y los cuatro activos entran por
+`include_str!` desde `estaticos/`, que está versionado. Si un activo cambia,
+`rustc` recompila; si falta, **no compila**. El binario no puede salir
+desincronizado de su interfaz, así que se fueron `build.rs`, `rust-embed`, el
+paso de npm y la bandera `SIGER_SIN_INTERFAZ`.
+
+**Y ese `include_str!` destapó un defecto de verdad, que conviene no repetir.**
+El `.gitignore` traía `rust/siger-api/estaticos/*` —escrito cuando ahí caía la
+salida de `ng build`, donde era correcto— y se tragó dos activos del panel:
+`comportamientos.js` y `panel.css` **no estaban en git**. Medido extrayendo el
+árbol con `git archive` a otro directorio y compilándolo:
+`couldn't read .../comportamientos.js`. En local todo salía verde porque los
+archivos existen en disco, y el CI no lo vio porque solo corre en PR contra
+`main` y este trabajo no tenía PR abierto. Se arregló **quitando la regla**, no
+añadiendo excepciones: esa carpeta ya no guarda artefactos sino fuente
+vendorizada, y con ella versionada un archivo que falte sale en `git status` el
+mismo día.
 
 Subcomandos del binario: `importar <origen> <destino>` (vuelca una base del
 Python anterior), `alertas` (una pasada, para un timer),
@@ -194,7 +208,7 @@ ese formato — y un valor presente pero ilegible **no cae al defecto**, falla.
 `GET/POST /api/cuentas`, `PUT /api/cuentas/{id}`, `POST /api/cuentas/{id}/clave`
 (restablecer la de otro), `DELETE /api/cuentas/{id}/2fa` (quitarle el segundo
 factor a otro) y `POST /api/mi-clave` (la propia, cualquier rol).
-Pantallas en `angular/src/app/paginas/{cuentas,mi-clave}.ts`.
+Pantallas del panel: `/cuentas` y `/mi-clave` (`vista.rs`).
 
 **Recurso aparte de `/api/usuarios` a propósito**, siendo la misma tabla:
 `/api/usuarios` significa «quién puede ser parte de un flujo» y solo trae los
@@ -572,12 +586,13 @@ el contador** — pasarle el contador compila, valida el código actual y multip
 la ventana por 30, de 30 s a 15 minutos. Lo caza
 `un_codigo_no_sirve_mas_de_noventa_segundos`.
 
-La interfaz son **dos archivos**: `paginas/segundo-factor.ts` (estado,
-enrolamiento con QR, códigos de recuperación y baja con contraseña) y el segundo
-paso dentro de `paginas/acceso.ts`. La entrada está en el menú de la cuenta,
-junto a «Cambiar mi contraseña». El primer formulario del acceso **desaparece**
-al pasar al código y la contraseña se borra de memoria: lo que el servidor espera
-en ese momento es la cookie pendiente, no las credenciales otra vez.
+En el panel son **dos pantallas**: `/dos-pasos` (estado, enrolamiento con QR,
+códigos de recuperación y baja con contraseña) y `/entrar/codigo`, el segundo
+paso del acceso. La entrada está en el menú de la cuenta, junto a «Cambiar mi
+contraseña». El segundo paso es una PÁGINA aparte y no un formulario que aparece
+—el servidor devuelve un 303 a `/entrar/codigo`—, así que las credenciales no
+siguen en ninguna parte: lo que el navegador lleva en ese momento es la cookie
+pendiente y nada más.
 
 ### El QR se dibuja en el servidor (`qr.rs`)
 
@@ -694,32 +709,46 @@ El par de claves del licenciante es DISTINTO del de las entregas
 —quedaría en el historial del intérprete y a la vista de `ps`—. Despliegue y
 emisión, en `DESPLIEGUE.md`.
 
-## La interfaz (`angular/`)
+## El panel (`vista.rs` + `estaticos/`)
 
-**Angular 22.1.x** (`@angular/cli` y `@angular/build` 22.1.2) + `@angular/material`
-22.1.0 + `material-icons` **empaquetado**, sin una sola petición a un CDN — el
-producto se instala sin internet, y la CSP del binario es `script-src 'self'`.
-PrimeNG está prohibido (ver el general). Siete páginas en `src/app/paginas/`, el
-cliente HTTP y la sesión en `src/app/nucleo/`.
+**`maud` + htmx, servido por el mismo binario** (directiva 26, desde el
+2026-08-06). Sustituye al SPA de Angular 22 + Material, que se retiró entero ese
+mismo día: `angular/` (316 MB, 32 archivos en git), `build.rs`, `estaticos.rs`,
+`rust-embed`, el job `frontend (ng build)` del CI y el paso de npm de
+`construir.sh`.
 
-La versión no es libre: la política de Juan (#254) es **una sola versión de
-Angular, común a todos los desarrollos, y la mejor —no la última por serlo—**.
-Hoy informes marca el objetivo (22.1.x, la línea activa) y medico va por detrás
-en 21.2, atado a que su migración de PrimeNG a Material (#255) termine: subirle
-PrimeNG a 22 no es una opción porque **dejó de ser MIT**. Los paquetes de Angular
-se peer-dependen con versión EXACTA entre sí, así que **no se suben de a uno**:
-`ng update @angular/core@22 @angular/cli@22 @angular/material@22`, nunca un
-`npm install` suelto sobre el árbol (da `ERESOLVE`).
+**Lo que compra el cambio es que el build deja de necesitar Node.** El HTML lo
+compila `rustc` con los tipos del dominio dentro, así que un error de plantilla
+es un error de compilación y no una pantalla en blanco a las tres semanas. El
+recuento de dependencias de frontal del producto entero es **una** —htmx, MIT—
+más código nuestro.
 
-Comprobar la subida **en el ejecutable, no en el `ng build`**: la interfaz va
-empotrada y un binario con el bundle de la vez pasada compila igual de verde.
-`humo.sh` sirve para eso —el nombre del `.js` cambia—, y la versión se lee dentro:
-`strings rust/target/release/siger-api | grep ng-version`.
+**35 rutas de panel** en `rutas.rs`, todas apuntando a `vista.rs` (~2.200
+líneas), frente a 34 de `/api`. La raíz `/` **redirige a `/entregas`**, y basta
+una regla para los dos casos: quien no tiene sesión rebota de ahí a `/entrar`,
+porque de eso ya se encarga el extractor `ActorDePanel`. Decidir en `/` entre las
+dos habría sido una segunda copia de la regla de sesión.
 
-**No hay pruebas unitarias de la interfaz**: `vitest` y `tsconfig.spec.json`
-están declarados, pero no existe ni un `.spec.ts`. `npm test` no comprueba nada
-— lo que sujeta la interfaz es `ng build` en el CI, `estaticos::pruebas` sobre
-el index empotrado, y `humo.sh` por socket. No cites `npm test` como verde.
+**Ya no hay `fallback`.** El comodín del SPA devolvía `index.html` con **200** a
+cualquier errata de URL; hoy lo que no case es un 404 de verdad. Lo comprueba
+`humo.sh` con su pareja: `/no-existe-esta-pagina` da 404 y `/cronograma` sin
+sesión da 303.
+
+**Los cuatro activos van VENDORIZADOS, versionados y dentro del binario**
+(`include_str!`): `htmx.min.js`, `boi.js` —la micro-librería común—,
+`comportamientos.js` y `panel.css`. Jamás por CDN: el producto se instala sin
+internet y la CSP es `script-src 'self'`. **No hay framework de CSS**: lo que
+Material daba gratis se hace propio, y ese es el coste real del cambio.
+
+**Y una pantalla hay que DIBUJARLA.** Es tentador dar por probada una pantalla
+con un `assert` sobre el HTML que devuelve axum —es texto, está a mano y con
+`maud` sale limpio—, pero eso mide el códec y no el producto (directiva 28): los
+`hx-swap` los ejecuta JavaScript, y un fragmento correcto insertado en el sitio
+equivocado devuelve el mismo 200 con el mismo cuerpo. El banco es
+`tests/pantalla.rs`, arranca el binario y lo mira con Chromium. **Cazó dos
+defectos en su primera corrida.** Su límite está escrito en su cabecera:
+`--dump-dom` no puede llevar cookie, así que solo alcanza las pantallas
+anteriores a la sesión.
 
 ## Pendiente conocido
 

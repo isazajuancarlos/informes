@@ -29,11 +29,25 @@ angular/node_modules/
 angular/dist/
 angular/.angular/
 
-# La interfaz compilada se EMPOTRA en el binario, no se versiona: es un artefacto
-# de construcción, y versionarlo garantiza que un día el binario viaje con una
-# interfaz distinta de la del código que lo acompaña.
-rust/siger-api/estaticos/*
-!rust/siger-api/estaticos/.gitkeep
+# `rust/siger-api/estaticos/` YA NO SE IGNORA, y esa inversión es el arreglo de
+# un defecto real (2026-08-06).
+#
+# La regla decía «la interfaz compilada es un artefacto de construcción y no se
+# versiona», y era CIERTA mientras ahí cayera la salida de `ng build`. Con el
+# panel en maud, esa carpeta pasó a guardar lo contrario: las piezas
+# VENDORIZADAS que `vista.rs` empotra con `include_str!` —htmx, `boi.js`,
+# `comportamientos.js` y `panel.css`—, que son fuente, no artefacto.
+#
+# El patrón se las tragó en silencio. `boi.js` y `htmx.min.js` habían entrado con
+# `add -f`; `comportamientos.js` y `panel.css` no, así que **el árbol de git no
+# compilaba** —medido extrayéndolo con `git archive` a otro directorio:
+# `couldn't read .../comportamientos.js`—. Localmente todo estaba verde porque
+# los archivos existen en disco, y el CI no lo vio porque solo corre en PR contra
+# `main` y este trabajo aún no tiene PR abierto.
+#
+# No se arregla con más excepciones `!`: se quita la regla, que es la causa. Con
+# la carpeta versionada, un archivo nuevo que falte aparece en `git status` el
+# mismo día.
 
 # Base de demostración: se regenera con `python rust/sembrar_demo.py`.
 rust/demo/

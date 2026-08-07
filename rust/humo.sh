@@ -9,7 +9,7 @@
 # Aquí se mide lo que sale por la puerta y solo aparece cruzando la frontera:
 #
 #   · el binario ARRANCA con la configuración por entorno, y migra una base nueva;
-#   · la interfaz empotrada se sirve de verdad, y el `.js` que el index pide
+#   · el panel se sirve de verdad, y los activos que pide viajan dentro
 #     existe DENTRO del binario (no en el disco de quien lo compiló);
 #   · las cabeceras de seguridad viajan en la respuesta real, no en un test;
 #   · el freno del login cuenta en release, donde el Argon2 cuesta lo que cuesta.
@@ -67,13 +67,20 @@ codigo() { curl -sS -o "${2:-/dev/null}" -w '%{http_code}' "${@:3}" "$U/$1"; }
 
 echo "==> comprobaciones"
 comprobar "el binario responde y ve su base"      '{"bd":"ok","estado":"sano"}' "$(curl -sS "$U/api/salud")"
-comprobar "la raíz sirve la interfaz empotrada"   200 "$(codigo '' "$SALA/index.html")"
+# La raíz REDIRIGE al panel: ya no hay `index.html` de un SPA. Se exige el 303 y
+# no un 200, porque un 200 aquí significaría que volvió el comodín.
+comprobar "la raíz redirige al panel"             303 "$(codigo '')"
+comprobar "y la pantalla de acceso se sirve"      200 "$(codigo entrar "$SALA/entrar.html")"
 
-# El index no vale de nada si el JS que pide no viaja dentro. Es el fallo que no
-# se ve compilando: binario nuevo, interfaz de la vez pasada — o ninguna.
-JS="$(grep -o 'src="[^"]*\.js"' "$SALA/index.html" | head -1 | sed 's/src="//; s/"//')"
-comprobar "el index pide un .js"                  0 "$([ -n "$JS" ] && echo 0 || echo 1)"
-comprobar "y ese .js ($JS) está DENTRO"           200 "$(codigo "$JS")"
+# Los tres activos que el panel pide, servidos DESDE DENTRO del binario. Es el
+# fallo que no se ve compilando —una CSP `script-src 'self'` no admite un CDN, y
+# un `include_str!` que apunte a un archivo vacío compila igual—, así que se
+# comprueba que el HTML los pida Y que respondan.
+for A in htmx.min.js boi.js panel.css; do
+  comprobar "el panel pide $A"                    0 \
+    "$(grep -q "$A" "$SALA/entrar.html" && echo 0 || echo 1)"
+  comprobar "y $A viaja DENTRO"                   200 "$(codigo "$A")"
+done
 
 CAB="$(curl -sSI "$U/api/salud")"
 for c in x-content-type-options x-frame-options content-security-policy referrer-policy; do
@@ -114,8 +121,14 @@ comprobar "sin sesión, /api/2fa rechaza (401, no 404)" \
 comprobar "sin token pendiente, /api/2fa/verificar rechaza (401, no 404)" \
                                                   401 "$(codigo api/2fa/verificar /dev/null -X POST \
                                                           -H 'Content-Type: application/json' -d '{"codigo":"000000"}')"
-comprobar "una ruta del SPA devuelve el index"    200 "$(codigo cronograma)"
-comprobar "un /api/ inexistente es 404, no index" 404 "$(codigo api/no-existe)"
+# Sin sesión, una pantalla del panel rebota a /entrar (303). Antes esto pedía un
+# 200 con el index del SPA: el comodín devolvía la aplicación entera a cualquier
+# URL y la sesión la decidía el navegador.
+comprobar "una pantalla del panel sin sesión rebota" 303 "$(codigo cronograma)"
+# Y lo que no existe es 404 de verdad, en el panel y en la API. Con el comodín,
+# una errata de URL devolvía 200.
+comprobar "un /api/ inexistente es 404"          404 "$(codigo api/no-existe)"
+comprobar "una ruta inventada es 404, no el panel" 404 "$(codigo no-existe-esta-pagina)"
 
 # El QR del enrolamiento, dibujado por el binario de release (#212). Es la única
 # comprobación que cruza la frontera entera de esta característica: `cargo test`
