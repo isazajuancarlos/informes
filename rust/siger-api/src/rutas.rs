@@ -229,10 +229,15 @@ pub fn router(estado: Estado) -> Router {
             "/cuentas",
             get(crate::vista::cuentas_pagina).post(crate::vista::cuenta_crear),
         )
+        .route("/cuentas/{id}", post(crate::vista::cuenta_editar))
         .route("/cuentas/{id}/clave", post(crate::vista::cuenta_clave))
         .route("/cuentas/{id}/quitar-2fa", post(crate::vista::cuenta_quitar_2fa))
         .route("/cronograma", get(crate::vista::cronograma_pagina))
         .route("/cronograma/generar", post(crate::vista::cronograma_generar))
+        .route(
+            "/cronograma/previsualizar",
+            post(crate::vista::cronograma_previsualizar),
+        )
         .route(
             "/mi-clave",
             get(crate::vista::mi_clave_pagina).post(crate::vista::mi_clave_enviar),
@@ -1559,14 +1564,24 @@ pub struct PeticionPrevia {
     hasta: chrono::NaiveDate,
 }
 
+impl PeticionPrevia {
+    pub(crate) fn nueva(
+        regla: siger_core::ReglaJson,
+        desde: chrono::NaiveDate,
+        hasta: chrono::NaiveDate,
+    ) -> Self {
+        Self { regla, desde, hasta }
+    }
+}
+
 #[derive(Serialize)]
 pub struct FilaPrevia {
-    nominal: chrono::NaiveDate,
-    limite: chrono::NaiveDate,
-    ajuste: String,
+    pub(crate) nominal: chrono::NaiveDate,
+    pub(crate) limite: chrono::NaiveDate,
+    pub(crate) ajuste: String,
     /// Para pintar en la interfaz por qué las dos fechas difieren sin que quien
     /// mira tenga que deducirlo comparándolas.
-    se_movio: bool,
+    pub(crate) se_movio: bool,
 }
 
 /// Qué vencimientos genera una regla, **antes** de guardarla.
@@ -1576,11 +1591,18 @@ pub struct FilaPrevia {
 /// de las dos está mal. Es la misma razón por la que el motor vive en un crate
 /// aparte y sin E/S — para que la interfaz pueda preguntarle sin arrastrar media
 /// aplicación.
-async fn previsualizar(
-    State(e): State<Estado>,
-    _actor: Actor,
-    Json(p): Json<PeticionPrevia>,
-) -> Result<Json<Vec<FilaPrevia>>, Error> {
+/// Qué vencimientos genera una regla en un rango. Aparte del manejador porque la
+/// usan `POST /api/periodicidad/previsualizar` y el panel, y con el tope del
+/// rango DENTRO: sin él, una cifra mal escrita pone al servidor a generar años
+/// de fechas.
+///
+/// Sale del MISMO motor que después genera las entregas —el que vive en el
+/// estado—, y eso es lo que hace que la previsualización sea una promesa que se
+/// cumple y no una segunda implementación que se parece.
+pub(crate) async fn previsualizar_de(
+    e: &Estado,
+    p: &PeticionPrevia,
+) -> Result<Vec<FilaPrevia>, Error> {
     let regla = siger_core::Regla::try_from(&p.regla)
         .map_err(|err| Error(StatusCode::BAD_REQUEST, err.to_string()))?;
 
@@ -1604,18 +1626,24 @@ async fn previsualizar(
     .map_err(|err| Error(StatusCode::INTERNAL_SERVER_ERROR, err.to_string()))?;
     let motor = siger_core::Motor::nuevo(calendario);
 
-    Ok(Json(
-        motor
-            .vencimientos_entre(p.desde, p.hasta, &regla)
-            .into_iter()
-            .map(|v| FilaPrevia {
-                nominal: v.nominal.fecha(),
-                limite: v.limite.fecha(),
-                ajuste: format!("{:?}", v.ajuste).to_uppercase(),
-                se_movio: v.se_movio(),
-            })
-            .collect(),
-    ))
+    Ok(motor
+        .vencimientos_entre(p.desde, p.hasta, &regla)
+        .into_iter()
+        .map(|v| FilaPrevia {
+            nominal: v.nominal.fecha(),
+            limite: v.limite.fecha(),
+            ajuste: format!("{:?}", v.ajuste).to_uppercase(),
+            se_movio: v.se_movio(),
+        })
+        .collect())
+}
+
+async fn previsualizar(
+    State(e): State<Estado>,
+    _actor: Actor,
+    Json(p): Json<PeticionPrevia>,
+) -> Result<Json<Vec<FilaPrevia>>, Error> {
+    Ok(Json(previsualizar_de(&e, &p).await?))
 }
 
 /// Anota el intento de leer una entrega que EXISTE y cae fuera del alcance de

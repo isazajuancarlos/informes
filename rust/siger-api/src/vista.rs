@@ -648,14 +648,14 @@ async fn pantalla_cuentas(
                     input type="password" name="clave" autocomplete="new-password" required; }
                 label { "Rol"
                     select name="rol" required {
-                        // Los valores son los que el dominio acepta, escritos
-                        // como los escribe `Rol::desde_bd`. Inventar una
-                        // etiqueta que el servidor rechace es el fallo que tuve
-                        // hoy en inventario con «administrador».
-                        option value="OPERADOR" { "Operador — produce entregas" }
-                        option value="SUPERVISOR" { "Supervisor — revisa y ve todo" }
-                        option value="ADMIN" { "Administrador — además administra cuentas" }
-                        option value="TERCERO" { "Tercero — entidad externa que recibe" }
+                        // De `ROLES_DE_CUENTA`, la misma lista que usa la
+                        // edición. Dos listas serían dos verdades sobre qué
+                        // roles existen, y la del panel sería la que se queda
+                        // atrás — que es el fallo que tuve hoy en inventario con
+                        // un rol «administrador» que no existía.
+                        @for (v, etiqueta) in ROLES_DE_CUENTA {
+                            option value=(v) { (etiqueta) }
+                        }
                     } }
                 label { "Entidad externa (solo para TERCERO)"
                     input type="number" name="stakeholder_id" min="1"
@@ -675,6 +675,16 @@ async fn pantalla_cuentas(
     })
     .into_response()
 }
+
+/// Los roles, escritos como los lee `Rol::desde_bd`. Se enumeran aquí una vez y
+/// los usan el alta y la edición: dos listas serían dos verdades sobre qué roles
+/// existen, y la del panel sería la que se queda atrás.
+const ROLES_DE_CUENTA: [(&str, &str); 4] = [
+    ("OPERADOR", "Operador"),
+    ("SUPERVISOR", "Supervisor"),
+    ("ADMIN", "Administrador"),
+    ("TERCERO", "Tercero"),
+];
 
 /// Una fila del padrón, con las acciones que corresponden a ESA fila.
 ///
@@ -720,7 +730,31 @@ fn fila_de_cuenta(c: &crate::cuentas::FichaCuenta, propio: i64) -> Markup {
                             button.secundario.chico type="submit" { "Aplicar" }
                         }
                     }
+                    details.desplegable {
+                        summary { "Editar" }
+                        form.enlinea method="post" action={ "/cuentas/" (c.id) } {
+                            input name="nombre" value=(c.nombre) required
+                                  placeholder="Nombre";
+                            select name="rol" {
+                                @for (v, etiqueta) in ROLES_DE_CUENTA {
+                                    option value=(v) selected[c.rol == v] { (etiqueta) }
+                                }
+                            }
+                            input type="number" name="stakeholder_id" min="1"
+                                  value=(c.stakeholder_id.map(|x| x.to_string()).unwrap_or_default())
+                                  placeholder="entidad (TERCERO)";
+                            label.casilla {
+                                input type="checkbox" name="activo" value="true" checked[c.activo];
+                                " Activa"
+                            }
+                            button.secundario.chico type="submit" { "Guardar" }
+                        }
+                    }
                 } @else {
+                    // La propia cuenta tampoco se edita por aquí: degradarse a
+                    // uno mismo o desactivarse dejaría al sistema sin nadie que
+                    // pueda arreglarlo, y esa comprobación vive en el dominio.
+                    // No ofrecerla evita la tentación.
                     span.vacio { "(su cuenta)" }
                 }
             }
@@ -784,6 +818,33 @@ pub async fn cuenta_clave(
                 false,
             )
             .await
+        }
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_cuentas(&e, &actor, Some(&mensaje), true).await
+        }
+    }
+}
+
+pub async fn cuenta_editar(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    cuerpo: String,
+) -> Response {
+    let cs = campos(&cuerpo);
+    let cambio = crate::cuentas::CuentaCambio::nuevo(
+        uno(&cs, "nombre").to_string(),
+        uno(&cs, "rol").to_string(),
+        // Una casilla sin marcar NO llega en el cuerpo: su ausencia significa
+        // «desactivada». Lo define el navegador, así que aquí sí es una lectura
+        // correcta y no un relleno por omisión.
+        cs.iter().any(|(k, _)| k == "activo"),
+        uno(&cs, "stakeholder_id").trim().parse().ok(),
+    );
+    match crate::cuentas::actualizar_de(&e, &actor, id, &cambio).await {
+        Ok(c) => {
+            let msg = format!("Cuenta de {} actualizada.", c.nombre);
+            pantalla_cuentas(&e, &actor, Some(&msg), false).await
         }
         Err(crate::rutas::Error(_, mensaje)) => {
             pantalla_cuentas(&e, &actor, Some(&mensaje), true).await
@@ -912,7 +973,14 @@ pub async fn salir_todo(State(e): State<Estado>, actor: crate::autz::Actor) -> R
 /// meterlo a medias sería peor que no traerlo: una previsualización que no sale
 /// del MISMO motor que genera es una promesa que después no se cumple, y por eso
 /// el motor va en el estado del servidor. Entra con su formulario y su prueba.
-fn pantalla_cronograma(resultado: Option<&crate::planificador::Resumen>, error: Option<&str>) -> Markup {
+fn pantalla_cronograma(
+    resultado: Option<&crate::planificador::Resumen>,
+    error: Option<&str>,
+    regla_tecleada: Option<&str>,
+    previa: Option<&[crate::rutas::FilaPrevia]>,
+    desde: &str,
+    hasta: &str,
+) -> Markup {
     envoltura("Cronograma", Some("/cronograma"), html! {
         h2 { "Cronograma" }
         @if let Some(e) = error {
@@ -947,24 +1015,120 @@ fn pantalla_cronograma(resultado: Option<&crate::planificador::Resumen>, error: 
             }
             button.primario type="submit" { "Generar ahora" }
         }
+
+        h3 { "Previsualizar una regla" }
         p.nota {
-            "La previsualización de una regla sigue en "
-            code { "POST /api/periodicidad/previsualizar" }
-            ": su formulario entra con su propia prueba."
+            "Qué vencimientos produce una regla en un rango, ANTES de guardarla. Sale del "
+            "mismo motor que después genera las entregas: una previsualización que no "
+            "saliera de ahí sería una promesa que después no se cumple."
+        }
+        form.ficha method="post" action="/cronograma/previsualizar" {
+            label for="regla" { "Regla (JSON)" }
+            textarea #regla name="regla" rows="5" required { (regla_tecleada.unwrap_or("")) }
+            div.rejilla {
+                label { "Desde" input type="date" name="desde" required value=(desde); }
+                label { "Hasta" input type="date" name="hasta" required value=(hasta); }
+            }
+            button.secundario type="submit" { "Previsualizar" }
+        }
+
+        @if let Some(filas) = previa {
+            @if filas.is_empty() {
+                p.vacio { "Esa regla no produce ningún vencimiento en ese rango." }
+            } @else {
+                p.nota { (filas.len()) " vencimientos:" }
+                div.tabla-ancha {
+                    table.datos {
+                        thead { tr {
+                            th { "Nominal" } th { "Límite" } th { "Ajuste" } th { "¿Se movió?" }
+                        } }
+                        tbody {
+                            @for f in filas {
+                                tr {
+                                    // Las dos fechas, siempre. La NOMINAL da
+                                    // identidad y mide la vigencia; la LÍMITE
+                                    // mide el cumplimiento (directiva 32).
+                                    td { (f.nominal) }
+                                    td { (f.limite) }
+                                    td { (f.ajuste) }
+                                    // Se DICE si se movió, en vez de dejar que
+                                    // quien mira lo deduzca comparando las dos
+                                    // fechas columna contra columna.
+                                    td { @if f.se_movio { "sí — cayó en día no hábil" } @else { "no" } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
     })
 }
 
+/// El rango por defecto del previsualizador: de hoy a un año. No es un número
+/// mágico ni el máximo que admite el servidor —ése es de cinco años—: es el
+/// horizonte que alguien mira al definir una obligación anual.
+fn rango_por_defecto() -> (String, String) {
+    let hoy = chrono::Utc::now().date_naive();
+    (hoy.to_string(), (hoy + chrono::Duration::days(365)).to_string())
+}
+
 pub async fn cronograma_pagina() -> Markup {
-    pantalla_cronograma(None, None)
+    let (d, h) = rango_por_defecto();
+    pantalla_cronograma(None, None, None, None, &d, &h)
 }
 
 pub async fn cronograma_generar(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    let (d, h) = rango_por_defecto();
     match crate::rutas::generar_de(&e, &actor).await {
-        Ok(r) => pantalla_cronograma(Some(&r), None).into_response(),
-        Err(crate::rutas::Error(codigo, mensaje)) => {
-            (codigo, pantalla_cronograma(None, Some(&mensaje))).into_response()
-        }
+        Ok(r) => pantalla_cronograma(Some(&r), None, None, None, &d, &h).into_response(),
+        Err(crate::rutas::Error(codigo, mensaje)) => (
+            codigo,
+            pantalla_cronograma(None, Some(&mensaje), None, None, &d, &h),
+        )
+            .into_response(),
+    }
+}
+
+/// `POST /cronograma/previsualizar` — qué vencimientos produce una regla.
+///
+/// Conserva en el formulario lo que se tecleó, también cuando falla: reescribir
+/// una regla de veinte líneas porque el rango estaba mal es la clase de detalle
+/// que hace que una pantalla no se use.
+pub async fn cronograma_previsualizar(
+    State(e): State<Estado>,
+    _actor: crate::autz::Actor,
+    cuerpo: String,
+) -> Response {
+    let cs = campos(&cuerpo);
+    let texto = uno(&cs, "regla").to_string();
+    let desde_s = uno(&cs, "desde").to_string();
+    let hasta_s = uno(&cs, "hasta").to_string();
+
+    let fallo = |m: &str| {
+        pantalla_cronograma(None, Some(m), Some(&texto), None, &desde_s, &hasta_s).into_response()
+    };
+
+    let regla: siger_core::ReglaJson = match serde_json::from_str(&texto) {
+        Ok(v) => v,
+        Err(err) => return fallo(&format!("la regla no tiene la forma esperada: {err}")),
+    };
+    let (Ok(desde), Ok(hasta)) = (desde_s.parse(), hasta_s.parse()) else {
+        return fallo("las fechas del rango no son válidas");
+    };
+
+    let p = crate::rutas::PeticionPrevia::nueva(regla, desde, hasta);
+    match crate::rutas::previsualizar_de(&e, &p).await {
+        Ok(filas) => pantalla_cronograma(
+            None,
+            None,
+            Some(&texto),
+            Some(&filas),
+            &desde_s,
+            &hasta_s,
+        )
+        .into_response(),
+        Err(crate::rutas::Error(_, mensaje)) => fallo(&mensaje),
     }
 }
 
@@ -1947,7 +2111,10 @@ mod pruebas {
             pantalla_acceso(Some("x")).into_string(),
             pantalla_codigo(Some("x")).into_string(),
             pantalla_mi_clave(Some("x"), true).into_string(),
-            pantalla_cronograma(None, Some("x")).into_string(),
+            pantalla_cronograma(None, Some("x"), Some("{}"), None, "2026-01-01", "2026-12-31")
+                .into_string(),
+            // El formulario de un informe, en sus dos formas: alta y edición.
+            formulario_informe(None, Some("x"), true).into_string(),
             envoltura("t", Some("/entregas"), html! { p { "x" } }).into_string(),
         ] {
             let bajo = html.to_ascii_lowercase();

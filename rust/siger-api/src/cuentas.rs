@@ -81,6 +81,20 @@ pub struct CuentaCambio {
     stakeholder_id: Option<i64>,
 }
 
+impl CuentaCambio {
+    /// Para el panel. Los campos siguen privados: `rol_y_entidad` decide si la
+    /// combinación tiene sentido, y armarla desde fuera se saltaría esa
+    /// comprobación al construir.
+    pub(crate) fn nuevo(
+        nombre: String,
+        rol: String,
+        activo: bool,
+        stakeholder_id: Option<i64>,
+    ) -> Self {
+        Self { nombre, rol, activo, stakeholder_id }
+    }
+}
+
 #[derive(Deserialize)]
 pub struct ClaveDeOtro {
     pub(crate) clave_nueva: String,
@@ -718,13 +732,19 @@ fn correo_repetido(err: sqlx::Error) -> Error {
 /// La contraseña NO se toca aquí: tiene su propio extremo porque cuesta un Argon2
 /// y porque revoca sesiones, y mezclarla con un cambio de nombre haría que
 /// renombrar a alguien le cerrara la sesión sin que nadie lo hubiera pedido.
-pub async fn actualizar(
-    State(e): State<Estado>,
-    actor: Actor,
-    Path(id): Path<i64>,
-    Json(cambio): Json<CuentaCambio>,
-) -> Result<Json<FichaCuenta>, Error> {
-    solo_admin(&actor)?;
+/// Edita una cuenta. Aparte del manejador porque la usan `PUT /api/cuentas/{id}`
+/// y el panel, y se lleva DENTRO lo que no puede repetirse: `solo_admin`, la
+/// validación del rol y su coherencia con la entidad, y —lo que de verdad
+/// importa— la comprobación del ÚLTIMO administrador activo, que va en la MISMA
+/// transacción que la escritura. Comprobarla fuera no valdría nada: dos
+/// administradores degradándose a la vez leerían «queda otro» los dos.
+pub(crate) async fn actualizar_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+    cambio: &CuentaCambio,
+) -> Result<FichaCuenta, Error> {
+    solo_admin(actor)?;
     let nombre = nombre_valido(&cambio.nombre)?;
     let rol = rol_valido(&cambio.rol)?;
     rol_y_entidad(rol, cambio.stakeholder_id)?;
@@ -764,7 +784,16 @@ pub async fn actualizar(
 
     tx.commit().await?;
     auditar(&e.bd, "cuenta_actualizada", Some(&actor.email), Some(&fila.email)).await;
-    Ok(Json(fila))
+    Ok(fila)
+}
+
+pub async fn actualizar(
+    State(e): State<Estado>,
+    actor: Actor,
+    Path(id): Path<i64>,
+    Json(cambio): Json<CuentaCambio>,
+) -> Result<Json<FichaCuenta>, Error> {
+    Ok(Json(actualizar_de(&e, &actor, id, &cambio).await?))
 }
 
 /// Se niega a dejar el sistema sin administradores activos.
