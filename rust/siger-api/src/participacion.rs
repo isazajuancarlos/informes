@@ -25,12 +25,12 @@ const ROLES: &[&str] = &["ORIGEN", "DESTINO", "USUARIO", "SUPERVISA", "EJECUTA"]
 #[derive(Serialize, sqlx::FromRow)]
 pub struct ParteVista {
     pub(crate) id: i64,
-    usuario_id: Option<i64>,
-    stakeholder_id: Option<i64>,
-    nombre: String,
-    rol: String,
-    es_principal: bool,
-    orden: i64,
+    pub(crate) usuario_id: Option<i64>,
+    pub(crate) stakeholder_id: Option<i64>,
+    pub(crate) nombre: String,
+    pub(crate) rol: String,
+    pub(crate) es_principal: bool,
+    pub(crate) orden: i64,
 }
 
 /// Una parte tal como la manda el editor.
@@ -45,6 +45,21 @@ pub struct ParteEntrada {
     es_principal: bool,
     #[serde(default)]
     orden: i64,
+}
+
+impl ParteEntrada {
+    /// Para el panel. Los campos siguen privados porque `valida_parte` es quien
+    /// decide si la combinación tiene sentido —interna O externa, nunca las dos—
+    /// y armarla a mano desde fuera se saltaría esa comprobación al construir.
+    pub(crate) fn nueva(
+        usuario_id: Option<i64>,
+        stakeholder_id: Option<i64>,
+        rol: String,
+        es_principal: bool,
+        orden: i64,
+    ) -> Self {
+        Self { usuario_id, stakeholder_id, rol, es_principal, orden }
+    }
 }
 
 fn verdadero() -> bool {
@@ -100,12 +115,14 @@ fn valida_parte(p: &ParteEntrada) -> Result<(), Error> {
     }
 }
 
-pub async fn listar(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-) -> Result<Json<Vec<ParteVista>>, Error> {
-    puede_leer(&actor)?;
+/// Las partes de un informe. Aparte del manejador porque las usan la API y el
+/// panel, con `puede_leer` dentro.
+pub(crate) async fn partes_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+) -> Result<Vec<ParteVista>, Error> {
+    puede_leer(actor)?;
     let filas = sqlx::query_as::<_, ParteVista>(
         "SELECT p.id, p.usuario_id, p.stakeholder_id, \
                 COALESCE(u.nombre, s.nombre, '(desconocido)') AS nombre, \
@@ -119,18 +136,26 @@ pub async fn listar(
     .bind(id)
     .fetch_all(&e.bd)
     .await?;
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn listar(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+) -> Result<Json<Vec<ParteVista>>, Error> {
+    Ok(Json(partes_de(&e, &actor, id).await?))
 }
 
 /// Reemplaza TODAS las partes del informe por la lista recibida, en una sola
 /// transacción: o entra el conjunto completo, o no cambia nada.
-pub async fn reemplazar(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-    Json(partes): Json<Vec<ParteEntrada>>,
-) -> Result<Json<serde_json::Value>, Error> {
-    solo_admin(&actor)?;
+pub(crate) async fn reemplazar_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+    partes: &[ParteEntrada],
+) -> Result<(), Error> {
+    solo_admin(actor)?;
 
     // El informe tiene que existir: asignar partes a un informe fantasma sería un
     // dato huérfano que nadie reclama.
@@ -142,7 +167,7 @@ pub async fn reemplazar(
         return Err(Error(StatusCode::NOT_FOUND, "el informe no existe".into()));
     }
 
-    for p in &partes {
+    for p in partes {
         valida_parte(p)?;
     }
 
@@ -151,7 +176,7 @@ pub async fn reemplazar(
         .bind(id)
         .execute(&mut *tx)
         .await?;
-    for p in &partes {
+    for p in partes {
         // Las claves foráneas están activas: un usuario o stakeholder inexistente
         // hace fallar el INSERT, y se traduce a un 400 legible en vez de un 500.
         sqlx::query(
@@ -177,6 +202,16 @@ pub async fn reemplazar(
     tx.commit().await?;
 
     crate::rutas::auditar(&e.bd, "participacion_actualizada", Some(&actor.email), None).await;
+    Ok(())
+}
+
+pub async fn reemplazar(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+    Json(partes): Json<Vec<ParteEntrada>>,
+) -> Result<Json<serde_json::Value>, Error> {
+    reemplazar_de(&e, &actor, id, &partes).await?;
     Ok(Json(serde_json::json!({ "ok": true, "partes": partes.len() })))
 }
 

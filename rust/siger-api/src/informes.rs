@@ -36,12 +36,12 @@ pub struct InformeFila {
 /// la cargue y la modifique.
 #[derive(Serialize, sqlx::FromRow)]
 pub struct InformeDetalle {
-    id: i64,
-    nombre: String,
-    descripcion: Option<String>,
-    activo: bool,
+    pub(crate) id: i64,
+    pub(crate) nombre: String,
+    pub(crate) descripcion: Option<String>,
+    pub(crate) activo: bool,
     /// El JSON de la regla, verbatim. El front lo interpreta con `ReglaJson`.
-    recurrencia: String,
+    pub(crate) recurrencia: String,
 }
 
 /// Lo que manda el formulario al crear o editar. La regla llega ya como la
@@ -58,6 +58,20 @@ pub struct InformeEntrada {
     /// Solo lo usa la edición. Al crear, un informe nace activo.
     #[serde(default = "activo_por_defecto")]
     activo: bool,
+}
+
+impl InformeEntrada {
+    /// Para el panel, que la arma de un formulario y no de JSON. Los campos
+    /// siguen privados: la regla es lo que decide si un informe genera entregas,
+    /// y construirla a trozos desde cualquier sitio es lo que hay que evitar.
+    pub(crate) fn nueva(
+        nombre: String,
+        descripcion: Option<String>,
+        recurrencia: serde_json::Value,
+        activo: bool,
+    ) -> Self {
+        Self { nombre, descripcion, recurrencia, activo }
+    }
 }
 
 fn activo_por_defecto() -> bool {
@@ -128,12 +142,13 @@ pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<In
     Ok(Json(listar_de(&e, &actor).await?))
 }
 
-pub async fn detalle(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-) -> Result<Json<InformeDetalle>, Error> {
-    puede_leer(&actor)?;
+/// La ficha de un informe, con su regla cruda para poder editarla.
+pub(crate) async fn detalle_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+) -> Result<InformeDetalle, Error> {
+    puede_leer(actor)?;
     let fila = sqlx::query_as::<_, InformeDetalle>(
         "SELECT id, nombre, descripcion, activo, recurrencia FROM informes WHERE id = ?",
     )
@@ -141,15 +156,26 @@ pub async fn detalle(
     .fetch_optional(&e.bd)
     .await?
     .ok_or_else(|| Error(StatusCode::NOT_FOUND, "el informe no existe".into()))?;
-    Ok(Json(fila))
+    Ok(fila)
 }
 
-pub async fn crear(
+pub async fn detalle(
     State(e): State<Estado>,
     actor: Actor,
-    Json(entrada): Json<InformeEntrada>,
-) -> Result<(StatusCode, Json<serde_json::Value>), Error> {
-    puede_escribir(&actor)?;
+    RutaParam(id): RutaParam<i64>,
+) -> Result<Json<InformeDetalle>, Error> {
+    Ok(Json(detalle_de(&e, &actor, id).await?))
+}
+
+/// Crea un informe. Aparte del manejador porque lo usan `POST /api/informes` y
+/// el panel, con `puede_escribir` y las dos validaciones DENTRO: el nombre y la
+/// regla. La regla se guarda VERBATIM tras validarla, no re-serializada.
+pub(crate) async fn crear_de(
+    e: &Estado,
+    actor: &Actor,
+    entrada: &InformeEntrada,
+) -> Result<i64, Error> {
+    puede_escribir(actor)?;
     let nombre = nombre_valido(&entrada.nombre)?;
     let recurrencia = regla_valida(&entrada.recurrencia)?;
 
@@ -173,16 +199,26 @@ pub async fn crear(
     };
 
     crate::rutas::auditar(&e.bd, "informe_creado", Some(&actor.email), Some(&nombre)).await;
+    Ok(id)
+}
+
+pub async fn crear(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(entrada): Json<InformeEntrada>,
+) -> Result<(StatusCode, Json<serde_json::Value>), Error> {
+    let id = crear_de(&e, &actor, &entrada).await?;
     Ok((StatusCode::CREATED, Json(serde_json::json!({ "id": id }))))
 }
 
-pub async fn actualizar(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-    Json(entrada): Json<InformeEntrada>,
-) -> Result<Json<serde_json::Value>, Error> {
-    puede_escribir(&actor)?;
+/// Edita un informe. Misma guardia y mismas validaciones que el alta.
+pub(crate) async fn actualizar_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+    entrada: &InformeEntrada,
+) -> Result<(), Error> {
+    puede_escribir(actor)?;
     let nombre = nombre_valido(&entrada.nombre)?;
     let recurrencia = regla_valida(&entrada.recurrencia)?;
 
@@ -212,6 +248,16 @@ pub async fn actualizar(
     // historia no se reescribe. Las entregas futuras salen de la nueva regla
     // cuando el planificador corra; para verlas ya, «generar ahora».
     crate::rutas::auditar(&e.bd, "informe_actualizado", Some(&actor.email), Some(&nombre)).await;
+    Ok(())
+}
+
+pub async fn actualizar(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+    Json(entrada): Json<InformeEntrada>,
+) -> Result<Json<serde_json::Value>, Error> {
+    actualizar_de(&e, &actor, id, &entrada).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 

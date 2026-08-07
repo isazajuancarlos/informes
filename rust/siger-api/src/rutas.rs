@@ -210,7 +210,19 @@ pub fn router(estado: Estado) -> Router {
         .route("/entregas/{id}/justificacion", post(crate::vista::entrega_justificar))
         .route("/entregas/{id}/revision", post(crate::vista::entrega_revisar))
         .route("/estadisticas", get(crate::vista::estadisticas_pagina))
-        .route("/informes", get(crate::vista::informes_pagina))
+        .route(
+            "/informes",
+            get(crate::vista::informes_pagina).post(crate::vista::informe_crear),
+        )
+        .route(
+            "/informes/{id}",
+            get(crate::vista::informe_pagina).post(crate::vista::informe_editar),
+        )
+        .route(
+            "/informes/{id}/partes",
+            get(crate::vista::partes_pagina_informe).post(crate::vista::partes_guardar),
+        )
+        .route("/informes/{id}/partes/fila", get(crate::vista::partes_fila))
         .route("/partes", get(crate::vista::partes_pagina))
         .route("/comportamientos.js", get(crate::vista::comportamientos_js))
         .route(

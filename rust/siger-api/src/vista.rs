@@ -538,47 +538,6 @@ pub async fn notificacion_leida(
     }
 }
 
-// ── Informes (el catálogo de obligaciones) ────────────────────────────────────
-
-pub async fn informes_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
-    // `listar_de` lleva `puede_leer` DENTRO, así que el permiso no depende de que
-    // yo me acuerde de comprobarlo aquí. Es la forma que evita el fallo que
-    // cometí en inventario: catorce rutas con la guardia olvidada.
-    let filas = match crate::informes::listar_de(&e, &actor).await {
-        Ok(v) => v,
-        Err(err) => return error_en_pantalla("Informes", "/informes", err),
-    };
-
-    envoltura("Informes", Some("/informes"), html! {
-        h2 { "Informes" }
-        p.nota { "Las obligaciones definidas: quién las produce, cada cuánto y si están activas." }
-        @if filas.is_empty() {
-            p.vacio { "No hay informes definidos todavía." }
-        } @else {
-            div.tabla-ancha {
-                table.datos {
-                    thead { tr { th { "Nombre" } th { "Descripción" } th { "Periodicidad" } th { "Estado" } } }
-                    tbody {
-                        @for f in &filas {
-                            tr.inactivo[!f.activo] {
-                                td { (f.nombre) }
-                                td { (f.descripcion.clone().unwrap_or_default()) }
-                                // El modo viene ya extraído del JSON por SQL. Si
-                                // falta, se DICE que falta en vez de dejar la
-                                // celda vacía: una celda en blanco se lee como
-                                // «sin periodicidad», que es otra cosa.
-                                td { (f.modo.clone().unwrap_or_else(|| "sin regla".into())) }
-                                td { @if f.activo { "Activo" } @else { "Inactivo" } }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    })
-    .into_response()
-}
-
 // ── Partes ────────────────────────────────────────────────────────────────────
 
 pub async fn partes_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
@@ -1449,6 +1408,450 @@ pub async fn dos_pasos_codigos(
         }
         Err(crate::rutas::Error(_, mensaje)) => {
             pantalla_2fa(&e, &actor, None, Some(&mensaje), true).await
+        }
+    }
+}
+
+// ── Formularios con líneas: el parseo que axum::Form no hace ──────────────────
+//
+// La participación reemplaza el conjunto COMPLETO de partes de un informe, así
+// que el formulario manda claves repetidas —`parte_rol=ORIGEN&parte_rol=DESTINO`—
+// y `axum::Form` NO las junta en un `Vec`: `serde_urlencoded` se queda con la
+// última y el resto desaparece EN SILENCIO. Un informe con cinco partes se
+// guardaría con una, sin un solo error.
+
+fn campos(cuerpo: &str) -> Vec<(String, String)> {
+    cuerpo
+        .split('&')
+        .filter(|p| !p.is_empty())
+        .filter_map(|par| {
+            let (k, v) = par.split_once('=')?;
+            Some((descodificar(k), descodificar(v)))
+        })
+        .collect()
+}
+
+/// `application/x-www-form-urlencoded`: `+` es espacio y `%XX` es un byte.
+fn descodificar(s: &str) -> String {
+    let bytes = s.replace('+', " ").into_bytes();
+    let mut salida = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let alto = (bytes[i + 1] as char).to_digit(16);
+            let bajo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(a), Some(b)) = (alto, bajo) {
+                salida.push((a * 16 + b) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        salida.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&salida).into_owned()
+}
+
+fn uno<'a>(cs: &'a [(String, String)], clave: &str) -> &'a str {
+    cs.iter().find(|(k, _)| k == clave).map(|(_, v)| v.as_str()).unwrap_or("")
+}
+
+fn todos<'a>(cs: &'a [(String, String)], clave: &str) -> Vec<&'a str> {
+    cs.iter().filter(|(k, _)| k == clave).map(|(_, v)| v.as_str()).collect()
+}
+
+// ── Informes: alta y edición ──────────────────────────────────────────────────
+
+/// El formulario de un informe. `id = None` es alta; `Some` es edición.
+///
+/// LA REGLA SE EDITA COMO JSON, y conviene decir por qué en vez de disimularlo:
+/// una regla tiene modo, ajustes y calendario de festivos, y el editor visual que
+/// eso merece es el previsualizador —que no está portado—. Un formulario a medias
+/// sería peor: dejaría creer que se puede componer cualquier regla desde aquí.
+/// Lo que SÍ está es la validación, que corre con el MISMO motor que después la
+/// ejecuta: una regla ilegible se rechaza con el administrador delante, en vez de
+/// guardarse y descubrir meses después que ese informe nunca generó una entrega.
+fn formulario_informe(
+    detalle: Option<&crate::informes::InformeDetalle>,
+    aviso: Option<&str>,
+    es_error: bool,
+) -> Markup {
+    let (titulo, accion) = match detalle {
+        None => ("Nuevo informe", "/informes".to_string()),
+        Some(d) => ("Editar informe", format!("/informes/{}", d.id)),
+    };
+    html! {
+        h3 { (titulo) }
+        @if let Some(a) = aviso {
+            @if es_error { div.error role="alert" { (a) } }
+            @else { div.aviso-resultado role="status" { (a) } }
+        }
+        form.ficha method="post" action=(accion) {
+            div.rejilla {
+                label { "Nombre"
+                    input name="nombre" required maxlength="200"
+                          value=(detalle.map(|d| d.nombre.as_str()).unwrap_or("")); }
+                label { "Descripción"
+                    input name="descripcion"
+                          value=(detalle.and_then(|d| d.descripcion.as_deref()).unwrap_or("")); }
+                @if detalle.is_some() {
+                    label.casilla {
+                        input type="checkbox" name="activo" value="true"
+                              checked[detalle.is_some_and(|d| d.activo)];
+                        " Activo"
+                    }
+                }
+            }
+            label for="recurrencia" { "Regla de periodicidad (JSON)" }
+            textarea #recurrencia name="recurrencia" rows="6" required {
+                (detalle.map(|d| d.recurrencia.as_str()).unwrap_or(""))
+            }
+            p.nota {
+                "Se valida con el mismo motor que después la ejecuta. Si no se puede leer, "
+                "se rechaza aquí: un informe con una regla que no parsea es un informe que "
+                "nunca vencerá, y el fallo aparecería lejos de su causa."
+            }
+            button.primario type="submit" {
+                @if detalle.is_some() { "Guardar cambios" } @else { "Crear informe" }
+            }
+        }
+    }
+}
+
+async fn pantalla_informes(
+    e: &Estado,
+    actor: &crate::autz::Actor,
+    aviso: Option<&str>,
+    es_error: bool,
+) -> Response {
+    let filas = match crate::informes::listar_de(e, actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Informes", "/informes", err),
+    };
+    let administra = matches!(actor.rol, crate::autz::Rol::Admin);
+
+    envoltura("Informes", Some("/informes"), html! {
+        h2 { "Informes" }
+        p.nota { "Las obligaciones definidas: quién las produce, cada cuánto y si están activas." }
+        @if filas.is_empty() {
+            p.vacio { "No hay informes definidos todavía." }
+        } @else {
+            div.tabla-ancha {
+                table.datos {
+                    thead { tr {
+                        th { "Nombre" } th { "Descripción" } th { "Periodicidad" }
+                        th { "Estado" } th { "Acciones" }
+                    } }
+                    tbody {
+                        @for f in &filas {
+                            tr.inactivo[!f.activo] {
+                                td { (f.nombre) }
+                                td { (f.descripcion.clone().unwrap_or_default()) }
+                                // El modo viene ya extraído del JSON por SQL. Si
+                                // falta, se DICE que falta en vez de dejar la
+                                // celda vacía: una celda en blanco se lee como
+                                // «no aplica», que es otra cosa.
+                                td { (f.modo.clone().unwrap_or_else(|| "sin regla".into())) }
+                                td { @if f.activo { "Activo" } @else { "Inactivo" } }
+                                td {
+                                    // Editar y las partes son de administración.
+                                    // Un supervisor LEE la tabla y no toca nada;
+                                    // ofrecerle los enlaces sería prometerle algo
+                                    // que el servidor le va a negar.
+                                    @if administra {
+                                        a.enlace-accion href={ "/informes/" (f.id) } { "Editar" }
+                                        a.enlace-accion href={ "/informes/" (f.id) "/partes" } { "Partes" }
+                                    } @else {
+                                        span.vacio { "—" }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        @if administra { (formulario_informe(None, aviso, es_error)) }
+    })
+    .into_response()
+}
+
+pub async fn informes_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    pantalla_informes(&e, &actor, None, false).await
+}
+
+/// Arma la entrada desde el formulario. La regla llega como TEXTO y se parsea
+/// aquí; si no es JSON válido se dice cuál es el problema, en vez de mandar algo
+/// que el validador rechazaría con otro mensaje más lejano.
+fn entrada_de_formulario(
+    cs: &[(String, String)],
+) -> Result<crate::informes::InformeEntrada, String> {
+    let texto = uno(cs, "recurrencia");
+    let regla: serde_json::Value = serde_json::from_str(texto)
+        .map_err(|err| format!("la regla no es JSON válido: {err}"))?;
+    let desc = uno(cs, "descripcion").trim().to_string();
+    Ok(crate::informes::InformeEntrada::nueva(
+        uno(cs, "nombre").to_string(),
+        // Vacío no es `Some("")`: una descripción en blanco es NO tener
+        // descripción, y guardar la cadena vacía deja una fila que dice algo
+        // distinto de lo que el usuario quiso decir.
+        if desc.is_empty() { None } else { Some(desc) },
+        regla,
+        // Una casilla sin marcar no llega en el cuerpo. En el ALTA no hay
+        // casilla y el informe nace activo, que es lo que dice el dominio.
+        cs.iter().any(|(k, _)| k == "activo") || !cs.iter().any(|(k, _)| k == "recurrencia_editando"),
+    ))
+}
+
+pub async fn informe_crear(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    cuerpo: String,
+) -> Response {
+    let cs = campos(&cuerpo);
+    let entrada = match entrada_de_formulario(&cs) {
+        Ok(v) => v,
+        Err(m) => return pantalla_informes(&e, &actor, Some(&m), true).await,
+    };
+    match crate::informes::crear_de(&e, &actor, &entrada).await {
+        Ok(id) => {
+            pantalla_informes(&e, &actor, Some(&format!("Informe {id} creado.")), false).await
+        }
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_informes(&e, &actor, Some(&mensaje), true).await
+        }
+    }
+}
+
+pub async fn informe_pagina(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    pantalla_informe(&e, &actor, id, None, false).await
+}
+
+async fn pantalla_informe(
+    e: &Estado,
+    actor: &crate::autz::Actor,
+    id: i64,
+    aviso: Option<&str>,
+    es_error: bool,
+) -> Response {
+    let d = match crate::informes::detalle_de(e, actor, id).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Informe", "/informes", err),
+    };
+    envoltura("Editar informe", Some("/informes"), html! {
+        h2 { (d.nombre) }
+        p {
+            a href="/informes" { "← Volver a informes" }
+            " · "
+            a href={ "/informes/" (id) "/partes" } { "Partes de este informe" }
+        }
+        (formulario_informe(Some(&d), aviso, es_error))
+        p.nota {
+            "Cambiar la regla NO borra ni recalcula las entregas ya existentes: la historia "
+            "no se reescribe. Las futuras salen de la regla nueva cuando corra el "
+            "planificador; para verlas ya, «Generar ahora» en Cronograma."
+        }
+    })
+    .into_response()
+}
+
+pub async fn informe_editar(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    cuerpo: String,
+) -> Response {
+    let mut cs = campos(&cuerpo);
+    // Marca para que `entrada_de_formulario` sepa que viene de la EDICIÓN, donde
+    // la casilla existe y su ausencia significa «inactivo». En el alta no hay
+    // casilla y el informe nace activo.
+    cs.push(("recurrencia_editando".into(), "1".into()));
+    let entrada = match entrada_de_formulario(&cs) {
+        Ok(v) => v,
+        Err(m) => return pantalla_informe(&e, &actor, id, Some(&m), true).await,
+    };
+    match crate::informes::actualizar_de(&e, &actor, id, &entrada).await {
+        Ok(()) => pantalla_informe(&e, &actor, id, Some("Informe guardado."), false).await,
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_informe(&e, &actor, id, Some(&mensaje), true).await
+        }
+    }
+}
+
+// ── Partes de un informe ──────────────────────────────────────────────────────
+
+const ROLES_DE_PARTE: [(&str, &str); 5] = [
+    ("ORIGEN", "Origen — de dónde sale la obligación"),
+    ("EJECUTA", "Ejecuta — quien produce la entrega"),
+    ("SUPERVISA", "Supervisa — quien revisa"),
+    ("DESTINO", "Destino — a quién se le entrega"),
+    ("USUARIO", "Usuario — quien lo consume"),
+];
+
+async fn pantalla_partes(
+    e: &Estado,
+    actor: &crate::autz::Actor,
+    id: i64,
+    aviso: Option<&str>,
+    es_error: bool,
+) -> Response {
+    let partes = match crate::participacion::partes_de(e, actor, id).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Partes", "/informes", err),
+    };
+    let usuarios = crate::participacion::usuarios_de(e, actor).await.unwrap_or_default();
+    let externos = crate::participacion::stakeholders_de(e, actor).await.unwrap_or_default();
+
+    envoltura("Partes del informe", Some("/informes"), html! {
+        h2 { "Partes del informe #" (id) }
+        p { a href={ "/informes/" (id) } { "← Volver al informe" } }
+        @if let Some(a) = aviso {
+            @if es_error { div.error role="alert" { (a) } }
+            @else { div.aviso-resultado role="status" { (a) } }
+        }
+        p.nota {
+            "Sin partes, el planificador genera entregas SIN responsable y las alertas no "
+            "tienen a quién avisar. El formulario reemplaza el conjunto COMPLETO: se manda la "
+            "lista entera, no parches, para que no queden restos de una edición anterior."
+        }
+
+        form.ficha method="post" action={ "/informes/" (id) "/partes" } {
+            table.datos #partes {
+                thead { tr { th { "Quién" } th { "Papel" } th { "Principal" } th.num { "Orden" } } }
+                tbody #cuerpo-partes {
+                    @if partes.is_empty() {
+                        (fila_de_parte(None, &usuarios, &externos))
+                    } @else {
+                        @for p in &partes { (fila_de_parte(Some(p), &usuarios, &externos)) }
+                    }
+                }
+            }
+            button.secundario type="button"
+                   hx-get={ "/informes/" (id) "/partes/fila" }
+                   hx-target="#cuerpo-partes" hx-swap="beforeend" { "Añadir parte" }
+            p.nota {
+                "Una parte es interna —una persona— o externa —una entidad—, nunca las dos. "
+                "Deje en «—» la que no corresponda."
+            }
+            button.primario type="submit" { "Guardar las partes" }
+        }
+    })
+    .into_response()
+}
+
+fn fila_de_parte(
+    p: Option<&crate::participacion::ParteVista>,
+    usuarios: &[crate::participacion::OpcionParte],
+    externos: &[crate::participacion::OpcionParte],
+) -> Markup {
+    html! {
+        tr.linea {
+            td {
+                label.chico { "Interna"
+                    select name="parte_usuario" {
+                        option value="" { "—" }
+                        @for u in usuarios {
+                            option value=(u.id) selected[p.and_then(|x| x.usuario_id) == Some(u.id)] {
+                                (u.nombre)
+                            }
+                        }
+                    } }
+                label.chico { "Externa"
+                    select name="parte_externo" {
+                        option value="" { "—" }
+                        @for x in externos {
+                            option value=(x.id) selected[p.and_then(|y| y.stakeholder_id) == Some(x.id)] {
+                                (x.nombre)
+                            }
+                        }
+                    } }
+            }
+            td {
+                select name="parte_rol" {
+                    @for (valor, etiqueta) in ROLES_DE_PARTE {
+                        option value=(valor) selected[p.is_some_and(|x| x.rol == valor)] { (etiqueta) }
+                    }
+                }
+            }
+            td {
+                // La casilla NO llega al cuerpo cuando va sin marcar, así que
+                // viaja acompañada de un campo oculto con el mismo nombre: la
+                // posición se conserva y el valor es «no» salvo que se marque.
+                // Sin él, una fila desmarcada desplazaría todas las siguientes.
+                input type="hidden" name="parte_principal" value="no";
+                input type="checkbox" name="parte_principal_marca" value="si"
+                      checked[p.is_none_or(|x| x.es_principal)];
+            }
+            td.num { input type="number" name="parte_orden" min="0" step="1"
+                           value=(p.map(|x| x.orden).unwrap_or(0)); }
+        }
+    }
+}
+
+pub async fn partes_pagina_informe(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Response {
+    pantalla_partes(&e, &actor, id, None, false).await
+}
+
+pub async fn partes_fila(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+) -> Response {
+    let usuarios = crate::participacion::usuarios_de(&e, &actor).await.unwrap_or_default();
+    let externos = crate::participacion::stakeholders_de(&e, &actor).await.unwrap_or_default();
+    fila_de_parte(None, &usuarios, &externos).into_response()
+}
+
+pub async fn partes_guardar(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+    cuerpo: String,
+) -> Response {
+    let cs = campos(&cuerpo);
+    let internos = todos(&cs, "parte_usuario");
+    let externos = todos(&cs, "parte_externo");
+    let roles = todos(&cs, "parte_rol");
+    let ordenes = todos(&cs, "parte_orden");
+    // La casilla marcada añade su propio valor DESPUÉS del oculto, así que hay
+    // dos entradas por fila cuando está marcada y una cuando no. Se cuentan las
+    // marcadas por posición reconstruyendo la secuencia.
+    let principales = todos(&cs, "parte_principal_marca");
+
+    let mut partes = Vec::new();
+    for (i, rol) in roles.iter().enumerate() {
+        let interno: Option<i64> = internos.get(i).and_then(|v| v.parse().ok());
+        let externo: Option<i64> = externos.get(i).and_then(|v| v.parse().ok());
+        // Una fila con las DOS vacías es una fila que el usuario dejó sin llenar
+        // —el botón «Añadir parte» las crea vacías—: se descarta en vez de
+        // mandarla y que `valida_parte` rechace el conjunto entero.
+        if interno.is_none() && externo.is_none() {
+            continue;
+        }
+        partes.push(crate::participacion::ParteEntrada::nueva(
+            interno,
+            externo,
+            (*rol).to_string(),
+            // Con `principales` más corto que `roles`, la fila no estaba marcada.
+            principales.len() > i,
+            ordenes.get(i).and_then(|v| v.parse().ok()).unwrap_or(0),
+        ));
+    }
+
+    match crate::participacion::reemplazar_de(&e, &actor, id, &partes).await {
+        Ok(()) => {
+            let msg = format!("{} partes guardadas.", partes.len());
+            pantalla_partes(&e, &actor, id, Some(&msg), false).await
+        }
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_partes(&e, &actor, id, Some(&mensaje), true).await
         }
     }
 }
