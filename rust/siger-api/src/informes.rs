@@ -271,6 +271,15 @@ pub struct Seleccion {
     ajuste: siger_core::inferencia::AjusteSel,
 }
 
+impl Seleccion {
+    /// Para el panel. El ajuste NO se deduce de las fechas —de una selección no
+    /// sale si la entidad quiere gracia o anticipación—: lo elige quien crea la
+    /// obligación, y por eso viaja aparte.
+    pub(crate) fn nueva(fechas: Vec<String>, ajuste: siger_core::inferencia::AjusteSel) -> Self {
+        Self { fechas, ajuste }
+    }
+}
+
 /// Qué puede ser lo que el usuario marcó en el calendario.
 ///
 /// Devuelve la lista de lecturas posibles —«todas las semanas, lunes y jueves»,
@@ -282,12 +291,15 @@ pub struct Seleccion {
 /// Es una previsualización, así que no escribe nada; pero se restringe a quien
 /// puede crear informes, porque es parte de ese flujo y no hay razón para
 /// ofrecerla a quien no va a poder guardar.
-pub async fn lecturas(
-    State(e): State<Estado>,
-    actor: Actor,
-    Json(sel): Json<Seleccion>,
-) -> Result<Json<serde_json::Value>, Error> {
-    puede_escribir(&actor)?;
+/// Qué reglas podrían explicar un conjunto de fechas. Aparte del manejador
+/// porque la usan `POST /api/cronograma/lecturas` y el panel, con `puede_escribir`
+/// y los dos topes DENTRO.
+pub(crate) async fn lecturas_de(
+    e: &Estado,
+    actor: &Actor,
+    sel: &Seleccion,
+) -> Result<Vec<siger_core::inferencia::Lectura>, Error> {
+    puede_escribir(actor)?;
 
     if sel.fechas.is_empty() {
         return Err(Error(StatusCode::BAD_REQUEST, "no se marcó ninguna fecha".into()));
@@ -307,7 +319,15 @@ pub async fn lecturas(
         dias.push(d);
     }
 
-    let lecturas = siger_core::inferencia::interpretaciones_con(&dias, &e.motor, sel.ajuste);
+    Ok(siger_core::inferencia::interpretaciones_con(&dias, &e.motor, sel.ajuste))
+}
+
+pub async fn lecturas(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(sel): Json<Seleccion>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let lecturas = lecturas_de(&e, &actor, &sel).await?;
     Ok(Json(serde_json::json!({ "lecturas": lecturas })))
 }
 

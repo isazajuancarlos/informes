@@ -238,6 +238,7 @@ pub fn router(estado: Estado) -> Router {
             "/cronograma/previsualizar",
             post(crate::vista::cronograma_previsualizar),
         )
+        .route("/cronograma/lecturas", post(crate::vista::cronograma_lecturas))
         .route(
             "/mi-clave",
             get(crate::vista::mi_clave_pagina).post(crate::vista::mi_clave_enviar),

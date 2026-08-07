@@ -1031,14 +1031,38 @@ pub async fn salir_todo(State(e): State<Estado>, actor: crate::autz::Actor) -> R
 /// meterlo a medias sería peor que no traerlo: una previsualización que no sale
 /// del MISMO motor que genera es una promesa que después no se cumple, y por eso
 /// el motor va en el estado del servidor. Entra con su formulario y su prueba.
-fn pantalla_cronograma(
-    resultado: Option<&crate::planificador::Resumen>,
-    error: Option<&str>,
-    regla_tecleada: Option<&str>,
-    previa: Option<&[crate::rutas::FilaPrevia]>,
-    desde: &str,
-    hasta: &str,
-) -> Markup {
+/// Lo que la pantalla del cronograma tiene que enseñar en esta vuelta.
+///
+/// Va como estructura y no como ocho parámetros sueltos: con ocho, la llamada
+/// era una fila de `None, None, Some(&texto), None, …` que no se puede leer ni
+/// comprobar de un vistazo — y equivocarse de posición entre dos `Option<&str>`
+/// del mismo tipo no lo caza el compilador. Fue clippy quien lo señaló, y tenía
+/// razón: la firma había dejado de decir qué hace.
+///
+/// `Default` es el caso normal —la pantalla recién abierta—, y así cada llamante
+/// nombra SOLO lo que trae.
+#[derive(Default)]
+struct VistaCronograma<'a> {
+    resultado: Option<&'a crate::planificador::Resumen>,
+    error: Option<&'a str>,
+    /// Se conserva lo tecleado también cuando falla: reescribir una regla de
+    /// veinte líneas porque el rango estaba mal es la clase de detalle que hace
+    /// que una pantalla no se use.
+    regla_tecleada: Option<&'a str>,
+    previa: Option<&'a [crate::rutas::FilaPrevia]>,
+    fechas_tecleadas: Option<&'a str>,
+    lecturas: Option<&'a [siger_core::inferencia::Lectura]>,
+}
+
+fn pantalla_cronograma(v: VistaCronograma<'_>, desde: &str, hasta: &str) -> Markup {
+    let VistaCronograma {
+        resultado,
+        error,
+        regla_tecleada,
+        previa,
+        fechas_tecleadas,
+        lecturas,
+    } = v;
     envoltura("Cronograma", Some("/cronograma"), html! {
         h2 { "Cronograma" }
         @if let Some(e) = error {
@@ -1090,6 +1114,62 @@ fn pantalla_cronograma(
             button.secundario type="submit" { "Previsualizar" }
         }
 
+        h3 { "¿Qué regla explica estas fechas?" }
+        p.nota {
+            "El camino contrario: se escriben los días en que hay que entregar y el sistema "
+            "dice qué reglas los producirían. Una por línea, en "
+            code { "AAAA-MM-DD" } "."
+        }
+        p.nota {
+            "El ajuste de días no hábiles NO se deduce de las fechas —de una selección no sale "
+            "si la entidad quiere gracia o anticipación—: se elige aquí, y se aplica a cada "
+            "lectura antes de calcular. Mostrar unas fechas y guardar otras sería el peor "
+            "defecto posible en esta pantalla."
+        }
+        form.ficha method="post" action="/cronograma/lecturas" {
+            label for="fechas" { "Fechas" }
+            textarea #fechas name="fechas" rows="5" required
+                     placeholder="2026-01-15&#10;2026-02-15&#10;2026-03-15" {
+                (fechas_tecleadas.unwrap_or(""))
+            }
+            div.rejilla {
+                label.casilla { input type="checkbox" name="gracia" value="1"; " Se admite hasta el hábil siguiente" }
+                label.casilla { input type="checkbox" name="anticipado" value="1"; " Se entrega el hábil anterior" }
+                label.casilla { input type="checkbox" name="omitir_festivos" value="1"; " Si cae festivo, no hay vencimiento" }
+            }
+            button.secundario type="submit" { "Ver lecturas posibles" }
+        }
+
+        @if let Some(ls) = lecturas {
+            @if ls.is_empty() {
+                p.vacio { "Ninguna regla del catálogo explica esas fechas sin mentir." }
+            } @else {
+                p.nota { (ls.len()) " lecturas posibles:" }
+                @for l in ls {
+                    div.lectura {
+                        b { (l.nombre) }
+                        p { (l.dice) }
+                        // Las primeras fechas que produciría, para verlo ANTES de
+                        // decidir. Es lo que separa «esta regla suena bien» de
+                        // «esta regla hace lo que quiero».
+                        @if !l.proximas.is_empty() {
+                            p.nota {
+                                "Produciría: "
+                                @for (i, f) in l.proximas.iter().enumerate() {
+                                    @if i > 0 { ", " }
+                                    (f)
+                                }
+                            }
+                        }
+                        details.desplegable {
+                            summary { "Ver la regla (para copiarla arriba)" }
+                            pre.regla { (serde_json::to_string(&l.regla).unwrap_or_default()) }
+                        }
+                    }
+                }
+            }
+        }
+
         @if let Some(filas) = previa {
             @if filas.is_empty() {
                 p.vacio { "Esa regla no produce ningún vencimiento en ese rango." }
@@ -1123,6 +1203,18 @@ fn pantalla_cronograma(
     })
 }
 
+/// Cómo tratar los días no hábiles, leído del formulario. Las tres casillas son
+/// independientes y su ausencia significa «no», que es lo que define el
+/// navegador — aquí sí es una lectura correcta y no un relleno por omisión.
+fn ajuste_de_formulario(cs: &[(String, String)]) -> siger_core::inferencia::AjusteSel {
+    let marcada = |k: &str| cs.iter().any(|(clave, _)| clave == k);
+    siger_core::inferencia::AjusteSel {
+        gracia: marcada("gracia"),
+        anticipado: marcada("anticipado"),
+        omitir_festivos: marcada("omitir_festivos"),
+    }
+}
+
 /// El rango por defecto del previsualizador: de hoy a un año. No es un número
 /// mágico ni el máximo que admite el servidor —ése es de cinco años—: es el
 /// horizonte que alguien mira al definir una obligación anual.
@@ -1133,18 +1225,84 @@ fn rango_por_defecto() -> (String, String) {
 
 pub async fn cronograma_pagina() -> Markup {
     let (d, h) = rango_por_defecto();
-    pantalla_cronograma(None, None, None, None, &d, &h)
+    pantalla_cronograma(VistaCronograma::default(), &d, &h)
 }
 
 pub async fn cronograma_generar(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
     let (d, h) = rango_por_defecto();
     match crate::rutas::generar_de(&e, &actor).await {
-        Ok(r) => pantalla_cronograma(Some(&r), None, None, None, &d, &h).into_response(),
+        Ok(r) => pantalla_cronograma(
+            VistaCronograma { resultado: Some(&r), ..Default::default() },
+            &d,
+            &h,
+        )
+        .into_response(),
         Err(crate::rutas::Error(codigo, mensaje)) => (
             codigo,
-            pantalla_cronograma(None, Some(&mensaje), None, None, &d, &h),
+            pantalla_cronograma(
+                VistaCronograma { error: Some(&mensaje), ..Default::default() },
+                &d,
+                &h,
+            ),
         )
             .into_response(),
+    }
+}
+
+/// `POST /cronograma/lecturas` — qué reglas podrían explicar unas fechas.
+///
+/// LAS FECHAS SE ESCRIBEN, no se marcan en un calendario. El Angular que se
+/// retira traía un calendario múltiple, y esto no lo sustituye: sustituye a la
+/// FUNCIÓN, que es «dime qué regla explica estos días». Un calendario es una
+/// pantalla de verdad y entra cuando se construya; mientras tanto, escribir seis
+/// fechas es peor de usar pero da exactamente la misma respuesta, y tenerla vale
+/// más que no tenerla.
+///
+/// El AJUSTE va aparte y lo elige quien crea la obligación: de una selección de
+/// fechas no se deduce si la entidad quiere gracia o anticipación, y mostrar unas
+/// fechas y guardar otras sería el peor defecto posible en esta pantalla.
+pub async fn cronograma_lecturas(
+    State(e): State<Estado>,
+    ActorDePanel(actor): ActorDePanel,
+    cuerpo: String,
+) -> Response {
+    let cs = campos(&cuerpo);
+    let texto = uno(&cs, "fechas").to_string();
+    // Una línea vacía no es una fecha ilegible: se descarta antes de llegar al
+    // dominio, que sí rechaza ruidosamente lo que no sabe leer.
+    let fechas: Vec<String> = texto
+        .split(['\n', ',', ';'])
+        .map(|f| f.trim().to_string())
+        .filter(|f| !f.is_empty())
+        .collect();
+
+    let ajuste = ajuste_de_formulario(&cs);
+    let sel = crate::informes::Seleccion::nueva(fechas, ajuste);
+    let (d, h) = rango_por_defecto();
+
+    match crate::informes::lecturas_de(&e, &actor, &sel).await {
+        Ok(ls) => pantalla_cronograma(
+            VistaCronograma {
+                fechas_tecleadas: Some(&texto),
+                lecturas: Some(&ls),
+                ..Default::default()
+            },
+            &d,
+            &h,
+        )
+        .into_response(),
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_cronograma(
+                VistaCronograma {
+                    error: Some(&mensaje),
+                    fechas_tecleadas: Some(&texto),
+                    ..Default::default()
+                },
+                &d,
+                &h,
+            )
+            .into_response()
+        }
     }
 }
 
@@ -1164,7 +1322,12 @@ pub async fn cronograma_previsualizar(
     let hasta_s = uno(&cs, "hasta").to_string();
 
     let fallo = |m: &str| {
-        pantalla_cronograma(None, Some(m), Some(&texto), None, &desde_s, &hasta_s).into_response()
+        pantalla_cronograma(
+            VistaCronograma { error: Some(m), regla_tecleada: Some(&texto), ..Default::default() },
+            &desde_s,
+            &hasta_s,
+        )
+        .into_response()
     };
 
     let regla: siger_core::ReglaJson = match serde_json::from_str(&texto) {
@@ -1178,10 +1341,11 @@ pub async fn cronograma_previsualizar(
     let p = crate::rutas::PeticionPrevia::nueva(regla, desde, hasta);
     match crate::rutas::previsualizar_de(&e, &p).await {
         Ok(filas) => pantalla_cronograma(
-            None,
-            None,
-            Some(&texto),
-            Some(&filas),
+            VistaCronograma {
+                regla_tecleada: Some(&texto),
+                previa: Some(&filas),
+                ..Default::default()
+            },
             &desde_s,
             &hasta_s,
         )
@@ -2169,7 +2333,11 @@ mod pruebas {
             pantalla_acceso(Some("x"), &[]).into_string(),
             pantalla_codigo(Some("x")).into_string(),
             pantalla_mi_clave(Some("x"), true).into_string(),
-            pantalla_cronograma(None, Some("x"), Some("{}"), None, "2026-01-01", "2026-12-31")
+            pantalla_cronograma(
+                VistaCronograma { error: Some("x"), regla_tecleada: Some("{}"), ..Default::default() },
+                "2026-01-01",
+                "2026-12-31",
+            )
                 .into_string(),
             // El formulario de un informe, en sus dos formas: alta y edición.
             formulario_informe(None, Some("x"), true).into_string(),
