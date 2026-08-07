@@ -51,6 +51,42 @@ pub async fn panel_css() -> Response {
     recurso(PANEL_CSS, "text/css; charset=utf-8")
 }
 
+// ── Quién pide, en el panel ───────────────────────────────────────────────────
+
+/// El mismo `Actor` que usa `/api`, pero **rechazando como se le rechaza a una
+/// persona**: con una redirección a la entrada, no con un 401 en JSON.
+///
+/// Existe porque el panel lo estrenó mal y lo cazó el banco de navegador en su
+/// primera corrida: quien tecleaba `/entregas` sin sesión recibía
+/// `{"error":"sesión no válida"}` en crudo. Correcto para una máquina, inútil
+/// para quien está delante — y encima da la impresión de que el sistema se rompió
+/// en vez de que hay que entrar.
+///
+/// La AUTORIZACIÓN no cambia ni un ápice: por dentro es el extractor de siempre,
+/// con su relectura del rol y de `token_version` en cada petición. Lo único que
+/// cambia es la forma del rechazo.
+pub struct ActorDePanel(pub crate::autz::Actor);
+
+impl axum::extract::FromRequestParts<Estado> for ActorDePanel {
+    type Rejection = Response;
+
+    async fn from_request_parts(
+        parts: &mut axum::http::request::Parts,
+        estado: &Estado,
+    ) -> Result<Self, Self::Rejection> {
+        match crate::autz::Actor::from_request_parts(parts, estado).await {
+            Ok(a) => Ok(ActorDePanel(a)),
+            // 303 y no 302: tras un POST, el navegador tiene que pedir el destino
+            // con GET o recargar reenviaría el formulario.
+            Err(_) => {
+                let mut cab = HeaderMap::new();
+                cab.insert(header::LOCATION, "/entrar".parse().expect("ruta válida"));
+                Err((StatusCode::SEE_OTHER, cab).into_response())
+            }
+        }
+    }
+}
+
 // ── La envoltura ──────────────────────────────────────────────────────────────
 
 /// Las secciones del panel. `activa` marca dónde estamos: un menú que no lo dice
@@ -106,7 +142,7 @@ pub fn envoltura(titulo: &str, activa: Option<&str>, cuerpo: Markup) -> Markup {
 
 /// La pantalla de entrada. Es pública a propósito y **no dice nada del sistema
 /// más allá de su nombre**: ni versión, ni cliente, ni secciones.
-fn pantalla_acceso(error: Option<&str>) -> Markup {
+fn pantalla_acceso(error: Option<&str>, demo: &[crate::config::CuentaDemo]) -> Markup {
     envoltura("Entrar", None, html! {
         div.centro {
             div.caja {
@@ -114,6 +150,22 @@ fn pantalla_acceso(error: Option<&str>) -> Markup {
                 p.lema { "Sistema de gestión de reportes" }
                 @if let Some(e) = error {
                     div.error role="alert" { (e) }
+                }
+                // El cartel SOLO existe si `SIGER_DEMO_CUENTAS` trae algo. En una
+                // instalación de cliente la lista está vacía y aquí no se pinta
+                // nada: nadie ve un usuario y una clave que no son suyos. No hay
+                // un interruptor que lo encienda —lo que se publica hay que
+                // escribirlo entero en el entorno—, y por eso no puede aparecer
+                // por accidente.
+                @if !demo.is_empty() {
+                    div.demo {
+                        b { "Demostración pública" }
+                        @for c in demo {
+                            p {
+                                (c.nombre) ": " code { (c.correo) } " / " code { (c.clave) }
+                            }
+                        }
+                    }
                 }
                 form method="post" action="/entrar" {
                     label for="email" { "Correo" }
@@ -160,8 +212,8 @@ fn pantalla_codigo(error: Option<&str>) -> Markup {
     })
 }
 
-pub async fn acceso_pagina() -> Markup {
-    pantalla_acceso(None)
+pub async fn acceso_pagina(State(e): State<Estado>) -> Markup {
+    pantalla_acceso(None, &e.cfg.demo)
 }
 
 #[derive(Deserialize)]
@@ -190,12 +242,18 @@ pub async fn acceso_enviar(
         Ok(crate::rutas::Acceso::Frenado { segundos, cabeceras }) => (
             StatusCode::TOO_MANY_REQUESTS,
             cabeceras,
-            pantalla_acceso(Some(&format!(
-                "Demasiados intentos. Vuelva a probar en {segundos} s."
-            ))),
+            pantalla_acceso(
+                Some(&format!("Demasiados intentos. Vuelva a probar en {segundos} s.")),
+                &e.cfg.demo,
+            ),
         )
             .into_response(),
-        Err(err) => respuesta_de_error(err, pantalla_acceso),
+        // El cartel se conserva también en el fallo: si desapareciera al primer
+        // error de tecleo, quien entra a la demostración se quedaría sin las
+        // credenciales que acaba de necesitar.
+        Err(crate::rutas::Error(codigo, mensaje)) => {
+            (codigo, pantalla_acceso(Some(&mensaje), &e.cfg.demo)).into_response()
+        }
     }
 }
 
@@ -282,7 +340,7 @@ pub async fn salir(State(e): State<Estado>) -> Response {
 /// manejador que no lo pida **no tiene sesión** y uno que lo pida ya la exigió.
 pub async fn entregas_pagina(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
 ) -> Response {
     let entregas = match crate::rutas::entregas_de(&e, &actor).await {
         Ok(v) => v,
@@ -521,7 +579,7 @@ fn fila_de_notificacion(n: &crate::flujo::Notificacion) -> Markup {
 /// resultado que no ocurrió.
 pub async fn notificacion_leida(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Response {
     if let Err(crate::rutas::Error(codigo, mensaje)) =
@@ -776,7 +834,7 @@ pub struct AltaCuenta {
 
 pub async fn cuenta_crear(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::Form(f): axum::Form<AltaCuenta>,
 ) -> Response {
     let nueva = crate::cuentas::CuentaNueva {
@@ -804,7 +862,7 @@ pub struct ClaveNueva {
 
 pub async fn cuenta_clave(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     axum::Form(f): axum::Form<ClaveNueva>,
 ) -> Response {
@@ -827,7 +885,7 @@ pub async fn cuenta_clave(
 
 pub async fn cuenta_editar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     cuerpo: String,
 ) -> Response {
@@ -854,7 +912,7 @@ pub async fn cuenta_editar(
 
 pub async fn cuenta_quitar_2fa(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Response {
     match crate::cuentas::retirar_segundo_factor_de(&e, &actor, id).await {
@@ -926,7 +984,7 @@ pub async fn mi_clave_pagina() -> Markup {
 
 pub async fn mi_clave_enviar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::Form(f): axum::Form<crate::cuentas::MiClave>,
 ) -> Response {
     match crate::cuentas::cambiar_mi_clave_de(&e, &actor, &f).await {
@@ -1097,7 +1155,7 @@ pub async fn cronograma_generar(State(e): State<Estado>, actor: crate::autz::Act
 /// que hace que una pantalla no se use.
 pub async fn cronograma_previsualizar(
     State(e): State<Estado>,
-    _actor: crate::autz::Actor,
+    ActorDePanel(_actor): ActorDePanel,
     cuerpo: String,
 ) -> Response {
     let cs = campos(&cuerpo);
@@ -1234,7 +1292,7 @@ async fn pantalla_entrega(
 
 pub async fn entrega_pagina(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Response {
     pantalla_entrega(&e, &actor, id, None, false).await
@@ -1247,7 +1305,7 @@ pub struct TextoJustificacion {
 
 pub async fn entrega_justificar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     axum::Form(f): axum::Form<TextoJustificacion>,
 ) -> Response {
@@ -1271,7 +1329,7 @@ pub struct VeredictoForm {
 
 pub async fn entrega_revisar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     axum::Form(f): axum::Form<VeredictoForm>,
 ) -> Response {
@@ -1302,7 +1360,7 @@ pub async fn entrega_revisar(
 /// cliente: cumplida o extemporánea no son opciones de un formulario.
 pub async fn entrega_subir(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     partes: axum::extract::Multipart,
 ) -> Response {
@@ -1502,7 +1560,7 @@ pub struct CodigoYClaveForm {
 
 pub async fn dos_pasos_activar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::Form(f): axum::Form<CodigoYClaveForm>,
 ) -> Response {
     let p = crate::segundofactor::CodigoYClave::nuevo(f.codigo, f.clave);
@@ -1532,7 +1590,7 @@ pub struct SoloClaveForm {
 
 pub async fn dos_pasos_desactivar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::Form(f): axum::Form<SoloClaveForm>,
 ) -> Response {
     let p = crate::segundofactor::SoloClave::nueva(f.clave);
@@ -1555,7 +1613,7 @@ pub async fn dos_pasos_desactivar(
 
 pub async fn dos_pasos_codigos(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::Form(f): axum::Form<SoloClaveForm>,
 ) -> Response {
     let p = crate::segundofactor::SoloClave::nueva(f.clave);
@@ -1769,7 +1827,7 @@ fn entrada_de_formulario(
 
 pub async fn informe_crear(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     cuerpo: String,
 ) -> Response {
     let cs = campos(&cuerpo);
@@ -1789,7 +1847,7 @@ pub async fn informe_crear(
 
 pub async fn informe_pagina(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Response {
     pantalla_informe(&e, &actor, id, None, false).await
@@ -1825,7 +1883,7 @@ async fn pantalla_informe(
 
 pub async fn informe_editar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     cuerpo: String,
 ) -> Response {
@@ -1958,7 +2016,7 @@ fn fila_de_parte(
 
 pub async fn partes_pagina_informe(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
 ) -> Response {
     pantalla_partes(&e, &actor, id, None, false).await
@@ -1966,7 +2024,7 @@ pub async fn partes_pagina_informe(
 
 pub async fn partes_fila(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
 ) -> Response {
     let usuarios = crate::participacion::usuarios_de(&e, &actor).await.unwrap_or_default();
     let externos = crate::participacion::stakeholders_de(&e, &actor).await.unwrap_or_default();
@@ -1975,7 +2033,7 @@ pub async fn partes_fila(
 
 pub async fn partes_guardar(
     State(e): State<Estado>,
-    actor: crate::autz::Actor,
+    ActorDePanel(actor): ActorDePanel,
     axum::extract::Path(id): axum::extract::Path<i64>,
     cuerpo: String,
 ) -> Response {
@@ -2075,7 +2133,7 @@ mod pruebas {
     #[test]
     fn las_pantallas_de_acceso_no_llevan_barra_ni_nombran_las_secciones() {
         for html in [
-            pantalla_acceso(None).into_string(),
+            pantalla_acceso(None, &[]).into_string(),
             pantalla_codigo(None).into_string(),
         ] {
             assert!(!html.contains("class=\"barra\""), "trae la barra");
@@ -2108,7 +2166,7 @@ mod pruebas {
     fn ninguna_pantalla_lleva_manejadores_de_evento_en_linea() {
         let manejadores = [" onchange=", " onclick=", " onload=", " onerror=", " onsubmit=", " oninput="];
         for html in [
-            pantalla_acceso(Some("x")).into_string(),
+            pantalla_acceso(Some("x"), &[]).into_string(),
             pantalla_codigo(Some("x")).into_string(),
             pantalla_mi_clave(Some("x"), true).into_string(),
             pantalla_cronograma(None, Some("x"), Some("{}"), None, "2026-01-01", "2026-12-31")

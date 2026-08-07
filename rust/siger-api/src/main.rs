@@ -573,7 +573,13 @@ async fn arrancar() -> Result<(), Box<dyn std::error::Error>> {
         .layer(TraceLayer::new_for_http());
 
     let escucha = tokio::net::TcpListener::bind((direccion, puerto)).await?;
-    tracing::info!("SIGER escuchando en http://{direccion}:{puerto}");
+    // Se anuncia el puerto QUE SE LIGÓ, no el que se pidió. Con `PORT=0` —que es
+    // como arrancan las pruebas para no chocar entre ellas— el sistema elige uno
+    // efímero, y el mensaje anterior decía «:0», que no es una dirección a la que
+    // nadie pueda conectarse. Un aviso de arranque que no sirve para conectarse
+    // no es un aviso de arranque.
+    let ligado = escucha.local_addr().map(|d| d.port()).unwrap_or(puerto);
+    tracing::info!("SIGER escuchando en http://{direccion}:{ligado}");
     // `with_connect_info` y no `into_make_service` a secas: sin esto no hay
     // dirección del socket, y el freno del login se queda sin la mitad de su
     // clave (ver `origen`).
