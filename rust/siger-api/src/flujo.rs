@@ -137,10 +137,11 @@ pub async fn marcar_leida(
 
 #[derive(Serialize, sqlx::FromRow)]
 pub struct Comentario {
-    id: i64,
-    autor: String,
-    texto: String,
-    momento: String,
+    #[allow(dead_code)]
+    pub(crate) id: i64,
+    pub(crate) autor: String,
+    pub(crate) texto: String,
+    pub(crate) momento: String,
 }
 
 /// ¿Puede el actor ver esta entrega? Misma lógica de alcance que la descarga y
@@ -163,12 +164,15 @@ async fn entrega_visible(e: &Estado, alcance: &Alcance, id: i64) -> Result<bool,
     Ok(q.fetch_optional(&e.bd).await?.is_some())
 }
 
-pub async fn listar_comentarios(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-) -> Result<Json<Vec<Comentario>>, Error> {
-    if !entrega_visible(&e, &actor.alcance(), id).await? {
+/// El hilo de una entrega. Aparte del manejador porque lo usan la API y el
+/// panel, y `entrega_visible` va DENTRO: la pertenencia se comprueba en la
+/// consulta, no después.
+pub(crate) async fn comentarios_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+) -> Result<Vec<Comentario>, Error> {
+    if !entrega_visible(e, &actor.alcance(), id).await? {
         return Err(Error(StatusCode::NOT_FOUND, "la entrega no existe".into()));
     }
     let filas = sqlx::query_as::<_, Comentario>(
@@ -179,14 +183,22 @@ pub async fn listar_comentarios(
     .bind(id)
     .fetch_all(&e.bd)
     .await?;
-    Ok(Json(filas))
+    Ok(filas)
+}
+
+pub async fn listar_comentarios(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+) -> Result<Json<Vec<Comentario>>, Error> {
+    Ok(Json(comentarios_de(&e, &actor, id).await?))
 }
 
 // --- Justificar un incumplimiento (operador) ---------------------------------
 
 #[derive(Deserialize)]
 pub struct Justificacion {
-    texto: String,
+    pub(crate) texto: String,
 }
 
 async fn entrega_contexto(e: &Estado, id: i64) -> Result<(Option<i64>, String), Error> {
@@ -199,17 +211,23 @@ async fn entrega_contexto(e: &Estado, id: i64) -> Result<(Option<i64>, String), 
     .ok_or_else(|| Error(StatusCode::NOT_FOUND, "la entrega no existe".into()))
 }
 
-pub async fn justificar(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-    Json(j): Json<Justificacion>,
-) -> Result<Json<serde_json::Value>, Error> {
+/// Justifica una entrega. Aparte del manejador porque la usan
+/// `POST /api/entregas/{id}/justificacion` y el panel, y se lleva DENTRO la
+/// guardia: justifica el responsable —o un admin en su nombre—, no cualquiera
+/// con sesión. También el aviso a supervisión y la línea de bitácora: un panel
+/// que justificara sin avisar dejaría la justificación esperando a que alguien
+/// la descubriera de casualidad.
+pub(crate) async fn justificar_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+    j: &Justificacion,
+) -> Result<(), Error> {
     let texto = j.texto.trim();
     if texto.is_empty() {
         return Err(Error(StatusCode::BAD_REQUEST, "la justificación no puede ir vacía".into()));
     }
-    let (usuario_id, informe) = entrega_contexto(&e, id).await?;
+    let (usuario_id, informe) = entrega_contexto(e, id).await?;
     // Justifica el responsable de la entrega (o un admin en su nombre). Un
     // tercero o un operador ajeno no justifican lo que no es suyo.
     let responsable = usuario_id == Some(actor.id);
@@ -236,10 +254,20 @@ pub async fn justificar(
     let mensaje = format!("{} justificó la entrega #{id} de «{informe}». Revísala.", actor.nombre);
     for sup in supervisores(&e.bd).await {
         if sup != actor.id {
-            notificar(&e, sup, "justificacion", &titulo, &mensaje, Some(id)).await;
+            notificar(e, sup, "justificacion", &titulo, &mensaje, Some(id)).await;
         }
     }
     crate::rutas::auditar(&e.bd, "justificacion_enviada", Some(&actor.email), Some(&informe)).await;
+    Ok(())
+}
+
+pub async fn justificar(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+    Json(j): Json<Justificacion>,
+) -> Result<Json<serde_json::Value>, Error> {
+    justificar_de(&e, &actor, id, &j).await?;
     Ok(Json(serde_json::json!({ "ok": true, "estado": "PENDIENTE" })))
 }
 
@@ -247,21 +275,22 @@ pub async fn justificar(
 
 #[derive(Deserialize)]
 pub struct Revision {
-    aceptar: bool,
+    pub(crate) aceptar: bool,
     #[serde(default)]
-    retroalimentacion: String,
+    pub(crate) retroalimentacion: String,
 }
 
-pub async fn revisar(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
-    Json(r): Json<Revision>,
-) -> Result<Json<serde_json::Value>, Error> {
+/// Revisa una justificación. La guardia va dentro: SOLO supervisión.
+pub(crate) async fn revisar_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+    r: &Revision,
+) -> Result<&'static str, Error> {
     if !matches!(actor.rol, Rol::Admin | Rol::Supervisor) {
         return Err(Error(StatusCode::FORBIDDEN, "solo supervisión revisa".into()));
     }
-    let (usuario_id, informe) = entrega_contexto(&e, id).await?;
+    let (usuario_id, informe) = entrega_contexto(e, id).await?;
     let nuevo = if r.aceptar { "ACEPTADA" } else { "RECHAZADA" };
     let retro = r.retroalimentacion.trim();
 
@@ -293,9 +322,19 @@ pub async fn revisar(
     // Avisar al responsable de la entrega.
     if let Some(op) = usuario_id {
         let titulo = format!("Tu justificación fue {}: «{informe}»", nuevo.to_lowercase());
-        notificar(&e, op, "revision", &titulo, &comentario, Some(id)).await;
+        notificar(e, op, "revision", &titulo, &comentario, Some(id)).await;
     }
     crate::rutas::auditar(&e.bd, "justificacion_revisada", Some(&actor.email), Some(&informe)).await;
+    Ok(nuevo)
+}
+
+pub async fn revisar(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+    Json(r): Json<Revision>,
+) -> Result<Json<serde_json::Value>, Error> {
+    let nuevo = revisar_de(&e, &actor, id, &r).await?;
     Ok(Json(serde_json::json!({ "ok": true, "estado": nuevo })))
 }
 

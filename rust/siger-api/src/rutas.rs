@@ -193,11 +193,32 @@ pub fn router(estado: Estado) -> Router {
             get(crate::vista::codigo_pagina).post(crate::vista::codigo_enviar),
         )
         .route("/salir", post(crate::vista::salir))
+        .route("/salir-todo", post(crate::vista::salir_todo))
         .route("/entregas", get(crate::vista::entregas_pagina))
+        .route("/entregas/{id}", get(crate::vista::entrega_pagina))
+        .route(
+            "/entregas/{id}/archivo",
+            // El tope del cuerpo se aplica AQUÍ, igual que en la ruta de `/api`:
+            // un archivo de 2 GB rechazado tras cargarlo en memoria ya hizo el
+            // daño. Sin esta capa, la ruta del panel sería la puerta sin tope.
+            post(crate::vista::entrega_subir)
+                // El MISMO tope que la ruta de `/api`, calculado del mismo
+                // `tope_mb`: dos topes distintos serían dos verdades sobre el
+                // tamaño máximo, y la del panel sería la que nadie mira.
+                .layer(DefaultBodyLimit::max(tope_mb * 1024 * 1024)),
+        )
+        .route("/entregas/{id}/justificacion", post(crate::vista::entrega_justificar))
+        .route("/entregas/{id}/revision", post(crate::vista::entrega_revisar))
         .route("/estadisticas", get(crate::vista::estadisticas_pagina))
         .route("/informes", get(crate::vista::informes_pagina))
         .route("/partes", get(crate::vista::partes_pagina))
-        .route("/cuentas", get(crate::vista::cuentas_pagina))
+        .route("/comportamientos.js", get(crate::vista::comportamientos_js))
+        .route(
+            "/cuentas",
+            get(crate::vista::cuentas_pagina).post(crate::vista::cuenta_crear),
+        )
+        .route("/cuentas/{id}/clave", post(crate::vista::cuenta_clave))
+        .route("/cuentas/{id}/quitar-2fa", post(crate::vista::cuenta_quitar_2fa))
         .route("/cronograma", get(crate::vista::cronograma_pagina))
         .route("/cronograma/generar", post(crate::vista::cronograma_generar))
         .route(
@@ -607,7 +628,13 @@ async fn cerrar_sesion(State(e): State<Estado>, actor: Actor) -> Result<Response
 /// alguien tiene ya el camino correcto —desactivar la cuenta, que `activo` se
 /// relee en cada petición—; revocar sesiones ajenas sin desactivar la cuenta no
 /// resuelve ningún caso que ese camino no cubra ya (directiva 1).
-async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+/// Cierra TODAS las sesiones de quien la pide. Devuelve la cabecera que además
+/// cierra la de aquí.
+///
+/// Aparte del manejador porque la usan `POST /api/salir-todo` y el panel. No
+/// recibe id: revoca al usuario que la cookie firmada identifica. Si aceptara
+/// uno sería un botón para echar a cualquiera sabiendo su número.
+pub(crate) async fn salir_todo_de(e: &Estado, actor: &Actor) -> Result<HeaderMap, Error> {
     let revocadas = crate::acceso::revocar_sesiones(&e.bd, actor.id).await?;
     if !revocadas {
         // La sentencia no tocó ninguna fila: el usuario que acabamos de
@@ -624,6 +651,11 @@ async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, E
         header::SET_COOKIE,
         sesion::cabecera_cerrar().parse().expect("la cabecera es ASCII"),
     );
+    Ok(cabeceras)
+}
+
+async fn salir_todo(State(e): State<Estado>, actor: Actor) -> Result<Response, Error> {
+    let cabeceras = salir_todo_de(&e, &actor).await?;
     Ok((cabeceras, Json(serde_json::json!({ "ok": true }))).into_response())
 }
 
@@ -1270,6 +1302,22 @@ fn concuerda(declarada: &str, detectada: &str) -> bool {
     false
 }
 
+/// Cómo quedó una entrega registrada.
+///
+/// Existe para que la LÓGICA de la subida viva en un solo sitio y la usen sus dos
+/// consumidores, `POST /api/entregas/{id}/archivo` y el formulario del panel.
+pub(crate) struct Registrada {
+    pub(crate) estado: &'static str,
+    pub(crate) nombre: String,
+    pub(crate) bytes: usize,
+    pub(crate) firmada: bool,
+    /// `Some(false)` = el contenido NO concuerda con la extensión. La entrega
+    /// queda registrada y MARCADA: rechazarla castigaría a quien entregó algo
+    /// legítimo con la extensión mal puesta, y esconderlo dejaría sin revisar lo
+    /// que sí es sospechoso.
+    pub(crate) archivo_valido: Option<bool>,
+}
+
 /// Registrar la entrega subiendo su archivo.
 ///
 /// Lo que hace distinto a lo anterior:
@@ -1281,12 +1329,12 @@ fn concuerda(declarada: &str, detectada: &str) -> bool {
 ///   - la **pertenencia** se comprueba con el alcance del actor, en la consulta;
 ///   - el **estado** sale de comparar con la fecha límite, no de lo que diga el
 ///     cliente: CUMPLIDO o EXTEMPORÁNEO no son opciones de un formulario.
-async fn subir_archivo(
-    State(e): State<Estado>,
-    actor: Actor,
-    RutaParam(id): RutaParam<i64>,
+pub(crate) async fn subir_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
     mut partes: Multipart,
-) -> Result<Json<serde_json::Value>, Error> {
+) -> Result<Registrada, Error> {
     let no_existe = || Error(StatusCode::NOT_FOUND, "la entrega no existe".into());
 
     // Pertenencia primero: si no le corresponde, no se lee ni un byte. Se traen
@@ -1425,12 +1473,28 @@ async fn subir_archivo(
         auditar(&e.bd, "entrega_contenido_no_concuerda", Some(&actor.email), Some(&nombre)).await;
     }
     auditar(&e.bd, "entrega_registrada", Some(&actor.email), Some(&nombre)).await;
+    Ok(Registrada {
+        estado,
+        bytes: datos.len(),
+        firmada: firma_blob.is_some(),
+        archivo_valido,
+        nombre,
+    })
+}
+
+async fn subir_archivo(
+    State(e): State<Estado>,
+    actor: Actor,
+    RutaParam(id): RutaParam<i64>,
+    partes: Multipart,
+) -> Result<Json<serde_json::Value>, Error> {
+    let r = subir_de(&e, &actor, id, partes).await?;
     Ok(Json(serde_json::json!({
-        "ok": true, "estado": estado, "archivo": nombre, "bytes": datos.len(),
-        "firmada": firma_blob.is_some(),
+        "ok": true, "estado": r.estado, "archivo": r.nombre, "bytes": r.bytes,
+        "firmada": r.firmada,
         // El front avisa cuando el contenido no concuerda con la extensión, sin
         // rechazar la entrega: quedó registrada y marcada para revisión.
-        "archivo_valido": archivo_valido
+        "archivo_valido": r.archivo_valido
     })))
 }
 

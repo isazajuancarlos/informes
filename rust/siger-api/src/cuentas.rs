@@ -64,12 +64,12 @@ const COLUMNAS: &str =
 
 #[derive(Deserialize)]
 pub struct CuentaNueva {
-    nombre: String,
-    email: String,
-    clave: String,
-    rol: String,
+    pub(crate) nombre: String,
+    pub(crate) email: String,
+    pub(crate) clave: String,
+    pub(crate) rol: String,
     #[serde(default)]
-    stakeholder_id: Option<i64>,
+    pub(crate) stakeholder_id: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -83,7 +83,7 @@ pub struct CuentaCambio {
 
 #[derive(Deserialize)]
 pub struct ClaveDeOtro {
-    clave_nueva: String,
+    pub(crate) clave_nueva: String,
 }
 
 #[derive(Deserialize)]
@@ -655,19 +655,23 @@ pub async fn listar(State(e): State<Estado>, actor: Actor) -> Result<Json<Vec<Fi
 }
 
 /// `POST /api/cuentas` — alta.
-pub async fn crear(
-    State(e): State<Estado>,
-    actor: Actor,
-    Json(nueva): Json<CuentaNueva>,
-) -> Result<Response, Error> {
-    solo_admin(&actor)?;
+/// Da de alta una cuenta. Aparte del manejador porque la usan `POST /api/cuentas`
+/// y el formulario del panel, con `solo_admin` y las cinco validaciones DENTRO:
+/// nombre, correo, clave, rol y la coherencia rol/entidad. Repetirlas en el panel
+/// sería crear una segunda puerta con otras reglas.
+pub(crate) async fn crear_de(
+    e: &Estado,
+    actor: &Actor,
+    nueva: &CuentaNueva,
+) -> Result<FichaCuenta, Error> {
+    solo_admin(actor)?;
     let nombre = nombre_valido(&nueva.nombre)?;
     let email = email_valido(&nueva.email)?;
     let clave = clave_valida(&nueva.clave)?;
     let rol = rol_valido(&nueva.rol)?;
     rol_y_entidad(rol, nueva.stakeholder_id)?;
 
-    let hash = hashear(&e, clave).await?;
+    let hash = hashear(e, clave).await?;
 
     let fila = sqlx::query_as::<_, FichaCuenta>(&format!(
         "INSERT INTO usuarios (nombre, email, clave_hash, rol, activo, stakeholder_id) \
@@ -683,6 +687,15 @@ pub async fn crear(
     .map_err(correo_repetido)?;
 
     auditar(&e.bd, "cuenta_creada", Some(&actor.email), Some(&email)).await;
+    Ok(fila)
+}
+
+pub async fn crear(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(nueva): Json<CuentaNueva>,
+) -> Result<Response, Error> {
+    let fila = crear_de(&e, &actor, &nueva).await?;
     Ok((StatusCode::CREATED, Json(fila)).into_response())
 }
 
@@ -785,13 +798,16 @@ async fn ultimo_administrador(
 /// Sube `token_version` en la misma transacción, así que quien estuviera dentro
 /// con la contraseña vieja cae en su siguiente petición. **No reemite cookie**:
 /// el afectado no es quien llama.
-pub async fn restablecer_clave(
-    State(e): State<Estado>,
-    actor: Actor,
-    Path(id): Path<i64>,
-    Json(cuerpo): Json<ClaveDeOtro>,
-) -> Result<Json<serde_json::Value>, Error> {
-    solo_admin(&actor)?;
+/// Restablece la contraseña de OTRA persona. Aparte del manejador porque la usan
+/// `POST /api/cuentas/{id}/clave` y el panel, con `solo_admin` y la desviación
+/// del caso propio DENTRO.
+pub(crate) async fn restablecer_clave_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+    cuerpo: &ClaveDeOtro,
+) -> Result<(), Error> {
+    solo_admin(actor)?;
     if id == actor.id {
         // No es una restricción: es mandar al camino correcto. Cambiar la propia
         // por aquí saltaría la comprobación de la contraseña actual, y además
@@ -802,7 +818,7 @@ pub async fn restablecer_clave(
         ));
     }
     let clave = clave_valida(&cuerpo.clave_nueva)?;
-    let hash = hashear(&e, clave).await?;
+    let hash = hashear(e, clave).await?;
 
     let email: Option<String> = sqlx::query_scalar(
         "UPDATE usuarios SET clave_hash = ?, token_version = token_version + 1 \
@@ -820,6 +836,16 @@ pub async fn restablecer_clave(
     };
 
     auditar(&e.bd, "clave_restablecida", Some(&actor.email), Some(&email)).await;
+    Ok(())
+}
+
+pub async fn restablecer_clave(
+    State(e): State<Estado>,
+    actor: Actor,
+    Path(id): Path<i64>,
+    Json(cuerpo): Json<ClaveDeOtro>,
+) -> Result<Json<serde_json::Value>, Error> {
+    restablecer_clave_de(&e, &actor, id, &cuerpo).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
@@ -845,12 +871,15 @@ pub async fn restablecer_clave(
 /// segundo factor exige la contraseña actual, y si un administrador pudiera
 /// quitárselo por aquí, una sesión suya robada lo apagaría sin saber ninguna
 /// contraseña. Para el propio está `POST /api/2fa/desactivar`.
-pub async fn retirar_segundo_factor(
-    State(e): State<Estado>,
-    actor: Actor,
-    Path(id): Path<i64>,
-) -> Result<Json<serde_json::Value>, Error> {
-    solo_admin(&actor)?;
+/// Le quita el segundo factor a OTRA persona: el rescate de quien perdió el
+/// teléfono Y los diez códigos. Aparte del manejador porque la usan
+/// `DELETE /api/cuentas/{id}/2fa` y el panel.
+pub(crate) async fn retirar_segundo_factor_de(
+    e: &Estado,
+    actor: &Actor,
+    id: i64,
+) -> Result<(), Error> {
+    solo_admin(actor)?;
     if id == actor.id {
         return Err(Error(
             StatusCode::BAD_REQUEST,
@@ -896,6 +925,15 @@ pub async fn retirar_segundo_factor(
     tx.commit().await?;
 
     auditar(&e.bd, "2fa_retirado_por_admin", Some(&actor.email), Some(&email)).await;
+    Ok(())
+}
+
+pub async fn retirar_segundo_factor(
+    State(e): State<Estado>,
+    actor: Actor,
+    Path(id): Path<i64>,
+) -> Result<Json<serde_json::Value>, Error> {
+    retirar_segundo_factor_de(&e, &actor, id).await?;
     Ok(Json(serde_json::json!({ "ok": true })))
 }
 
