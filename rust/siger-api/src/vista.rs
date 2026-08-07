@@ -883,6 +883,12 @@ fn pantalla_mi_clave(aviso: Option<&str>, es_error: bool) -> Markup {
             "hubiera entrado con la vieja, y no a uno mismo."
         }
 
+        h3 { "Verificación en dos pasos" }
+        p.nota {
+            "Añade un código de su teléfono al entrar. "
+            a href="/dos-pasos" { "Configurarla" }
+        }
+
         h3 { "Cerrar sesión en todos los dispositivos" }
         p.nota {
             "Cierra todas sus sesiones, incluida ésta, SIN cambiar la contraseña. "
@@ -1200,6 +1206,249 @@ pub async fn entrega_subir(
         }
         Err(crate::rutas::Error(_, mensaje)) => {
             pantalla_entrega(&e, &actor, id, Some(&mensaje), true).await
+        }
+    }
+}
+
+// ── Verificación en dos pasos ─────────────────────────────────────────────────
+//
+// La pantalla de la cuenta PROPIA. Nada de aquí decide: los cinco caminos los
+// resuelven las funciones de `segundofactor`, que son las mismas que usa `/api`,
+// y que se llevan dentro lo que no puede tener dos versiones — que activar exige
+// código Y contraseña, que desactivar y renovar exigen la contraseña, y que sin
+// frase de reposo no se puede enrolar.
+
+async fn pantalla_2fa(
+    e: &Estado,
+    actor: &crate::autz::Actor,
+    codigos: Option<&[String]>,
+    aviso: Option<&str>,
+    es_error: bool,
+) -> Response {
+    let st = match crate::segundofactor::estado_de(e, actor).await {
+        Ok(v) => v,
+        Err(err) => return error_en_pantalla("Dos pasos", "", err),
+    };
+
+    envoltura("Verificación en dos pasos", Some(""), html! {
+        h2 { "Verificación en dos pasos" }
+        @if let Some(a) = aviso {
+            @if es_error { div.error role="alert" { (a) } }
+            @else { div.aviso-resultado role="status" { (a) } }
+        }
+
+        // LOS CÓDIGOS SE ENSEÑAN UNA VEZ, y la pantalla lo dice. Guardados solo
+        // como hash Argon2: nadie —ni un administrador— puede volver a
+        // mostrarlos. Si se pierden, el camino es renovarlos, no recuperarlos.
+        @if let Some(cs) = codigos {
+            div.codigos {
+                h3 { "Sus diez códigos de recuperación" }
+                p.alerta {
+                    "Se muestran UNA sola vez. Guárdelos ahora, en papel o en su gestor de "
+                    "contraseñas: se guardan cifrados y no hay forma de volver a verlos."
+                }
+                ul { @for c in cs { li { code { (c) } } } }
+                p.nota {
+                    "Cada uno sirve una vez y entra en lugar del código del teléfono. "
+                    "Son la salida el día que el teléfono no esté."
+                }
+            }
+        }
+
+        h3 { "Estado" }
+        div.resumen {
+            div { span { @if st.activo { "Activo" } @else { "Inactivo" } } " segundo factor" }
+            @if st.activo {
+                // Cero códigos con el factor activo es un aviso, no un dato: el
+                // día que falte el teléfono no habrá por dónde entrar.
+                div {
+                    span class=(if st.codigos_disponibles == 0 { "alerta" } else { "" }) {
+                        (st.codigos_disponibles)
+                    }
+                    " códigos sin usar"
+                }
+            }
+        }
+
+        @if !st.puede_activarse && !st.activo {
+            // Se DICE que el despliegue no puede, en vez de ofrecer un botón que
+            // va a fallar. El secreto se guarda cifrado con la frase de reposo;
+            // sin ella no se guarda en claro «mientras tanto».
+            div.error role="alert" {
+                "Este servidor no tiene configurada la frase de reposo, así que no se puede "
+                "activar el segundo factor: el secreto se guarda cifrado, y sin frase no hay "
+                "con qué cifrarlo. Es cosa de quien administra el servidor."
+            }
+        } @else if !st.activo {
+            h3 { "Activar" }
+            p.nota {
+                "Primero se genera el código QR; después se teclea el número que muestre su "
+                "aplicación, junto con su contraseña. El factor NO queda activo hasta ese "
+                "segundo paso: así, un reloj mal puesto no le deja fuera de su cuenta."
+            }
+            form.ficha method="post" action="/dos-pasos/iniciar" {
+                button.primario type="submit" { "Generar código QR" }
+            }
+        } @else {
+            h3 { "Renovar los códigos de recuperación" }
+            p.nota {
+                "Genera diez nuevos y anula los anteriores. NO toca el secreto: su aplicación "
+                "sigue funcionando igual y no hay que volver a escanear nada."
+            }
+            form.ficha method="post" action="/dos-pasos/codigos" {
+                label { "Su contraseña"
+                    input type="password" name="clave" autocomplete="current-password" required; }
+                button.secundario type="submit" { "Renovar los diez" }
+            }
+
+            h3 { "Desactivar" }
+            p.nota {
+                "Apaga el segundo factor y borra sus códigos de recuperación. Su cuenta queda "
+                "protegida solo por la contraseña."
+            }
+            form.ficha method="post" action="/dos-pasos/desactivar" {
+                label { "Su contraseña"
+                    input type="password" name="clave" autocomplete="current-password" required; }
+                button.secundario data-confirmar="¿Seguro? Pulse otra vez" type="submit" {
+                    "Desactivar"
+                }
+            }
+        }
+    })
+    .into_response()
+}
+
+pub async fn dos_pasos_pagina(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    pantalla_2fa(&e, &actor, None, None, false).await
+}
+
+/// El QR y el secreto, para escanear. **No activa nada**: el factor solo queda
+/// puesto tras teclear un código, que es lo que impide que un reloj desajustado
+/// deje a alguien fuera de su propia cuenta.
+pub async fn dos_pasos_iniciar(State(e): State<Estado>, actor: crate::autz::Actor) -> Response {
+    let enr = match crate::segundofactor::iniciar_de(&e, &actor).await {
+        Ok(v) => v,
+        Err(crate::rutas::Error(_, mensaje)) => {
+            return pantalla_2fa(&e, &actor, None, Some(&mensaje), true).await;
+        }
+    };
+
+    envoltura("Activar dos pasos", Some(""), html! {
+        h2 { "Activar la verificación en dos pasos" }
+        div.enrolamiento {
+            div {
+                h3 { "1. Escanee este código" }
+                // El SVG va dentro de un `<img>` con `data:`, no con contenido
+                // en línea: así el navegador lo trata como un documento aparte y
+                // sin guiones. La CSP lo admite por `img-src 'self' data:`.
+                img.qr src=(enr.uri_de_datos()) alt="Código QR para la aplicación de autenticación";
+                p.nota {
+                    "¿La cámara no lo lee? Teclee esta clave en su aplicación:"
+                    br;
+                    code.secreto { (enr.secreto()) }
+                }
+            }
+            div {
+                h3 { "2. Confirme" }
+                p.nota {
+                    "Escriba el número que muestre su aplicación y su contraseña. Hasta que no "
+                    "lo haga, el segundo factor NO está activo y su cuenta entra como siempre."
+                }
+                form.ficha method="post" action="/dos-pasos/activar" {
+                    label { "Código de la aplicación"
+                        input name="codigo" inputmode="numeric" autocomplete="one-time-code"
+                              required autofocus; }
+                    label { "Su contraseña"
+                        input type="password" name="clave" autocomplete="current-password" required; }
+                    button.primario type="submit" { "Activar" }
+                }
+                p.nota {
+                    "Al activarlo se le mostrarán diez códigos de recuperación, UNA sola vez."
+                }
+            }
+        }
+    })
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CodigoYClaveForm {
+    codigo: String,
+    clave: String,
+}
+
+pub async fn dos_pasos_activar(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::Form(f): axum::Form<CodigoYClaveForm>,
+) -> Response {
+    let p = crate::segundofactor::CodigoYClave::nuevo(f.codigo, f.clave);
+    match crate::segundofactor::activar_de(&e, &actor, &p).await {
+        // Los códigos vuelven a la pantalla y se enseñan AQUÍ, una vez. No se
+        // guardan en sesión ni se piden después: solo existen en esta respuesta.
+        Ok(codigos) => {
+            pantalla_2fa(
+                &e,
+                &actor,
+                Some(&codigos),
+                Some("Segundo factor activado."),
+                false,
+            )
+            .await
+        }
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_2fa(&e, &actor, None, Some(&mensaje), true).await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct SoloClaveForm {
+    clave: String,
+}
+
+pub async fn dos_pasos_desactivar(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::Form(f): axum::Form<SoloClaveForm>,
+) -> Response {
+    let p = crate::segundofactor::SoloClave::nueva(f.clave);
+    match crate::segundofactor::desactivar_de(&e, &actor, &p).await {
+        Ok(()) => {
+            pantalla_2fa(
+                &e,
+                &actor,
+                None,
+                Some("Segundo factor desactivado. Sus códigos de recuperación se borraron."),
+                false,
+            )
+            .await
+        }
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_2fa(&e, &actor, None, Some(&mensaje), true).await
+        }
+    }
+}
+
+pub async fn dos_pasos_codigos(
+    State(e): State<Estado>,
+    actor: crate::autz::Actor,
+    axum::Form(f): axum::Form<SoloClaveForm>,
+) -> Response {
+    let p = crate::segundofactor::SoloClave::nueva(f.clave);
+    match crate::segundofactor::renovar_codigos_de(&e, &actor, &p).await {
+        Ok(codigos) => {
+            pantalla_2fa(
+                &e,
+                &actor,
+                Some(&codigos),
+                Some("Diez códigos nuevos. Los anteriores ya no sirven."),
+                false,
+            )
+            .await
+        }
+        Err(crate::rutas::Error(_, mensaje)) => {
+            pantalla_2fa(&e, &actor, None, Some(&mensaje), true).await
         }
     }
 }

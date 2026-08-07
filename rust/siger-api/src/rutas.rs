@@ -225,6 +225,11 @@ pub fn router(estado: Estado) -> Router {
             "/mi-clave",
             get(crate::vista::mi_clave_pagina).post(crate::vista::mi_clave_enviar),
         )
+        .route("/dos-pasos", get(crate::vista::dos_pasos_pagina))
+        .route("/dos-pasos/iniciar", post(crate::vista::dos_pasos_iniciar))
+        .route("/dos-pasos/activar", post(crate::vista::dos_pasos_activar))
+        .route("/dos-pasos/desactivar", post(crate::vista::dos_pasos_desactivar))
+        .route("/dos-pasos/codigos", post(crate::vista::dos_pasos_codigos))
         .route("/notificaciones", get(crate::vista::notificaciones_pagina))
         .route(
             "/notificaciones/{id}/leida",

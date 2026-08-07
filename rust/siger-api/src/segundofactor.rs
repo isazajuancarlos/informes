@@ -63,6 +63,14 @@ pub struct SoloClave {
     clave: String,
 }
 
+impl SoloClave {
+    /// Para el panel, que la recibe de un formulario y no de JSON. El campo sigue
+    /// privado: es una contraseña, y abrirlo invitaría a moverla por ahí.
+    pub(crate) fn nueva(clave: String) -> Self {
+        Self { clave }
+    }
+}
+
 /// Lo que pide `activar`: el código del teléfono **y** la contraseña.
 ///
 /// Son las dos mitades de una misma afirmación: el código prueba que el
@@ -74,6 +82,12 @@ pub struct SoloClave {
 pub struct CodigoYClave {
     codigo: String,
     clave: String,
+}
+
+impl CodigoYClave {
+    pub(crate) fn nuevo(codigo: String, clave: String) -> Self {
+        Self { codigo, clave }
+    }
 }
 
 #[derive(Serialize)]
@@ -91,16 +105,40 @@ pub struct Enrolamiento {
     qr_svg: String,
 }
 
+impl Enrolamiento {
+    /// La clave para teclear a mano cuando la cámara no lee el QR.
+    pub(crate) fn secreto(&self) -> &str {
+        &self.secreto
+    }
+
+    /// El QR como URI `data:`, para meterlo en un `<img src>`.
+    ///
+    /// **En un `<img>` y no como SVG en línea**, que es la diferencia que
+    /// importa: así el navegador lo trata como un documento aparte, sin guiones
+    /// y sin acceso al DOM de la página. La CSP lo admite por
+    /// `img-src 'self' data:` sin tener que abrir `script-src`.
+    ///
+    /// Va en base64 y no en `utf8,`: el SVG lleva comillas y `#`, y dejarlos sin
+    /// codificar rompe el atributo de formas que dependen del navegador.
+    pub(crate) fn uri_de_datos(&self) -> String {
+        use base64::Engine as _;
+        format!(
+            "data:image/svg+xml;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(self.qr_svg.as_bytes())
+        )
+    }
+}
+
 #[derive(Serialize)]
 pub struct EstadoFactor {
-    activo: bool,
+    pub(crate) activo: bool,
     /// Cuántos códigos de recuperación quedan sin gastar. Es lo que decide si la
     /// pantalla avisa de que hay que generar más.
-    codigos_disponibles: i64,
+    pub(crate) codigos_disponibles: i64,
     /// Si el despliegue puede activar el factor. `false` significa que falta la
     /// frase de reposo, y la interfaz lo dice en vez de ofrecer un botón que
     /// fallará.
-    puede_activarse: bool,
+    pub(crate) puede_activarse: bool,
 }
 
 // --- El secreto, que nunca se guarda en claro ---------------------------------
@@ -145,7 +183,9 @@ fn sin_frase() -> Error {
 // --- Extremos del enrolamiento -------------------------------------------------
 
 /// `GET /api/2fa` — qué tiene esta cuenta.
-pub async fn estado(State(e): State<Estado>, actor: Actor) -> Result<Json<EstadoFactor>, Error> {
+/// El estado del segundo factor de quien pregunta. Aparte del manejador porque
+/// lo usan `GET /api/2fa` y la pantalla del panel.
+pub(crate) async fn estado_de(e: &Estado, actor: &Actor) -> Result<EstadoFactor, Error> {
     let confirmado: Option<String> =
         sqlx::query_scalar("SELECT totp_confirmado_en FROM usuarios WHERE id = ?")
             .bind(actor.id)
@@ -157,11 +197,44 @@ pub async fn estado(State(e): State<Estado>, actor: Actor) -> Result<Json<Estado
     .bind(actor.id)
     .fetch_one(&e.bd)
     .await?;
-    Ok(Json(EstadoFactor {
+    Ok(EstadoFactor {
         activo: confirmado.is_some(),
         codigos_disponibles: disponibles,
         puede_activarse: e.cfg.clave_reposo.is_some(),
-    }))
+    })
+}
+
+pub async fn estado(State(e): State<Estado>, actor: Actor) -> Result<Json<EstadoFactor>, Error> {
+    Ok(Json(estado_de(&e, &actor).await?))
+}
+
+pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrolamiento>, Error> {
+    Ok(Json(iniciar_de(&e, &actor).await?))
+}
+
+pub async fn activar(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(p): Json<CodigoYClave>,
+) -> Result<Json<Vec<String>>, Error> {
+    Ok(Json(activar_de(&e, &actor, &p).await?))
+}
+
+pub async fn desactivar(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(p): Json<SoloClave>,
+) -> Result<StatusCode, Error> {
+    desactivar_de(&e, &actor, &p).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn renovar_codigos(
+    State(e): State<Estado>,
+    actor: Actor,
+    Json(p): Json<SoloClave>,
+) -> Result<Json<Vec<String>>, Error> {
+    Ok(Json(renovar_codigos_de(&e, &actor, &p).await?))
 }
 
 /// `POST /api/2fa/iniciar` — genera el secreto y devuelve el QR. **No activa
@@ -171,7 +244,9 @@ pub async fn estado(State(e): State<Estado>, actor: Actor) -> Result<Json<Estado
 /// del secreto. Activar aquí dejaría fuera de su cuenta a quien tenga el reloj
 /// mal o cierre la pantalla antes de guardar el QR, y sin poder entrar a
 /// arreglarlo — que es el fallo que el punto 5 de la ficha #212 describe.
-pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrolamiento>, Error> {
+/// Empieza el enrolamiento: genera el secreto, lo guarda CIFRADO y devuelve el
+/// QR ya dibujado. **No activa nada** — eso lo hace `activar_de` con el código.
+pub(crate) async fn iniciar_de(e: &Estado, actor: &Actor) -> Result<Enrolamiento, Error> {
     let ya: Option<String> =
         sqlx::query_scalar("SELECT totp_confirmado_en FROM usuarios WHERE id = ?")
             .bind(actor.id)
@@ -185,7 +260,7 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
     }
 
     let secreto = dosfactores::generar_secreto();
-    let cifrado = cifrar_secreto(&e, secreto.clone()).await?;
+    let cifrado = cifrar_secreto(e, secreto.clone()).await?;
 
     // El secreto se guarda SIN confirmar y el contador se limpia: un enrolamiento
     // nuevo no puede heredar el contador del anterior, que pertenece a otro
@@ -207,7 +282,7 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
     let codigo = crate::qr::codificar(uri.as_bytes()).map_err(|e| {
         Error(StatusCode::INTERNAL_SERVER_ERROR, format!("no se pudo dibujar el código QR: {e}"))
     })?;
-    Ok(Json(Enrolamiento { qr_svg: codigo.a_svg(), uri, secreto }))
+    Ok(Enrolamiento { qr_svg: codigo.a_svg(), uri, secreto })
 }
 
 /// `POST /api/2fa/activar` — exige un código correcto **y la contraseña actual**,
@@ -245,11 +320,15 @@ pub async fn iniciar(State(e): State<Estado>, actor: Actor) -> Result<Json<Enrol
 /// entero; así que ese bit no le añade nada. Se anota la diferencia porque una
 /// frase redonda de más —«no dicen NADA»— es la que mañana sostiene un veredicto
 /// que no le corresponde.
-pub async fn activar(
-    State(e): State<Estado>,
-    actor: Actor,
-    Json(p): Json<CodigoYClave>,
-) -> Result<Json<Vec<String>>, Error> {
+/// Activa el factor y devuelve los diez códigos de recuperación, que se entregan
+/// UNA vez. Exige código Y contraseña, y las dos prueban cosas distintas: el
+/// código, que el autenticador que se ata está delante de quien lo ata; la
+/// contraseña, que quien lo ata es el dueño y no una sesión robada.
+pub(crate) async fn activar_de(
+    e: &Estado,
+    actor: &Actor,
+    p: &CodigoYClave,
+) -> Result<Vec<String>, Error> {
     let fila: (Option<Vec<u8>>, Option<String>, String) = sqlx::query_as(
         "SELECT totp_secreto_cifrado, totp_confirmado_en, clave_hash FROM usuarios WHERE id = ?",
     )
@@ -265,17 +344,17 @@ pub async fn activar(
             "no hay enrolamiento en curso: pida primero el código QR".into(),
         ));
     };
-    if !clave_correcta(&e, fila.2, p.clave).await? {
+    if !clave_correcta(e, fila.2, p.clave.clone()).await? {
         auditar(&e.bd, "2fa_activacion_rechazada", Some(&actor.email), None).await;
         return Err(Error(StatusCode::UNAUTHORIZED, "la contraseña actual no es correcta".into()));
     }
-    let Some(secreto) = descifrar_secreto(&e, blob).await? else {
+    let Some(secreto) = descifrar_secreto(e, blob).await? else {
         return Err(sin_frase());
     };
 
-    let contador = match dosfactores::verificar(&secreto, &p.codigo, ahora_unix(), None) {
+    let contador = match dosfactores::verificar(&secreto, p.codigo.as_str(), ahora_unix(), None) {
         Veredicto::Correcto { contador } => contador,
-        Veredicto::SecretoIlegible => return Err(secreto_ilegible(&e, &actor).await),
+        Veredicto::SecretoIlegible => return Err(secreto_ilegible(e, actor).await),
         // En el enrolamiento no hay reutilización posible —no se ha usado
         // ninguno—, pero el caso se nombra igual: un `_ =>` aquí se tragaría el
         // estado nuevo que alguien añada al enum mañana.
@@ -289,7 +368,7 @@ pub async fn activar(
 
     let ahora = chrono::Utc::now().to_rfc3339();
     let codigos = dosfactores::generar_codigos_recuperacion(CODIGOS_RECUPERACION);
-    let hashes = hashear_codigos(&e, &codigos).await?;
+    let hashes = hashear_codigos(e, &codigos).await?;
 
     // Todo junto: activar el factor y dejar sus códigos de recuperación. Si se
     // hicieran en dos pasos y el segundo fallara, la cuenta quedaría con segundo
@@ -306,7 +385,7 @@ pub async fn activar(
     tx.commit().await?;
 
     auditar(&e.bd, "2fa_activado", Some(&actor.email), None).await;
-    Ok(Json(codigos))
+    Ok(codigos)
 }
 
 /// `POST /api/2fa/codigos` — diez códigos de recuperación nuevos, sin tocar el
@@ -325,11 +404,14 @@ pub async fn activar(
 /// Mismo criterio que `desactivar`: esto entrega diez credenciales que entran en
 /// lugar del segundo factor. Una sesión robada que pueda pedirlas se lleva la
 /// cuenta entera aunque el teléfono siga en el bolsillo de su dueño.
-pub async fn renovar_codigos(
-    State(e): State<Estado>,
-    actor: Actor,
-    Json(p): Json<SoloClave>,
-) -> Result<Json<Vec<String>>, Error> {
+/// Renueva los diez códigos SIN tocar el secreto. Exige la contraseña por lo
+/// mismo que `desactivar`: entrega diez credenciales que entran en lugar del
+/// segundo factor.
+pub(crate) async fn renovar_codigos_de(
+    e: &Estado,
+    actor: &Actor,
+    p: &SoloClave,
+) -> Result<Vec<String>, Error> {
     let (hash, confirmado): (String, Option<String>) =
         sqlx::query_as("SELECT clave_hash, totp_confirmado_en FROM usuarios WHERE id = ?")
             .bind(actor.id)
@@ -344,14 +426,14 @@ pub async fn renovar_codigos(
             "esta cuenta no tiene segundo factor activo".into(),
         ));
     }
-    if !clave_correcta(&e, hash, p.clave).await? {
+    if !clave_correcta(e, hash, p.clave.clone()).await? {
         auditar(&e.bd, "2fa_codigos_rechazados", Some(&actor.email), None).await;
         return Err(Error(StatusCode::UNAUTHORIZED, "la contraseña actual no es correcta".into()));
     }
 
     let ahora = chrono::Utc::now().to_rfc3339();
     let codigos = dosfactores::generar_codigos_recuperacion(CODIGOS_RECUPERACION);
-    let hashes = hashear_codigos(&e, &codigos).await?;
+    let hashes = hashear_codigos(e, &codigos).await?;
 
     // Los viejos se van en la MISMA transacción en que entran los nuevos. En dos
     // pasos, un fallo en medio deja a la persona sin ninguno — y con el teléfono
@@ -361,7 +443,7 @@ pub async fn renovar_codigos(
     tx.commit().await?;
 
     auditar(&e.bd, "2fa_codigos_renovados", Some(&actor.email), None).await;
-    Ok(Json(codigos))
+    Ok(codigos)
 }
 
 /// El Argon2 de cada código, FUERA de la transacción.
@@ -404,16 +486,18 @@ async fn reemplazar_codigos(
 ///
 /// Sin ella, una sesión robada apagaría el segundo factor y volvería a dejar la
 /// cuenta en una sola credencial: justo la que el ladrón ya tiene.
-pub async fn desactivar(
-    State(e): State<Estado>,
-    actor: Actor,
-    Json(p): Json<SoloClave>,
-) -> Result<StatusCode, Error> {
+/// Apaga el factor y se lleva los códigos de recuperación. Exige la contraseña
+/// actual: sin eso, una sesión robada apaga el segundo factor.
+pub(crate) async fn desactivar_de(
+    e: &Estado,
+    actor: &Actor,
+    p: &SoloClave,
+) -> Result<(), Error> {
     let hash: String = sqlx::query_scalar("SELECT clave_hash FROM usuarios WHERE id = ?")
         .bind(actor.id)
         .fetch_one(&e.bd)
         .await?;
-    if !clave_correcta(&e, hash, p.clave).await? {
+    if !clave_correcta(e, hash, p.clave.clone()).await? {
         auditar(&e.bd, "2fa_desactivacion_rechazada", Some(&actor.email), None).await;
         return Err(Error(StatusCode::UNAUTHORIZED, "la contraseña actual no es correcta".into()));
     }
@@ -436,7 +520,7 @@ pub async fn desactivar(
     tx.commit().await?;
 
     auditar(&e.bd, "2fa_desactivado", Some(&actor.email), None).await;
-    Ok(StatusCode::NO_CONTENT)
+    Ok(())
 }
 
 // --- El segundo paso del login -------------------------------------------------
