@@ -1,0 +1,102 @@
+# Variables de entorno
+.env
+.env.respaldo
+
+# Bases SQLite (la de trabajo, la demo, WAL/SHM)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite3
+
+# Datos en runtime (el binario crea storage/ al arrancar; nada de aquí se versiona)
+storage/
+
+# Restos de runtime del sistema Python anterior (por si quedan en disco)
+.nicegui/
+vendor/
+.cache_secop/
+paquetes/
+*.tar
+
+# Licencia del cliente. Cada instalación tiene la suya y ninguna va al repo.
+licencia.quipu
+
+# Rust
+rust/target/
+
+# Respaldos del binario del VPS que toma `desplegar-demo.sh` antes de pisar el
+# ejecutable en producción (la vuelta atrás). Son artefactos binarios de un
+# despliegue concreto, no fuente: se guardan en disco, no en el repo.
+despliegue/respaldos-vps/
+
+# Angular
+angular/node_modules/
+angular/dist/
+angular/.angular/
+
+# `rust/siger-api/estaticos/` YA NO SE IGNORA, y esa inversión es el arreglo de
+# un defecto real (2026-08-06).
+#
+# La regla decía «la interfaz compilada es un artefacto de construcción y no se
+# versiona», y era CIERTA mientras ahí cayera la salida de `ng build`. Con el
+# panel en maud, esa carpeta pasó a guardar lo contrario: las piezas
+# VENDORIZADAS que `vista.rs` empotra con `include_str!` —htmx, `boi.js`,
+# `comportamientos.js` y `panel.css`—, que son fuente, no artefacto.
+#
+# El patrón se las tragó en silencio. `boi.js` y `htmx.min.js` habían entrado con
+# `add -f`; `comportamientos.js` y `panel.css` no, así que **el árbol de git no
+# compilaba** —medido extrayéndolo con `git archive` a otro directorio:
+# `couldn't read .../comportamientos.js`—. Localmente todo estaba verde porque
+# los archivos existen en disco, y el CI no lo vio porque solo corre en PR contra
+# `main` y este trabajo aún no tiene PR abierto.
+#
+# No se arregla con más excepciones `!`: se quita la regla, que es la causa. Con
+# la carpeta versionada, un archivo nuevo que falte aparece en `git status` el
+# mismo día.
+
+# Base de demostración: se regenera con `python rust/sembrar_demo.py`.
+rust/demo/
+
+# Datos sensibles (archivados) y hojas de cálculo sueltas
+archivado_datos_sensibles/
+*.xlsx
+!plantillas/*.xlsx
+
+# Transcripciones de sesión (no son parte del producto)
+conversaciones/
+
+# Restos de Python (por si quedara caché tras el cutover)
+__pycache__/
+*.py[cod]
+.venv/
+
+# IDE / OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# ─────────────────────────────────────────────────────────────────────────────
+# `rust/vendor/` ENTRA ENTERO — y aquí la regla de arriba se lo comía TODO
+# ─────────────────────────────────────────────────────────────────────────────
+# La línea `vendor/` de más arriba es un resto del sistema Python anterior, y
+# como no lleva prefijo casa a CUALQUIER profundidad: al vendorizar el árbol de
+# Rust el 2026-08-14 se tragaba **13 683 archivos**, o sea el subárbol completo.
+#
+# Y el fallo NO SE VE: `git status` no lista lo ignorado, así que el commit sale
+# limpio, aquí compila —el árbol de trabajo tiene los archivos— y **revienta en
+# el clon**. Solo se descubre clonando.
+#
+# HACEN FALTA LAS DOS LÍNEAS, y esto es de las cosas que se aprenden a base de
+# perder una tarde: git NO DESCIENDE a un directorio excluido, así que un
+# `!rust/vendor/**` a secas no rescata nada. Primero se vuelve a incluir el
+# DIRECTORIO, y solo entonces su contenido.
+#
+# Se acota a `rust/` a propósito, en vez de negar `vendor/` global: el `vendor/`
+# de la raíz es otra cosa —la rueda de `quipu_crypto` del lado Python— y la
+# regla de arriba tiene que seguir gobernándolo.
+!rust/vendor/
+!rust/vendor/**

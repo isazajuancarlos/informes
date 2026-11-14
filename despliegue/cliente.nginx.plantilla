@@ -1,0 +1,97 @@
+# PLANTILLA del vhost de UNA INSTANCIA DE CLIENTE (ficha #606).
+#
+# No se instala tal cual: `alta-cliente.sh` la copia sustituyendo tres marcas,
+# y ninguna más —si añade una cuarta, que se declare aquí—. Se nombran SIN sus
+# arrobas a propósito, porque si no la sustitución también reescribiría esta
+# lista y el vhost instalado quedaría con una cabecera sin sentido:
+#
+#   CLIENTE   nombre corto, [a-z0-9-]; es la instancia de systemd y el nombre
+#             de la zona de `limit_req`
+#   DOMINIO   el subdominio completo, p. ej. acme.xiliux.com
+#   PUERTO    el puerto local del binario de ESE cliente
+#
+# El bloque TLS lo escribe certbot; aquí va el sitio en claro con la
+# redirección, que es lo que certbot espera encontrar. Se usa `certonly
+# --webroot` y no `--nginx` para que certbot NO reescriba este archivo: se
+# llevaría por delante las cabeceras, el `limit_req` y el proxy afinados a mano.
+# Requiere que el dominio resuelva ANTES: certbot valida por HTTP-01 y sin
+# registro A no hay reto que superar.
+
+# UNA ZONA POR CLIENTE, y no una compartida. Con `limit_req_zone` común, el
+# tráfico de un cliente consumiría el cupo de los demás: un contratista con
+# treinta operadores dejaría sin servicio al de tres. La memoria es barata
+# —10 MB son ~160 000 direcciones— y el aislamiento entre clientes es
+# exactamente lo que se vende.
+limit_req_zone $binary_remote_addr zone=siger_@CLIENTE@:10m rate=10r/s;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name @DOMINIO@;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name @DOMINIO@;
+
+    # Estas cuatro rutas las CREA certbot pero no las escribe él: se usa
+    # `certonly --webroot` para que no reescriba este archivo —se llevaría por
+    # delante las cabeceras, el limit_req y el proxy afinados a mano—. El guion
+    # instala este sitio DESPUÉS de que el certificado exista, y lo comprueba
+    # antes de recargar.
+    ssl_certificate     /etc/letsencrypt/live/@DOMINIO@/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/@DOMINIO@/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # El tope de subida es el del binario (SIGER_MAX_MB=50) más margen para el
+    # sobre multipart. Si nginx admitiera más, el rechazo llegaría del binario
+    # después de haber transferido el archivo entero.
+    client_max_body_size 52m;
+
+    # HSTS PROPIO, no heredado: `xiliux.com` responde sin `includeSubDomains`,
+    # así que no cubre a este subdominio. Certbot NO añade la cabecera, solo el
+    # certificado.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    # AQUÍ NO VAN `X-Frame-Options`, `X-Content-Type-Options` ni
+    # `Referrer-Policy`: las pone el binario en TODA respuesta, junto con la CSP.
+    # `add_header` no sustituye lo que llega del `proxy_pass`, AÑADE — y una
+    # cabecera duplicada con valores distintos puede hacer que el navegador
+    # descarte las dos. Medido en la demo el 2026-07-30.
+
+    # La instalación de un cliente NO se indexa, y por un motivo distinto al de
+    # la demo: aquí no hay credenciales públicas, hay datos de una empresa. Que
+    # el subdominio de un contratista salga en una búsqueda ya dice quién usa
+    # qué, aunque nadie pueda entrar.
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    location / {
+        limit_req zone=siger_@CLIENTE@ burst=20 nodelay;
+
+        # `Secure` en la cookie de sesión lo pone AQUÍ y no el binario:
+        # `sesion.rs` lo deja fuera a propósito porque el perfil de una sola
+        # máquina se sirve por HTTP en localhost, donde una cookie `Secure` no se
+        # guarda —y el cliente vería una pantalla de acceso que ni falla ni deja
+        # entrar—.
+        proxy_cookie_flags ~ secure;
+
+        proxy_pass http://127.0.0.1:@PUERTO@;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+}

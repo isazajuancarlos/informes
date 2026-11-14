@@ -1,0 +1,197 @@
+# CI del producto: el port en Rust + Angular.
+#
+# Tras el cutover a Rust, `informes` es un binario axum con la interfaz Angular
+# embebida; el Python quedó en la historia de git. El CI prueba lo que se
+# entrega: el workspace Rust (test + clippy con -D warnings) y la construcción
+# de la interfaz.
+name: CI
+
+# CADA CAMBIO SE PRUEBA UNA VEZ, NO DOS.
+#
+# Esto decía `push: branches: ["**"]` junto a `pull_request`, y con un PR abierto
+# GitHub dispara los DOS: cada empujón a una rama lanzaba el CI entero por
+# duplicado —5 trabajos × 2— sin que la segunda vuelta comprobara nada que la
+# primera no hubiera comprobado ya. Se veía en `gh pr checks`, que listaba ocho
+# comprobaciones donde hay cuatro; costó darse cuenta porque el ruido parecía
+# normal.
+#
+# No es una optimización cosmética: `informes` y `medico` son PRIVADOS y sus
+# minutos salen del cupo de la cuenta (los públicos como quipu los tienen
+# gratis). El 2026-07-31 ese cupo se agotó a media tarde y **el CI de los dos
+# productos comerciales se paró**: los trabajos ni arrancaban. La mitad de lo
+# gastado ese día fue esta duplicación.
+#
+# EL PRECIO, para que nadie lo descubra por sorpresa: una rama SIN PR abierto ya
+# no lanza CI. Es deliberado — aquí toda rama que importa acaba en un PR, y el
+# PR la prueba. `main` sí conserva su `push`, porque es lo publicado y tiene que
+# verificarse aunque algo entre por otra vía.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# CADA COMMIT DE `main` SE MIDE, Y ESO SE CONSIGUE CON EL GRUPO, NO CON LA
+# BANDERA. Es una trampa documentada (estándar de nacimiento, directiva 26):
+# `cancel-in-progress: false` significa «no se cancela la que está EN CURSO» —
+# las ENCOLADAS sí se cancelan, y GitHub lo dice—. Con tres merges dentro de una
+# ventana de CI (A corriendo, B encolada, llega C), B se cancela y ese commit no
+# se mide jamás, mientras la rama se ve verde por la corrida de C. Dándole a cada
+# commit de `main` su propio grupo —el `-{sha}`— la promesa se cumple de verdad,
+# y en las ramas de trabajo se sigue cancelando lo viejo, que es lo que ahorra.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  # Menor privilegio (supply-chain #203): este CI solo prueba, con checkout de
+  # solo lectura. Sin este bloque el GITHUB_TOKEN hereda permisos amplios.
+  contents: read
+
+jobs:
+  rust:
+    name: rust (test + clippy)
+    runs-on: ubuntu-latest
+    # EL TECHO, no la duración esperada (estándar de nacimiento, directiva 26).
+    # Un CI lento sale verde igual que uno rápido, así que la deriva no se ve:
+    # este mismo trabajo se colgó **49 minutos** el 2026-08-07 porque las pruebas
+    # de navegador corrían aquí sin plazo, y nadie lo habría notado por el color.
+    # Con techo declarado, el día que se cruce hay un rojo en vez de una factura.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cabeceras de SQLite
+        # CORREGIDO EL 2026-08-14: esto decía «enlaza el SQLite del sistema, no
+        # bundled», y es FALSO. La cadena de features lo activa —`sqlx/sqlite`
+        # -> `sqlx-sqlite/bundled` -> `libsqlite3-sys/bundled`— y `cargo tree
+        # -f '{p} {f}'` lo confirma: `libsqlite3-sys v0.30.1 bundled,
+        # bundled_bindings,cc,...`. O sea que SQLite se compila desde
+        # `vendor/libsqlite3-sys/sqlite3/sqlite3.c`, **257 673 líneas de C**, y
+        # este `apt-get` no cambia la resolución: no hace falta.
+        #
+        # Se deja puesto —no estorba y el runner Ubuntu no es esta máquina—,
+        # pero el comentario tenía que decir la verdad: lo destaparon las dos
+        # revisiones de seguridad del vendorizado, por separado. Un comentario
+        # falso sobre de dónde sale el motor de la base es peor que ninguno.
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Clippy (el CI usa -D warnings)
+        working-directory: rust
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Pruebas del workspace
+        working-directory: rust
+        run: cargo test --workspace --all-targets
+
+  # LA PANTALLA, EN SU PROPIO JOB — y con techo propio, que es lo que faltaba.
+  #
+  # Las 12 pruebas de navegador estaban FUERA del verde declarado: el `#[ignore]`
+  # dice —y es cierto— que las corre `construir.sh` con `--include-ignored`, pero
+  # `verde_local.py` lee ESTE archivo, así que «informes está verde» no incluía
+  # dibujar la pantalla. Con `maud` + htmx eso es justo lo que no se puede
+  # afirmar sobre el HTML que devuelve axum (directiva 28).
+  #
+  # NO vuelven al job de arriba, y el motivo está escrito allí: el 2026-08-07
+  # colgaron ese trabajo 49 minutos por correr sin plazo. Un job aparte con su
+  # `timeout-minutes` resuelve las dos cosas — el verde las incluye y una cuelga
+  # se ve como rojo a los 10 minutos en vez de como una factura.
+  pantalla:
+    name: pantalla (navegador real)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Cabeceras de SQLite
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev
+      - name: Instalar Chromium
+        run: sudo apt-get install -y chromium-browser
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: Dibujar la pantalla
+        working-directory: rust
+        # `--include-ignored` es lo que las despierta. Sin él este job existiría
+        # y no mediría nada, que es peor que no tenerlo.
+        run: cargo test --release -p siger-api --test pantalla -- --include-ignored
+
+  auditoria-deps:
+    name: cargo-audit (RustSec)
+    runs-on: ubuntu-latest
+    # Va en TODOS los checks requeridos, no solo en el más pesado: los que
+    # dependen de red ajena —un `apt install`, bajarse el aviso de RustSec— son
+    # los que más se cuelgan, y sin techo se comen los 360 minutos por defecto.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # RustSec: falla si alguna dependencia tiene un CVE publicado. El único
+      # ignore vive en rust/.cargo/audit.toml, preciso y justificado. Cierra
+      # OWASP A03 (Software Supply Chain Failures).
+      - name: cargo-audit
+        working-directory: rust
+        run: |
+          # VERSIÓN FIJADA (2026-08-14). `cargo install` NO pasa por `vendor/`:
+          # ignora la sustitución de fuentes —medido con su pareja, el mismo
+          # error dentro y fuera del repo—, así que baja de crates.io y compila
+          # los `build.rs` de su propio árbol, sin vendorizar y sin vigilar. Sin
+          # `--version` eso es «lo último publicado el día que se corra», que es
+          # justo la forma de los ataques que motivaron vendorizar. Y `--locked`
+          # NO lo cubre: fija el lock INTERNO de la herramienta, no cuál se
+          # instala. Lo cazó la revisión de seguridad del vendorizado.
+          cargo install cargo-audit --locked --version 0.22.2
+          cargo audit
+
+  cadena-suministro:
+    name: cargo-deny (supply chain)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      # cargo-deny endurece la cadena de suministro más allá de los CVEs: exige
+      # que TODA dependencia venga de una fuente autorizada (crates.io), prohíbe
+      # comodines de versión externos y controla licencias. Es la defensa contra
+      # que una dep se traiga desde una fuente inesperada — el vector del ataque
+      # Atomic Arch a AUR. Config en rust/deny.toml.
+      - name: cargo-deny
+        working-directory: rust
+        run: |
+          # VERSIÓN FIJADA (2026-08-14). `cargo install` NO pasa por `vendor/`:
+          # ignora la sustitución de fuentes —medido con su pareja, el mismo
+          # error dentro y fuera del repo—, así que baja de crates.io y compila
+          # los `build.rs` de su propio árbol, sin vendorizar y sin vigilar. Sin
+          # `--version` eso es «lo último publicado el día que se corra», que es
+          # justo la forma de los ataques que motivaron vendorizar. Y `--locked`
+          # NO lo cubre: fija el lock INTERNO de la herramienta, no cuál se
+          # instala. Lo cazó la revisión de seguridad del vendorizado.
+          cargo install cargo-deny --locked --version 0.20.2
+          cargo deny check
+
+      # LA PUERTA DEL RE-VENDORIZADO: con el árbol congelado dentro del
+      # repositorio, el único momento en que puede entrar un script de
+      # construcción envenenado es al re-vendorizar — que es exactamente como
+      # entraron los gusanos de npm y del AUR: no un paquete nuevo, una VERSIÓN
+      # nueva de uno que ya usabas. Se reconstruye la herramienta en el paso para
+      # que un binario viejo junto a una fuente nueva no pase por vigilante al
+      # día (directiva 38).
+      #
+      # SIN `working-directory: rust`, al revés que los pasos de cargo: la
+      # herramienta recibe la RAÍZ del repositorio y localiza sola el árbol
+      # —aquí en `rust/vendor/`—. Distinguirlo del `vendor/` de la raíz, que
+      # guarda la rueda de Python, lo hace por CONTENIDO: mira quién tiene
+      # `.cargo-checksum.json`.
+      - name: Lo que corre al compilar sigue siendo lo aceptado
+        run: |
+          cargo build --release --quiet --manifest-path /mnt/data/conocimiento/lo-que-corre-al-compilar/Cargo.toml
+          /mnt/data/conocimiento/lo-que-corre-al-compilar/target/release/lo-que-corre-al-compilar "$PWD"

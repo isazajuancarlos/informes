@@ -1,0 +1,202 @@
+# informes.xiliux.com — la demostración pública de SIGER.
+#
+# Se copia a /etc/nginx/sites-available/ y se enlaza en sites-enabled/. El bloque
+# TLS lo escribe certbot; aquí va el sitio en claro con la redirección, que es lo
+# que certbot espera encontrar.
+#
+#   sudo certbot --nginx -d informes.xiliux.com
+#
+# Requiere que informes.xiliux.com resuelva ANTES: certbot valida por HTTP-01 y
+# sin registro A no hay reto que superar.
+
+# Límite de peticiones. La demostración es pública y sus credenciales están
+# publicadas: sin esto, un bucle de subidas de 50 MB llena el disco del VPS que
+# también sirve oprf.xiliux.com y el portafolio. La zona es propia de este sitio
+# para que su tope no se reparta con los demás.
+limit_req_zone $binary_remote_addr zone=siger_demo:10m rate=10r/s;
+
+# Y LA ENTRADA APARTE, mucho más estrecha (#V3, 2026-08-17). Con solo la zona
+# general, probar contraseñas contra `POST /api/sesion` admitía 600 intentos por
+# minuto desde una IP: para navegar es un tope razonable y para esto no es
+# ninguno. Mismo patrón que medico.xiliux.com, que ya lo llevaba.
+#
+# NO sustituye al freno de la aplicación (`guaca::freno`, que decide por
+# (correo, origen) y cubre también el segundo factor). Hacen falta las dos:
+# aquélla frena a quien insiste contra UNA cuenta; ésta frena el chorro desde UNA
+# IP repartido entre cuantas cuentas quiera probar, que es justo lo que la otra
+# no ve.
+#
+# LA MECÁNICA: la zona se indexa por una clave que sale de un `map`, y **una
+# clave VACÍA desactiva el límite** para esa petición. Así no hacen falta
+# `location` nuevos —que obligarían a repetir el bloque `proxy_*` entero— y las
+# dos puertas por las que se prueba una contraseña quedan nombradas en un solo
+# sitio. Se usa `$uri`, que es la ruta ya normalizada y SIN la cadena de
+# consulta: con `$request_uri` bastaría añadir `?x=1` para caer fuera del mapa.
+map $uri $siger_entrada_clave {
+    default       "";
+    /api/sesion   $binary_remote_addr;
+    /entrar       $binary_remote_addr;
+}
+
+# EL NÚMERO, probado contra el cliente legítimo y no contra el atacante
+# (directiva 21): esta es una demostración pública con las credenciales
+# publicadas, y quien la mira suele entrar y salir varias veces seguidas para
+# ver el flujo. 30r/m con ráfaga de 10 sin retardo deja pasar ~11 peticiones
+# seguidas y luego una cada dos segundos, mientras el chorro baja de 600 por
+# minuto a 30.
+#
+# **UNA ENTRADA CUESTA DOS PETICIONES, no una**: el `GET /entrar` de la página y
+# el `POST /entrar` del envío. O sea que la ráfaga son ~5 entradas simultáneas,
+# no diez — lo corrigió la revisión de seguridad del 2026-08-17, que es el tipo
+# de número que se escribe de memoria y sale al doble. Cinco intentos seguidos
+# de quien se equivoca de clave sí pasan enteros: cada reintento cuesta 1.
+#
+# `/entrar/codigo` (el segundo factor) queda FUERA del mapa a propósito: lo
+# cubre `guaca::freno` desde el propio `intentar_segundo_paso`, códigos de
+# recuperación incluidos, con su prueba `el_segundo_paso_tambien_tiene_freno`.
+limit_req_zone $siger_entrada_clave zone=siger_entrada:10m rate=30r/m;
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name informes.xiliux.com;
+
+    # Certbot escribe aquí su reto; el resto va a TLS.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name informes.xiliux.com;
+
+    # Estas cuatro rutas las CREA certbot, pero no las escribe él: `publicar-demo.sh`
+    # usa `certonly --webroot` justamente para que certbot no reescriba este
+    # archivo —se llevaría por delante las cabeceras, el limit_req y el proxy
+    # afinados a mano—. Por eso van descomentadas y no hay ningún paso que las
+    # destape: el guion instala este archivo DESPUÉS de que el certificado exista,
+    # y comprueba que existe antes de recargar.
+    #
+    # Estuvieron comentadas y con un `sed` que las destapaba al instalar. El `sed`
+    # llevaba un error —`|` como delimitador y como alternancia a la vez—, falló,
+    # y como iba en una tubería hacia `tee`, dejó el archivo del sitio VACÍO. Un
+    # mecanismo que solo existía para deshacer lo que este mismo archivo había
+    # hecho a propósito.
+    ssl_certificate     /etc/letsencrypt/live/informes.xiliux.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/informes.xiliux.com/privkey.pem;
+    include             /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam         /etc/letsencrypt/ssl-dhparams.pem;
+
+    # El tope de subida es el del binario (SIGER_MAX_MB=50) más margen para el
+    # sobre multipart. Si nginx admitiera más, el rechazo llegaría del binario
+    # después de haber transferido el archivo entero.
+    client_max_body_size 52m;
+
+    # HSTS PROPIO, y no heredado: medido el 2026-07-30 contra el sitio en vivo,
+    # `xiliux.com` responde `Strict-Transport-Security: max-age=31536000` SIN
+    # `includeSubDomains`, así que no cubre a este subdominio. Sin esta línea, la
+    # primera visita de cada navegador viaja en claro hasta el 301 — y el 301 lo
+    # sirve el mismo puerto 80 que un atacante en la red puede interceptar.
+    # Certbot NO añade la cabecera; solo el certificado.
+    add_header Strict-Transport-Security "max-age=31536000" always;
+    # Y AQUÍ NO VAN `X-Frame-Options`, `X-Content-Type-Options` ni
+    # `Referrer-Policy`: las pone el binario, en TODA respuesta, junto con la CSP.
+    #
+    # Estuvieron. `add_header` no sustituye lo que llega del `proxy_pass`: AÑADE.
+    # Medido contra el sitio ya publicado, la respuesta salía con
+    # `x-frame-options: DENY` (del binario) **y** `x-frame-options: SAMEORIGIN`
+    # (de aquí). Duplicada con valores contradictorios, un navegador puede
+    # descartar la cabecera entera — o sea que la línea que parecía reforzar la
+    # protección era justo la que podía anularla, y encima aflojaba DENY a
+    # SAMEORIGIN. Las otras dos coincidían en valor, pero duplicar tampoco aporta.
+    #
+    # HSTS sí se queda: el binario no la pone a propósito, porque el TLS termina
+    # aquí y solo aquí se sabe que se puede prometer.
+    # La demostración NO debe indexarse: sus credenciales son públicas y no
+    # queremos que una búsqueda de «SIGER» lleve a una base que se borra cada
+    # noche antes que al portafolio.
+    add_header X-Robots-Tag "noindex, nofollow" always;
+
+    location / {
+        limit_req zone=siger_demo burst=20 nodelay;
+        # La segunda zona solo muerde donde el `map` da clave: en las dos rutas
+        # de entrada. En todo lo demás la clave es vacía y esta línea no hace
+        # nada. nginx aplica las dos y gana la más estrecha.
+        limit_req zone=siger_entrada burst=10 nodelay;
+        # 429 y no el 503 que nginx pone por defecto: un 503 se lee como «el sitio
+        # está caído» y lo que ha pasado es «vas muy rápido». La aplicación ya
+        # devuelve 429 para su propio freno, así que las dos capas dicen lo mismo.
+        #
+        # VA AQUÍ Y NO EN `http{}`, Y EL MOTIVO QUE DECÍA ESTA LÍNEA ERA FALSO.
+        # Decía que al nivel de arriba «lo declaran varios vhosts y nginx aborta
+        # con directive is duplicate». Medido el 2026-08-18 con su pareja sobre
+        # un `nginx -t -c` de usar y tirar: declararla en `http{}` y afinarla en
+        # un `server` da sintaxis VÁLIDA —se hereda—; lo que aborta es
+        # declararla DOS VECES EN EL MISMO NIVEL. La colocación es correcta
+        # igual, por otra razón: `http{}` vive en nginx.conf, que no pertenece a
+        # ningún repositorio, y este archivo sí.
+        limit_req_status 429;
+
+        # Y con `Retry-After`, que hasta hoy no llevaba: un 429 sin él deja al
+        # cliente adivinando cuánto espera. Son DOS segundos y no uno porque en
+        # este `location` mandan dos zonas y la estrecha es la de entrada, a
+        # 30 r/m: una ranura tarda 2 s en liberarse. Con 1 se estaría invitando
+        # a un reintento que vuelve a chocar.
+        error_page 429 = @frenado;
+
+        # Explícito y no por defecto. Y OJO AL MOTIVO, que en ESTE vhost no es
+        # el mismo que en medico: aquí la aplicación **no tiene freno propio**
+        # —cero apariciones de `Retry-After` en su código, medido el
+        # 2026-08-19—, así que la capa de nginx es la única que hay. La línea
+        # sigue siendo correcta, por lo otro que hace: con
+        # `proxy_intercept_errors on` en `http{}`, nginx sustituiría por sus
+        # propias páginas TODAS las respuestas de error de la aplicación —con
+        # sus cabeceras—, no solo los 429.
+        #
+        # (El comentario que había aquí decía que la aplicación «trae su propio
+        # freno, con su propio Retry-After». Es cierto en medico y FALSO aquí:
+        # se copió sin comprobarlo, que es exactamente el defecto que este
+        # commit vino a corregir en otra línea. Lo cazó la revisión de
+        # seguridad del 2026-08-19.)
+        proxy_intercept_errors off;
+
+        # `Secure` en la cookie de sesión lo pone AQUÍ, y no el binario.
+        # `sesion.rs` lo deja fuera a propósito —el perfil de una sola máquina se
+        # sirve por HTTP en localhost, y una cookie `Secure` ahí no se guarda: el
+        # cliente vería una pantalla de acceso que ni falla ni deja entrar—, y
+        # documenta que «se añade en el proxy». Esta es la única plantilla de
+        # proxy del repositorio, así que sin esta línea esa frase no la cumplía
+        # nadie. Lo cazó la revisión de seguridad del 2026-07-30.
+        proxy_cookie_flags ~ secure;
+
+        proxy_pass http://127.0.0.1:8003;
+        proxy_http_version 1.1;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_read_timeout 120s;
+    }
+
+    # El 429 de ESTA capa. Se responde aquí y no en la aplicación, así que la
+    # aplicación no lo ve y sus cabeceras no llegan.
+    #
+    # LAS DOS CABECERAS SE REPITEN A PROPÓSITO: `add_header` NO se hereda hacia
+    # un nivel que declara los suyos, así que sin repetirlas esta respuesta —y
+    # solo ésta— saldría sin HSTS y sin `X-Robots-Tag`. Es la clase de regresión
+    # que no se ve, porque solo aparece cuando alguien va demasiado rápido.
+    location @frenado {
+        add_header Retry-After 2 always;
+        add_header Strict-Transport-Security "max-age=31536000" always;
+        add_header X-Robots-Tag "noindex, nofollow" always;
+        default_type text/plain;
+        return 429 "vas muy rapido; reintenta en 2 segundos\n";
+    }
+}

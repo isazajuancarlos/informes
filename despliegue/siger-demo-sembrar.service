@@ -1,0 +1,37 @@
+; Regenera la base de la demostración. Lo dispara el timer cada noche.
+;
+; Por qué existe: la demostración es pública y escribible. Sin esto, a la semana
+; enseña lo que hayan dejado los visitantes en vez de lo que queremos enseñar.
+; Y las fechas de la semilla se calculan desde HOY: regenerarla es también lo que
+; impide que a las dos semanas todo aparezca vencido.
+[Unit]
+Description=SIGER demo — regenerar los datos de demostración
+After=network.target
+
+[Service]
+Type=oneshot
+
+; La siembra corre como `siger` —es quien tiene que ser dueño de la base y del
+; almacén para que el servicio pueda escribirlos después—, y los dos `systemctl`
+; llevan `+`, que systemd ejecuta como root saltándose el `User=` de la unidad.
+;
+; ANTES ESTO ERA `runuser -u siger`, Y NO ARRANCÓ NUNCA: en Debian el binario
+; está en /usr/sbin/runuser, no en /usr/bin. La unidad moría con 203/EXEC en la
+; segunda línea, así que la TERCERA —la que vuelve a levantar la demo— no se
+; ejecutaba: la resiembra dejaba informes.xiliux.com en 502 hasta que alguien
+; mirara. Pasó la noche del 2026-07-31 y estuvo caída 6 horas. El `+` quita el
+; intermediario entero en vez de corregirle la ruta.
+ExecStart=+/usr/bin/systemctl stop siger-demo.service
+; `--limpiar` borra la base y el almacén, NO la carpeta: aquí dentro viven
+; también el binario y este guion.
+ExecStart=/usr/bin/python3 /opt/siger-demo/sembrar_demo.py --ruta /var/lib/siger-demo --binario /opt/siger-demo/siger-api --limpiar
+ExecStart=+/usr/bin/systemctl start siger-demo.service
+
+; Y LA RED, que es lo que faltaba: `ExecStopPost` corre pase lo que pase —también
+; cuando la siembra falla y la unidad queda en `failed`—. Así el fallo se sigue
+; viendo en rojo, pero la demo pública no se queda caída por él. Si el arranque
+; de arriba ya ocurrió, esto es un no-op.
+ExecStopPost=+/usr/bin/systemctl start siger-demo.service
+
+User=siger
+Group=siger

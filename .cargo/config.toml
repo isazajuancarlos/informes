@@ -1,0 +1,97 @@
+# SPDX-License-Identifier: LicenseRef-Propietario
+#
+# TODAS las dependencias salen de `vendor/`, dentro del repositorio. No se
+# descarga nada: ni el índice de crates.io, ni un `.crate`, ni el espejo de git.
+#
+# El positivo de control NO es `--offline`, que solo prueba que no salió a la red
+# pudiendo tirar de la caché de `~/.cargo`. Lo que discrimina es la caché VACÍA:
+#
+#     CARGO_HOME=$(mktemp -d) cargo build --offline
+#
+# POR QUÉ — decisión de Juan, 2026-08-14: «no podemos depender de herramientas
+# online hasta saber que todo es seguro, y eso va a tardar». El protocolo «solo
+# local» sacó el CÓDIGO de los registros; esto saca la CONSTRUCCIÓN. Un registro
+# comprometido —Shai-Hulud, ChainDrop— entraba por el build aunque nuestro
+# código no estuviera publicado en ninguna parte.
+#
+# Y HAY UN ESLABÓN QUE CARGO NO VERIFICA: comprueba `Cargo.lock` ↔ campo
+# `package` y campo `files` ↔ bytes, pero NO `package` ↔ `files`, y offline no
+# puede. Editar un archivo Y su entrada en `files` compila en silencio. Lo que sí
+# ancla los bytes, y va tras cada re-vendorizado:
+#
+#     CARGO_HOME=$(mktemp -d) cargo vendor "$D" && diff -r --brief vendor "$D"
+#
+# VA EN LA RAÍZ AUNQUE EL ÁRBOL ESTÉ EN `rust/`, y es lo contrario de lo que
+# escribí primero. Informes es un repositorio MIXTO —la aplicación es Python y el
+# binario `siger` es Rust—, y el reflejo fue poner el config junto al workspace,
+# en `rust/`, para no aparentar que gobierna el lado Python.
+#
+# Lo tira una medición: **cargo lee el config subiendo por los ancestros del
+# directorio DESDE EL QUE SE INVOCA**, no del manifiesto. Con el config en
+# `rust/`, esto:
+#
+#     cd /mnt/data/informes && cargo build --manifest-path rust/Cargo.toml
+#
+# no lo lee, y entonces **construye contra crates.io**. Comprobado con su pareja
+# el 2026-08-14: desde `rust/` funciona en los dos sitios; desde la raíz, con el
+# config en `rust/`, FALLA (`failed to load source for dependency guaca`) y con
+# el config aquí funciona.
+#
+# Y ese fallo solo es ruidoso porque la sonda llevaba `--offline`. **En una
+# construcción normal no falla: se va a la red y no lo dice nadie** — o sea,
+# exactamente el modo de fallo que este archivo existe para impedir, disfrazado
+# de build que salió bien.
+#
+# Los caminos reales están cubiertos de las dos formas —`construir.sh` hace
+# `cd rust`—, pero una salvaguarda que depende de que nadie invoque cargo desde
+# la raíz no es una salvaguarda. Un archivo en la raíz cubre las dos, y evita
+# tener dos configs que alguien tenga que mantener sincronizados (directiva 1:
+# quitar la causa, no añadir un mecanismo que contenga a otro).
+#
+# `directory` es relativa AL CONFIG, no al directorio de invocación; por eso dice
+# `rust/vendor` y funciona igual desde los dos sitios.
+#
+# El `vendor/` de la raíz NO es este: guarda la rueda de `quipu_crypto` del lado
+# Python, y por eso el `.gitignore` sigue ignorándolo.
+#
+# LO QUE ESTO **NO** CUBRE, Y HAY QUE DECIRLO: el lado Python. `pip` sigue
+# resolviendo contra PyPI, y ahí está la mitad del producto. Vendorizar Rust
+# cierra una puerta y deja la otra abierta; queda escrito para que nadie lea
+# «informes está vendorizado» como «informes construye sin red».
+#
+# LA CLAVE DE LA FUENTE casa con lo que declara el `Cargo.toml`, no «siempre 40
+# dígitos»: cargo compara por la cadena EXACTA del `Cargo.lock`, y esa cadena
+# copia el `rev` tal como se escribió. Aquí conviven las dos formas en el mismo
+# archivo —guaca de 40, mirilla de 7— porque así se declararon. Por eso este
+# bloque se GENERA leyendo las `source = "git+…"` del lock y no se escribe a
+# mano: la lista escrita a mano ya divergió una vez.
+#
+# Rutas RELATIVAS a propósito: cargo las escribe absolutas y eso ata el
+# repositorio a esta máquina — un clon en otro sitio dejaría de compilar sin
+# decir por qué.
+
+[source.crates-io]
+replace-with = "vendored-sources"
+
+[source."git+file:///home/juan/espejos/bachue.git?rev=0b3522fceb2e311a9c60073b2f6162e56bf682d4"]
+git = "file:///home/juan/espejos/bachue.git"
+rev = "0b3522fceb2e311a9c60073b2f6162e56bf682d4"
+replace-with = "vendored-sources"
+
+[source."git+file:///home/juan/espejos/guaca.git?rev=d501eb30b5c948ce305051fc45db7ff72f8cff07"]
+git = "file:///home/juan/espejos/guaca.git"
+rev = "d501eb30b5c948ce305051fc45db7ff72f8cff07"
+replace-with = "vendored-sources"
+
+[source."git+file:///home/juan/espejos/mirilla.git?rev=c7de2e8"]
+git = "file:///home/juan/espejos/mirilla.git"
+rev = "c7de2e8"
+replace-with = "vendored-sources"
+
+[source."git+file:///home/juan/espejos/quipu.git?rev=cd30c1b0183ab7c68a8122ca4f269ae04e7e2d27"]
+git = "file:///home/juan/espejos/quipu.git"
+rev = "cd30c1b0183ab7c68a8122ca4f269ae04e7e2d27"
+replace-with = "vendored-sources"
+
+[source.vendored-sources]
+directory = "rust/vendor"

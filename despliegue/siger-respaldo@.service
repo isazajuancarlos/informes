@@ -1,0 +1,46 @@
+; Respaldo diario de la instancia del cliente %i, verificado.
+;
+; Plantilla, por lo mismo que `siger@.service`: el respaldo de treinta clientes
+; no pueden ser treinta archivos. Sustituye a `siger-respaldo.service`, que
+; estaba escrito para UNA instalación fija en /opt/siger — correcto cuando había
+; una, imposible de mantener cuando hay N.
+;
+; El comando NO para el servicio: la copia se toma con `VACUUM INTO`, bajo una
+; transacción de lectura. Y se verifica sola: si la copia no cuadra con el
+; origen, el comando sale con error, la unidad queda en `failed` y
+; `systemctl --failed` lo enseña. Un respaldo que falla en silencio es peor que
+; no tenerlo.
+[Unit]
+Description=SIGER — respaldo diario verificado del cliente %i
+After=network.target
+AssertPathExists=/etc/siger-%i/siger.env
+
+[Service]
+Type=oneshot
+User=siger-%i
+Group=siger-%i
+WorkingDirectory=/var/lib/siger-%i
+; El binario lee del ENTORNO dónde está la base: así respalda lo que el servicio
+; usa de verdad, no lo que alguien creía.
+EnvironmentFile=/etc/siger-%i/siger.env
+; `UMask` y no solo el modo del directorio: `VACUUM INTO` crearía la copia en
+; 0644 y el respaldo es una base ÍNTEGRA — sería devolver por la puerta de atrás
+; lo que el 0750 del alta cierra.
+UMask=0077
+; CADA CLIENTE ESCRIBE EN SU PROPIA CARPETA, `/var/respaldos/<cliente>/<fecha>`.
+; La fecha, porque un respaldo que se pisa a sí mismo cada noche no protege del
+; error que se descubre tres días después, que es el caso normal. Y la carpeta
+; por cliente, por dos razones y la segunda es un fallo liso: el respaldo es una
+; copia completa de la base, y además `/var/respaldos` era de root y 755, así
+; que este servicio —que corre como `siger-%i`— NO habría podido crear nada
+; dentro y habría fallado con EACCES todas las noches.
+ExecStart=/bin/sh -c '/opt/siger-%i/siger-api respaldar /var/respaldos/%i/$(date +%%F)'
+; Y se podan los viejos. EL ALCANCE DEL BORRADO ES EXACTAMENTE EL CONJUNTO QUE
+; ESTA UNIDAD CREA (directiva 22): ahora lo garantiza el propio DIRECTORIO
+; —`/var/respaldos/%i`— en vez de un patrón de nombre. La versión anterior
+; barría `/var/respaldos` con `-name 'siger-*'`, que se habría llevado los
+; respaldos de los vecinos, y no en la primera vuelta: en la trigésimo primera.
+ExecStartPost=/usr/bin/find /var/respaldos/%i -mindepth 1 -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+
+[Install]
+WantedBy=multi-user.target

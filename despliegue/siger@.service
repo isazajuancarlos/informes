@@ -1,0 +1,82 @@
+; SIGER — UNA INSTANCIA POR CLIENTE.
+;
+; Unidad de PLANTILLA: `siger@acme.service` es la instancia del cliente «acme»,
+; y `%i` es su nombre. Una sola unidad sirve a todos los clientes; N copias de
+; `siger-demo.service` con el nombre cambiado serían N archivos que se
+; desincronizan en cuanto alguien endurezca uno solo (directiva 1).
+;
+; POR QUÉ UNA INSTANCIA POR CLIENTE Y NO MULTI-INQUILINO (decidido el
+; 2026-08-09, ficha #606): `autz.rs` está construido para que «un extremo nuevo
+; que se olvide de filtrar no compile, porque no tiene de dónde sacar la lista».
+; Con una segunda dimensión —el inquilino— un extremo que filtre por alcance y
+; NO por inquilino compila igual y filtra datos entre empresas: el fallo no se
+; queja. Medido además que cabe: la demo ocupa 44 MB de RSS y 47 MB de disco,
+; con 9,8 GB libres en el VPS.
+;
+; NO confundir con `siger-demo.service`: aquella es la demostración pública, con
+; credenciales publicadas y base que se regenera cada noche. Ésta es una
+; instalación de verdad — su base no se borra nunca sola y su secreto persiste.
+[Unit]
+Description=SIGER — instancia del cliente %i
+After=network.target
+; El nombre del cliente viaja en la ruta de todo lo que sigue, así que una
+; instancia sin su entorno no debe arrancar «a medias»: sin este archivo
+; systemd falla la unidad en vez de levantar un binario que abriría una base
+; vacía y respondería «credenciales incorrectas» para siempre (directiva 20).
+AssertPathExists=/etc/siger-%i/siger.env
+
+[Service]
+Type=simple
+; Un usuario por cliente, no uno compartido: si dos instancias corren con el
+; mismo usuario, el endurecimiento de abajo no impide que una lea la base de la
+; otra, y el argumento de venta —«sus datos son suyos y están aparte»— dejaría
+; de ser cierto a nivel de sistema operativo.
+User=siger-%i
+Group=siger-%i
+WorkingDirectory=/var/lib/siger-%i
+; El servidor abre `siger.db` RELATIVO a su directorio de trabajo. Arrancarlo
+; desde otro sitio crea una base vacía sin usuarios y el acceso responde
+; «credenciales incorrectas» —correcto para no filtrar si el correo existe, e
+; indistinguible de «esta base no tiene a nadie»—. Ya costó una tarde en la demo.
+EnvironmentFile=/etc/siger-%i/siger.env
+ExecStart=/opt/siger-%i/siger-api
+Restart=on-failure
+RestartSec=3
+
+; Endurecimiento, el mismo de la demo y por más motivo: aquí hay datos de un
+; cliente real bajo la Ley 1581.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+# **Lo escribible NO incluye el ejecutable, y ésa es la razón de que el programa
+# y los datos vivan en árboles distintos.** Con `/opt/siger-%i` aquí, este
+# servicio —el que está expuesto a internet— podía reescribir su propio
+# `siger-api`: `ProtectSystem=strict` protege el sistema, no lo que tú declaras
+# escribible, y `MemoryDenyWriteExecute` no lo impide porque escribir un archivo
+# no es mapear W+X. Cambiado el 2026-08-11 tras la revisión de seguridad.
+ReadWritePaths=/var/lib/siger-%i
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+; UMASK, y no es cosmético: sin él SQLite crea `siger.db` en 0644 y los
+; archivos de entrega igual, o sea que el `chmod 750` del directorio se salta en
+; cuanto alguien tenga un camino de lectura dentro. 0077 deja archivos 0600 y
+; directorios 0700, que es lo único coherente con «los datos de este cliente son
+; de este cliente».
+UMask=0077
+
+; Techos por instancia. El VPS sirve además brain, el colector, chasqui, nexus y
+; cuatro sitios: una instancia que se desboque no puede llevárselos por delante.
+; 512 MB es diez veces lo que consume la demo (44 MB), o sea holgura de sobra y
+; aun así un tope. `CPUQuota` deja 1 núcleo de los 6.
+MemoryMax=512M
+CPUQuota=100%
+
+[Install]
+WantedBy=multi-user.target

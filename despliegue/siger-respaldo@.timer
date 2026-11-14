@@ -1,0 +1,17 @@
+[Unit]
+Description=Respaldo diario de SIGER — cliente %i
+
+[Timer]
+; 03:30 hora del servidor, antes de la jornada. `Persistent` hace que un
+; servidor que estuvo apagado respalde al arrancar en vez de saltarse el día —
+; que es justo el día en que a alguien le pasó algo con la máquina.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+; Con una instancia por cliente esto deja de ser cortesía y pasa a ser
+; necesario: treinta `VACUUM INTO` a la misma hora en punto en un VPS de 6
+; núcleos es un pico que se nota desde fuera. Media hora de dispersión los
+; reparte, y sigue siendo de madrugada.
+RandomizedDelaySec=1800
+
+[Install]
+WantedBy=timers.target

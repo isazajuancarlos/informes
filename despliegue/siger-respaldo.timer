@@ -1,0 +1,15 @@
+[Unit]
+Description=Respaldo diario de SIGER
+
+[Timer]
+; 03:30 hora del servidor, antes de la jornada. `Persistent` hace que un
+; servidor que estuvo apagado respalde al arrancar en vez de saltarse el día —
+; que es justo el día en que a alguien le pasó algo con la máquina.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+; Un minuto de dispersión: si un día conviven varias instalaciones en la misma
+; máquina, no arrancan todas a la vez.
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

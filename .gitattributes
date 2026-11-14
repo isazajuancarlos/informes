@@ -1,0 +1,22 @@
+# `rust/vendor/` SE GUARDA BYTE A BYTE. No es preferencia de estilo: es
+# correctitud.
+#
+# Cada crate vendorizado lleva un `.cargo-checksum.json` con el hash de CADA
+# archivo, y cargo lo verifica al compilar. Si git normaliza finales de línea
+# —CRLF -> LF— al registrar o al sacar el árbol, esos hashes dejan de casar y el
+# build muere con:
+#
+#     error: the listed checksum of `vendor/<crate>/<archivo>` has changed
+#
+# Y el modo de fallo es el peor que hay: **aquí sigue compilando** (el árbol de
+# trabajo conserva sus bytes) y **revienta en el clon**, o sea en otra máquina, o
+# al restaurar del espejo. Se descubrió el 2026-08-14 al vendorizar quipu: git
+# avisó de que iba a convertir 526 archivos.
+#
+# `-text` desactiva toda conversión para ese subárbol.
+rust/vendor/** -text
+
+# Y no se diffean: son 359 MB de código ajeno congelado. Lo que hay que revisar
+# de un cambio en `rust/vendor/` es QUÉ CRATE Y QUÉ VERSIÓN entró o salió —eso se
+# ve en `Cargo.lock` y en el nombre del directorio—, no las líneas.
+rust/vendor/** -diff

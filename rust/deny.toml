@@ -1,0 +1,124 @@
+# cargo-deny — control de cadena de suministro (lección Atomic Arch, #143).
+# Complementa a cargo-audit: además de CVEs conocidos, exige que TODA dependencia
+# venga de una fuente autorizada (crates.io), prohíbe comodines de versión y
+# controla licencias. No es cargo-vet (revisión al cambiar): es el baseline
+# correcto para una app interna (ver conocimiento/cargo_vet_reconsiderado.md).
+
+[advisories]
+version = 2
+
+[licenses]
+version = 2
+# Allowlist AJUSTADA al árbol real (directiva 23): una licencia NUEVA en un bump
+# = rojo, y se decide a mano si entra.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-1-Clause",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "0BSD",
+    "ISC",                  # ring, rustls, rustls-webpki, untrusted (stack TLS)
+    "CDLA-Permissive-2.0",  # webpki-roots (raíces de confianza TLS)
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+    # Quipu (nuestra) es AGPL; los crates del workspace, LicenseRef-Xiliux-Comercial.
+    "AGPL-3.0-or-later",
+    "LicenseRef-Xiliux-Comercial",
+    # bachue-autz (el motor de autorización, nuestro) es propietario de Xiliux. Ambos son
+    # de Isaza Arenas, así que consumirlo aquí es uso interno; se declara para que
+    # `cargo deny` no rechace su licencia.
+    "LicenseRef-Xiliux-Propietario",
+]
+confidence-threshold = 0.8
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+# UNA SOLA PILA CRIPTOGRÁFICA, y desde el 2026-08-12 lo exige la máquina. Dos
+# entradas de `quipu` en el `Cargo.lock` meterían dos implementaciones de la
+# misma criptografía en el mismo binario —el firmado de entregas y el cifrado en
+# reposo dejarían de tener un único origen—. Hasta hoy eso lo vigilaba un `grep`
+# escrito en prosa en el CLAUDE.md, que solo corría si alguien se acordaba: es la
+# directiva 6 sin aplicar —regla que recordar < prueba que falla < guardián que
+# impide—, y el guardián ya estaba montado (paso `cadena-suministro` del verde
+# local). Solo había que decirle que le importara.
+#
+# Acotado a `quipu`, y NO `multiple-versions = "deny"` global. **Medido el
+# 2026-08-12 sobre el `Cargo.lock`: 28 crates llevan más de una versión** —
+# `syn`, `rand_core`, `sha2`, `getrandom`, `hashbrown`, la familia `windows-*`
+# entera—, así que lo global saldría rojo el primer día por duplicados de
+# dependencias transitivas que no dependen de nosotros. Y una alarma que suena
+# por lo que no importa acaba apagada con `skip` hasta que no vigila nada
+# (directiva 23).
+#
+# *(La primera versión de este comentario decía lo contrario —«no hay ni un
+# duplicado real»—, leyendo mal la salida de `cargo tree --duplicates`. El
+# recuento de arriba sale de `grep '^name = ' Cargo.lock | sort | uniq -d`, que
+# cuenta entradas del lock y no ramas del árbol.)*
+#
+# LA PAREJA, corrida antes de dejar esto puesto (directiva 33): con la MISMA
+# regla apuntada a `quipu` → `bans ok`; apuntada a un crate que sí tiene dos
+# versiones → `error[duplicate]: found 2 duplicate entries`, `bans FAILED`,
+# código 2. Discrimina en las dos direcciones.
+[[bans.deny]]
+name = "quipu"
+deny-multiple-versions = true
+
+[sources]
+# El corazón anti-Atomic-Arch: una dep desde una fuente inesperada = rojo.
+# Las dos deps git autorizadas, las dos nuestras y las dos fijadas por rev:
+#   guaca   — cifrado en reposo (#128), en siger-api/Cargo.toml
+#   mirilla — el arnés de navegador CDP, y solo de DESARROLLO: no entra en el
+#             binario que se entrega. Entró el 2026-08-10 al extraer el arnés a
+#             librería propia y nadie la declaró aquí; este guardián la cazó al
+#             primer `cargo deny` posterior, que es exactamente su trabajo.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-git = [
+    "file:///home/juan/espejos/guaca.git",
+    "file:///home/juan/espejos/mirilla.git",
+    # quipu faltaba, y por eso `cargo deny check sources` llevaba ROJO en `main`:
+    # cuatro `source-not-allowed` —quipu, quipu-nucleo, quipu-voprf y
+    # padme-frame—. Entra por DOS caminos, y conviene decirlo porque el segundo
+    # es el que se olvida: `siger-api` lo pide directo (la firma de entregas), y
+    # además le llega transitivamente por guaca.
+    #
+    # Se descubrió al correr el verde local completo el 2026-08-16.
+    #
+    # **La causa tiene fecha y es UNA sola** (corregida ese mismo día midiendo,
+    # porque esta nota decía «2026-08-11» y era falso): el commit del
+    # **2026-08-14** «quipu sale del ESPEJO, no de crates.io» mudó la fuente de
+    # quipu en CINCO repositorios de una pasada —medico, informes, chasqui,
+    # guaca y tunjo— y no tocó `allow-git` en ninguno. No fue el protocolo «solo
+    # local» del 08-10 ni la mudanza de guaca del 08-11: esos dos declararon lo
+    # que movían. Comprobado con `git log -S` sobre el `Cargo.lock` de los
+    # cinco, no deducido — que es como se coló la fecha equivocada.
+    #
+    # O sea que no es un descuido de este repositorio sino de aquel barrido.
+    #
+    # Es el MISMO espejo local que los otros dos, no una fuente nueva.
+    "file:///home/juan/espejos/quipu.git",
+    # El motor de autorización de Bachué (Rust puro, sin deps transitivas), que
+    # `autz.rs` consume. Del espejo local, como los demás.
+    "file:///home/juan/espejos/bachue.git",
+]
+
+# EL AVISO DE ESTA MAÑANA, YA CERRADO (2026-08-11, misma fecha). Estas dos URL
+# apuntaban a GitHub, y allí los dos repositorios están VACIADOS desde el
+# protocolo solo-local: los revs fijados eran commits HUÉRFANOS, no alcanzables
+# desde ninguna rama. Se descargaban igual —medido, `git fetch --depth 1 <sha>`
+# daba 0 en los dos— porque GitHub sirve SHA arbitrarios mientras el objeto
+# exista; el día que los recogiera el recolector, esto dejaba de compilar sin
+# aviso y con la fecha en manos de otro.
+#
+# Ahora apuntan al espejo, que es el origen de verdad desde el 2026-08-10. El
+# precio hay que decirlo: **el build queda atado a esta máquina**. Para informes
+# —privado, comercial, compilado solo aquí y entregado como binario— eso es
+# coherente; y para cualquier otro es indiferente, porque el repositorio de
+# GitHub del que se bajaba no tiene código.

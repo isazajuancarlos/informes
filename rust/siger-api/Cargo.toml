@@ -1,0 +1,177 @@
+[package]
+name = "siger-api"
+description = "API y servidor de SIGER: un solo binario que trae dentro la interfaz, las migraciones y el motor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish.workspace = true
+
+[dependencies]
+siger-core = { path = "../siger-core" }
+
+axum = { version = "0.8", features = ["multipart"] }
+# El panel se teje EN EL SERVIDOR (directiva 26): el HTML lo compila `rustc` con
+# los tipos del dominio dentro. htmx y `boi` van vendorizados en `estaticos/`,
+# con la MISMA versión que nexus, chasqui e inventario — comprobado con md5sum.
+maud = { version = "0.27", features = ["axum"] }
+# `sync` (semáforo) y `time` (el plazo de espera) acotan cuántos descifrados
+# corren a la vez: cada uno reserva 64 MiB de Argon2id, así que el tope es de
+# memoria, no de gusto. Ver `permisos_de_descifrado` en config.rs.
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+tower-http = { version = "0.6", features = ["trace", "compression-gzip"] }
+
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio", "sqlite", "postgres", "chrono", "macros", "migrate",
+] }
+
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Identidad. Argon2id, el mismo esquema que ya usa la cadena de Python: una
+# migración de contraseñas no puede obligar a los usuarios a volver a crearlas.
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["std"] }
+
+# Cookie de sesión firmada. No es un token que viaje al JavaScript: el navegador
+# la guarda y la devuelve, y el JavaScript no puede leerla.
+hmac = "0.12"
+sha2 = "0.10"
+# Firma post-cuántica de las entregas (Ed25519 + ML-DSA-87). Xiliux es titular de
+# Quipu (doble licencia), así que su AGPL no obliga a nada aquí.
+quipu = "0.15"
+# Cifrado EN REPOSO de las entregas (A1): guaca::reposo envuelve el contenedor
+# cifrado de Quipu (Argon2 → AEAD → padding Padmé). Repo público (AGPL, de casa),
+# fijado por commit inmutable, no por el tag —un tag es mutable y moverlo traería
+# un commit malicioso al construir (lección Atomic Arch)—.
+#
+# El commit NO es el de `v0.4.0` (2ffe134) sino uno posterior, y a propósito: el
+# árbol de ese tag no lleva `LICENSE` en la raíz. Es el mismo código —entre los
+# dos solo hay el LICENSE y el CI de guaca, ni una línea de `src/`—, pero lo que
+# se vendoriza al construir es un ÁRBOL, no un número de versión: fijar el tag
+# metía en el binario una copia de guaca cuya raíz no declara bajo qué licencia
+# se puede usar. La declaración en `Cargo.toml` y el NOTICE de guaca no sustituyen
+# al archivo.
+#
+# Y NO LO CAZA NINGUNA MÁQUINA: `cargo deny check licenses` lee el campo
+# `license = "…"` del `Cargo.toml` de la dependencia, no el árbol, así que daba
+# `licenses ok` con las dos revisiones. Lo que discrimina es mirar lo que cargo
+# se bajó — `ls ~/.cargo/git/checkouts/guaca-*/<rev>/`: en `2ffe134/` no hay
+# `LICENSE` y en `d786d1c/` sí. Al salir el tag que lo incluya, volver a fijarlo.
+#
+# 2026-08-05: sube de `d786d1c` a `23395f3` (9 commits), que es el mismo rev que
+# fija tunjo — un solo árbol de guaca en todo el universo. Ese salto trae los
+# cinco vectores fijos de compatibilidad y, sobre todo, **guaca pasa a pedir
+# quipu 0.11**. Por eso el `quipu = "0.11"` de arriba va en ESTE MISMO commit: con
+# uno solo de los dos, el `Cargo.lock` tendría DOS entradas de quipu (0.10 y 0.11)
+# y el binario de SIGER acabaría con dos pilas de criptografía dentro. El control
+# es `grep -c '^name = "quipu"$' Cargo.lock`, y tiene que dar 1.
+# AL ESPEJO, NO A GITHUB. El protocolo «solo local» del 2026-08-10 movió el
+# origen de verdad a /home/juan/espejos y quitó el remoto de GitHub de los 45
+# repos que lo tenían — pero no tocó los `Cargo.toml`, así que el build seguía
+# bajando de allí. Y allí estos revs son commits HUÉRFANOS: los repositorios se
+# vaciaron con `push --force`, así que no son alcanzables desde ninguna rama.
+# Hoy se descargan igual porque GitHub sirve SHA arbitrarios mientras el objeto
+# exista; el día que los recoja el recolector, esto deja de compilar sin aviso, y
+# la fecha no la controlamos.
+# 2026-08-12: sube a `v0.6.0` (`161a687`). El cambio es ADITIVO para informes —no
+# importa `dosfactores` ni `qr`—, y se hace igualmente porque el invariante es
+# «un solo árbol de guaca en todo el universo»: medico subió hoy al traerse el
+# segundo factor, y dejar a informes atrás significaría que la REGLA que
+# acabamos de compartir vive en dos versiones distintas, que es exactamente lo
+# que subirla a guaca vino a impedir.
+#
+# Y hay una razón propia, no solo de simetría: `dosfactores` SALIÓ de aquí. El
+# `segundofactor.rs` de informes seguirá con su copia local hasta que alguien la
+# sustituya por la de guaca, y eso no se puede ni empezar mientras el `rev` no
+# traiga el módulo.
+# 2026-09-11: sube a `d501eb3` con el salto de quipu 0.11→0.15 (el mismo árbol que
+# fijan medico y bachué main). guaca sigue en v0.7.0 —solo cambia su requisito de
+# quipu—, así que el formato de sesión NO cambia y no fuerza re-login. El `quipu`
+# de arriba pasa a "0.15" en ESTE MISMO commit (control `grep -c '^name="quipu"'`=1).
+guaca = { git = "file:///home/juan/espejos/guaca.git", rev = "d501eb30b5c948ce305051fc45db7ff72f8cff07", version = "0.7", features = ["dosfactores"] }
+# El motor ÚNICO de autorización de Bachué (Rust puro, sin dependencias: no arrastra
+# quipu ni nada). `autz.rs` deriva su alcance de él —una sola lógica de authz, con su
+# banco discriminante y su propiedad anti-divergencia— en vez de reescribirla aquí. Del
+# ESPEJO LOCAL (protocolo solo-local), fijado por `rev`.
+# 2026-09-11: el rev anterior (d3b524b5…) quedó HUÉRFANO —ya no existe en el
+# espejo tras una reescritura de historia—, así que un build limpio fallaba al
+# resolverlo. Sube a `0b3522f` (bachué main, migrado a quipu 0.15), que existe y
+# alinea bachue-autz con el árbol nuevo.
+bachue-autz = { git = "file:///home/juan/espejos/bachue.git", rev = "0b3522fceb2e311a9c60073b2f6162e56bf682d4" }
+base64 = "0.22"
+rand = "0.8"
+
+# Correo de alertas (#151.5). rustls, no native-tls: sin dependencias del sistema
+# que compilar en la máquina del cliente. STARTTLS en producción; en localhost,
+# texto plano para poder probar contra un buzón local sin certificados.
+lettre = { version = "0.11", default-features = false, features = [
+    "smtp-transport", "builder", "tokio1", "tokio1-rustls-tls", "hostname",
+] }
+
+# Detección del tipo real del archivo por magic bytes (#165), pura Rust, sin
+# dependencias del sistema. Es un FACTOR de calificación, no una compuerta.
+infer = "0.16"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Segundo factor TOTP (#212). `default-features = false` a propósito: sus
+# features opcionales traen `qr` e `image` para pintar el código, y un binario
+# que se instala offline no necesita cargar un decodificador de imágenes para
+# generar seis dígitos — el QR lo pinta la interfaz desde el URI. Lo que queda es
+# HMAC + base32, tres crates en total.
+#
+# No se reimplementa aunque el RFC 6238 quepa en cuarenta líneas: el fallo típico
+# —la unidad del argumento, el truncamiento dinámico— no rompe nada visible,
+# solo ensancha la ventana en silencio.
+
+# Solo para las pruebas del modo degradado (#71): el timeout que hace que un
+# envío colgado falle ruidosamente en vez de parecer una compilación lenta. No
+# entra en el binario de producción.
+[dev-dependencies]
+# BAJÓ AQUÍ el 2026-08-12, al podar `dosfactores`. Era dependencia DIRECTA de
+# producción porque la REGLA del TOTP vivía en este repositorio; ahora vive en
+# `guaca::dosfactores` y lo único que queda de `totp-rs` aquí es el ayudante que
+# genera «el código que daría el teléfono» dentro de `#[cfg(test)]`.
+#
+# Y dicho con precisión, porque la frase fácil sería falsa: `totp-rs` SIGUE
+# viajando en el binario que se entrega —`cargo tree -e normal -i totp-rs` lo
+# enseña colgando de `guaca`—, y tiene que viajar, porque ahí vive la regla que
+# lo llama. Lo que cambia es que este repositorio ya no lo DECLARA como suyo: si
+# mañana guaca dejara de necesitarlo, desaparecería del árbol de producción solo,
+# en vez de quedarse aquí anclado por una línea que nadie recuerda para qué era.
+totp-rs = { version = "5.7.2", default-features = false }
+
+# `test-util` da el reloj virtual (`pause`/`advance`): la prueba del semáforo lleno
+# comprueba la DECISIÓN —«ocupado», no «no descifra»— sin esperar de verdad los 30
+# segundos del plazo. Una prueba que duerme medio minuto acaba borrándose.
+tokio = { version = "1", features = ["time", "test-util"] }
+# Las pruebas del respaldo necesitan bases en DISCO, no en memoria: `VACUUM INTO`
+# escribe un archivo y lo que se está probando es precisamente que ese archivo
+# sirva. Una base `:memory:` no ejercería nada de eso.
+tempfile = "3"
+# Para ejercer las rutas como las ejerce un cliente: una petición entra, una
+# respuesta sale. Sin esto solo se probaban funciones, y el cableado —extractores,
+# códigos de estado, cabeceras— no lo miraba nadie.
+tower = { version = "0.5", features = ["util"] }
+# EL ARNÉS DE NAVEGADOR, ahora librería propia y pública (MIT).
+#
+# Vivía aquí como `tests/comun/mod.rs`, copiado de medico sin generalizar a
+# propósito. Con el segundo consumidor delante se midió el CÓDIGO de las dos
+# copias: de ~309 líneas, la única diferencia real era la ruta de la entrada. Se
+# extrajo con eso como único parámetro y nada más.
+#
+# Por `rev` y no por tag: un tag es mutable y moverlo cambiaría lo que se
+# compila sin cambiar el `Cargo.toml`. Y en `dev-dependencies`, así que **no
+# entra en el binario de producción** — con ella se va también `libc`, que solo
+# estaba aquí por las dos llamadas (`pipe`, `dup2`) que ahora viven dentro.
+# Al espejo, por lo mismo que guaca (ver arriba). Y el `rev` sube: `esperar`
+# tolera ahora que la expresión lance mientras sondea, que es lo que rompía este
+# banco contra el binario de release.
+mirilla = { git = "file:///home/juan/espejos/mirilla.git", rev = "c7de2e8" }
+
+[lints]
+workspace = true

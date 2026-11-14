@@ -1,0 +1,11 @@
+-- Cifrado EN REPOSO de los archivos de entrega (A1, #128).
+--
+-- `archivo_cifrado` recuerda, POR ARCHIVO, si el blob en disco está cifrado:
+--   1 = blob cifrado (guaca::reposo sobre el contenedor de Quipu: Argon2 → AEAD).
+--   0 = texto plano — los archivos subidos antes de activar SIGER_CLAVE_REPOSO.
+--
+-- Por eso es por-fila y no un ajuste global: encender la frase no invalida lo ya
+-- guardado en claro, y apagarla no vuelve ilegible lo ya cifrado. El SHA que
+-- firma la entrega es SIEMPRE el del DOCUMENTO en claro, nunca el del blob: la
+-- firma acredita el contenido, no cómo se guarda, y no cambia con esto.
+ALTER TABLE entregas ADD COLUMN archivo_cifrado INTEGER NOT NULL DEFAULT 0;

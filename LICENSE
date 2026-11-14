@@ -1,10 +1,62 @@
-Copyright (c) 2026 Juan Carlos Isaza. All rights reserved.
+Copyright (c) 2024-2026 Juan Carlos Isaza.
+Todos los derechos reservados. / All rights reserved.
 
-This repository is the public home of a proprietary product. The documentation
-here may be read and shared. The software itself is NOT released under an
-open-source license: no license is granted to use, copy, modify, or distribute
-the software or its source code, which is not published here.
+================================================================================
+INFORMES — SOFTWARE PROPIETARIO
+================================================================================
 
-To use, evaluate, or license the product, contact the author via https://xiliux.com.
+Este programa de computador ("el Software"), incluyendo su código fuente, código
+objeto, interfaces, bases de datos, documentación, materiales de capacitación y
+cualquier obra derivada, es propiedad exclusiva de Juan Carlos Isaza,
+propietario del establecimiento de comercio XILIUX (matrícula mercantil
+21-833837-02, Cámara de Comercio de Medellín para Antioquia), y se encuentra
+protegido por la Ley 23 de 1982, la Ley 1915 de 2018, la Decisión Andina 351 de
+1993 y los tratados internacionales sobre derecho de autor.
 
-THE DOCUMENTATION IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+NO SE CONCEDE NINGUNA LICENCIA POR EL SOLO ACCESO A ESTE CÓDIGO.
+
+El presente aviso no constituye una licencia de uso. Los derechos de uso del
+Software se conceden única y exclusivamente mediante un Contrato de Licencia de
+Uso de Software (EULA) suscrito por escrito con el titular. En ausencia de dicho
+contrato, queda prohibido usar, copiar, modificar, fusionar, publicar,
+distribuir, sublicenciar, vender, descompilar o realizar ingeniería inversa
+sobre el Software, en todo o en parte.
+
+El acceso no autorizado a este código, así como su reproducción o utilización
+sin licencia, puede dar lugar a las acciones civiles y penales previstas en la
+ley colombiana, incluidas las de los artículos 270 a 272 del Código Penal.
+
+--------------------------------------------------------------------------------
+COMPONENTES DE TERCEROS
+--------------------------------------------------------------------------------
+
+El Software incorpora bibliotecas de terceros distribuidas bajo sus propias
+licencias, las cuales se respetan íntegramente y se relacionan en el archivo
+THIRD_PARTY.md. Nada de lo dispuesto en este aviso restringe los derechos que
+esas licencias conceden respecto de sus propios componentes.
+
+--------------------------------------------------------------------------------
+COMPONENTES DE QUIPU
+--------------------------------------------------------------------------------
+
+El Software incorpora componentes criptográficos de QUIPU, obra del mismo
+titular, publicada además bajo la licencia GNU Affero General Public License
+v3.0 o posterior (AGPL-3.0-or-later).
+
+En su calidad de titular único de los derechos patrimoniales sobre Quipu, Juan
+Carlos Isaza Arenas distribuye dichos componentes DENTRO de este Software bajo
+licencia comercial y NO bajo la AGPL-3.0. La copia de Quipu entregada como parte
+de Informes no está sujeta a las obligaciones de copyleft de la AGPL, incluida
+la del artículo 13 (interacción remota a través de una red).
+
+Lo anterior no afecta en modo alguno la versión pública de Quipu, que continúa
+disponible bajo AGPL-3.0-or-later para cualquier persona en
+https://github.com/isazajuancarlos/quipu
+
+--------------------------------------------------------------------------------
+CONTACTO PARA LICENCIAMIENTO
+--------------------------------------------------------------------------------
+
+Juan Carlos Isaza — XILIUX
+Amagá, Antioquia, Colombia
+https://xiliux.com

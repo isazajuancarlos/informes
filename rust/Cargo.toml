@@ -1,0 +1,82 @@
+[workspace]
+resolver = "2"
+members = ["siger-core", "siger-api"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "LicenseRef-Xiliux-Comercial"
+authors = ["Juan Carlos Isaza"]
+# Producto propietario: NUNCA se publica en crates.io. Explícito, para que un
+# `cargo publish` accidental falle y para que cargo-deny lo trate como privado.
+publish = false
+
+# Puerta de buenas prácticas por DEFECTO, para todo el workspace (cada crate la
+# hereda con `[lints] workspace = true`). Solo `deny` porque el CI corre
+# `-D warnings`: aquí solo entra lo que se está dispuesto a BLOQUEAR.
+[workspace.lints.clippy]
+redundant_clone = "deny"    # clon innecesario (rendimiento)
+needless_collect = "deny"   # `.collect()` para volver a iterar (rendimiento)
+
+# LAS DEPENDENCIAS OPTIMIZADAS TAMBIÉN EN DEBUG (estándar de nacimiento,
+# directiva 26). NUESTROS crates se quedan en debug puro: iteración y depurador
+# intactos, y `debug_assertions` sigue activo.
+#
+# Aquí rinde, y no se dio por hecho — la directiva 16 exige medir antes de
+# atribuir. Medido el 2026-08-10 sobre `cargo test --workspace --all-targets`,
+# target caliente, y con el MISMO conteo en las dos variantes —244 pruebas y 7
+# ignoradas—, que es el control de que la rápida no lo es por hacer menos:
+#
+#                        ejecución (suma)   pared
+#   sin el perfil            171,14 s      173,03 s
+#   con el perfil             13,23 s       13,42 s     -> 12,9x
+#
+# El binario de `siger-api` solo pasa de 169,47 s a 12,71 s (13,3x). Es más de
+# lo que midió quipu (9,8x), y por el mismo motivo.
+#
+# LA PRUEBA QUE DECIDIÓ, y que hay que rehacer en cualquier repo antes de copiar
+# esto: la ejecución era el **98,9 %** de la pared. En chasqui son 20 s de 630 y
+# en medico 34 s, y ahí esto NO mueve el número —manda la compilación, que se
+# arregla con núcleos y no con perfiles—. Aquí es al revés porque el grueso son
+# hashes de Argon2id, lentos A PROPÓSITO, en las pruebas de acceso, segundo
+# factor y cuentas: un KDF memory-hard sin optimizar multiplica su precio.
+#
+# EL COSTE, dicho entero: la primera corrida recompila todas las dependencias
+# optimizadas y tardó **430,17 s**. Se paga UNA vez y se amortiza en menos de
+# tres corridas (cada una ahorra 159,6 s). En el CI, que siempre parte de caché
+# fría, el reparto es otro y lo recoge `CARGO_PROFILE_DEV_OPT_LEVEL=3`, que allí
+# no tiene contrapartida.
+#
+# Y no cambia QUÉ se prueba: `debug_assertions` sigue activo con `opt-level > 0`.
+[profile.dev.package."*"]
+opt-level = 3
+
+[workspace.dependencies]
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+# ═══════════════════════════════════════════════════════════════════════════
+# QUIPU SALE DEL ESPEJO LOCAL, NO DE CRATES.IO
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Medido el 2026-08-14: este repositorio compilaba **quipu 0.11.0 desde
+# crates.io**, y esa versión está **YANKED** — la retiramos nosotros el
+# 2026-08-10 con el protocolo «solo local», junto con otras 23.
+#
+# No estaba roto: estaba DESCONECTADO. Funcionaba porque el `Cargo.lock` está
+# commiteado y cargo tolera un yank que ya está bloqueado. La consecuencia real
+# no era el yank sino la DERIVA: el árbol de quipu iba por 0.11.1 más todo lo
+# posterior mientras aquí se compilaba la 0.11.0, así que nueve días de cambios
+# en la librería criptográfica no llegaban.
+#
+# Y para un repositorio NUEVO ni siquiera funcionaba: `cargo vendor` fallaba con
+# «version 0.11.0 is yanked», que es exactamente el fallo que abrió este trabajo.
+#
+# `[patch]` SOLO lo honra el paquete RAÍZ del workspace, no una dependencia.
+#
+# El rev es el de `estable`, que por definición es lo publicado y no puede estar
+# roja. No se toma «el último por ser el último» (directiva 35).
+[patch.crates-io]
+quipu = { git = "file:///home/juan/espejos/quipu.git", rev = "cd30c1b0183ab7c68a8122ca4f269ae04e7e2d27" }
